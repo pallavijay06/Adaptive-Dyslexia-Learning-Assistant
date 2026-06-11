@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+.env
+
+uploads/
+extracted_content/
+
+.vscode/
+
+*.log
