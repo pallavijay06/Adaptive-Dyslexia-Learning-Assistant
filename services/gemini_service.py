@@ -68,6 +68,16 @@ def chat_with_gemini(user_message: str, document_text: str | None = None) -> str
         GeminiAPIError: If Gemini or the network request fails.
     """
     message = build_document_prompt(user_message, document_text)
+    return _send_chat_message(message)
+
+
+def generate_answer(question: str, context: str | None = None) -> str:
+    """Generate a Gemini answer using retrieved context, not the full document."""
+    message = build_document_prompt(question, context)
+    return _send_chat_message(message)
+
+
+def _send_chat_message(message: str) -> str:
     message = (message or "").strip()
     if not message:
         raise ValueError("Message cannot be empty.")
@@ -106,17 +116,23 @@ def reset_chat_history() -> None:
 def build_document_prompt(user_message: str, document_text: str | None = None) -> str:
     """Build a future-compatible prompt for document-aware chat.
 
-    The current /chat endpoint can use plain messages today. Later, after PDF,
-    PPTX, DOCX, or TXT parsers extract content, the route can pass the extracted
-    text here and send the returned prompt to chat_with_gemini(...).
+    If retrieved context is available, use it to answer the learner. Otherwise,
+    continue to support older endpoints that pass full document text.
     """
     if not document_text:
         return user_message
 
     return (
-        "Use the following uploaded document content to answer the learner.\n\n"
-        f"DOCUMENT CONTENT:\n{document_text.strip()}\n\n"
-        f"LEARNER QUESTION:\n{user_message.strip()}"
+        "You are a dyslexia-friendly learning tutor.\n"
+        "Use the retrieved document context as the primary source.\n\n"
+        f"CONTEXT:\n{document_text.strip()}\n\n"
+        f"QUESTION:\n{user_message.strip()}\n\n"
+        "When the context contains the answer, explain it simply.\n"
+        "When the context contains only part of the answer, use the context first, then add helpful general knowledge.\n"
+        "When the context does not answer the question, answer from general knowledge and say that the information is not directly in the uploaded document.\n"
+        "Keep replies short, supportive, beginner-friendly, and dyslexia-friendly.\n"
+        "Use short sentences, bullet points, and simple vocabulary.\n"
+        "Your goal is to teach, not just retrieve information."
     )
 
 

@@ -6,14 +6,17 @@ from pathlib import Path
 
 import streamlit as st
 
+from backend.chunker import chunk_text
 from backend.parser import process_uploaded_file
-from backend.rag import ask_document
+from backend.retriever import retrieve_relevant_chunks_for_question
+from backend.vector_store import build_index
 from services.document_context import DocumentError, get_document_text
 from services.gemini_service import (
     GeminiAPIError,
     GeminiConfigurationError,
     simplify_document,
 )
+from services.llm_router import generate_answer
 
 
 st.set_page_config(
@@ -28,6 +31,8 @@ def initialize_session_state() -> None:
         "uploaded_signature": None,
         "document_record": None,
         "document_text": None,
+        "document_chunks": None,
+        "document_index": None,
         "simplified_content": None,
         "chat_history": [],
     }
@@ -103,6 +108,8 @@ def render_upload_section() -> None:
                 record = process_uploaded_file(uploaded_file.name, file_bytes)
                 document_text = get_document_text(record.document_id)
                 simplified_content = simplify_document(document_text or "")
+                document_chunks = chunk_text(document_text or "")
+                document_index = build_index(document_chunks)
             except (DocumentError, GeminiConfigurationError, GeminiAPIError, ValueError) as exc:
                 st.error(str(exc))
                 return
@@ -113,6 +120,8 @@ def render_upload_section() -> None:
         st.session_state.uploaded_signature = signature
         st.session_state.document_record = record
         st.session_state.document_text = document_text
+        st.session_state.document_chunks = document_chunks
+        st.session_state.document_index = document_index
         st.session_state.simplified_content = simplified_content
         st.session_state.chat_history = []
         render_document_status()
@@ -169,10 +178,21 @@ def render_chat_section() -> None:
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                answer = ask_document(
+                vector_store = st.session_state.document_index
+                if vector_store is None:
+                    document_text = st.session_state.document_text or ""
+                    document_chunks = chunk_text(document_text)
+                    vector_store = build_index(document_chunks)
+                    st.session_state.document_chunks = document_chunks
+                    st.session_state.document_index = vector_store
+
+                relevant_chunks = retrieve_relevant_chunks_for_question(
                     user_question,
-                    document_id=st.session_state.document_record.document_id,
+                    vector_store,
+                    top_k=3,
                 )
+                context = "\n\n".join(chunk["text"] for chunk in relevant_chunks)
+                answer = generate_answer(user_question, context)
             except (DocumentError, GeminiConfigurationError, GeminiAPIError, ValueError) as exc:
                 answer = str(exc)
             except Exception as exc:

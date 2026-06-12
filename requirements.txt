@@ -3,3 +3,6 @@ google-genai>=2.0.0,<3.0.0
 python-dotenv>=1.0.0
 pypdf>=4.0.0
 streamlit>=1.35.0
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.2
+ollama>=0.0.0

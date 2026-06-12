@@ -7,13 +7,13 @@ from flask import Blueprint, jsonify, request
 from services.gemini_service import (
     GeminiAPIError,
     GeminiConfigurationError,
-    chat_with_gemini,
     extract_vocabulary,
     generate_quiz,
     simplify_document,
     summarize_document,
 )
 from services.document_context import DocumentError, get_document_text
+from backend.rag import ask_document
 
 
 chat_bp = Blueprint("chat", __name__)
@@ -38,8 +38,11 @@ def chat() -> tuple[object, int]:
         return jsonify({"error": "Message cannot be empty."}), 400
 
     try:
-        document_text = document_text or get_document_text(document_id)
-        response = chat_with_gemini(message, document_text=document_text)
+        response = ask_document(
+            message,
+            document_id=document_id,
+            document_text=document_text,
+        )
         return jsonify({"response": response}), 200
     except DocumentError as exc:
         return jsonify({"error": str(exc)}), 400

@@ -29,10 +29,38 @@ GEMINI_API_KEY=your_api_key_here
 ## Flow
 
 1. Upload a PDF, PPTX, or DOCX file.
-2. The existing backend parser pipeline saves and extracts text.
-3. Gemini generates simplified content.
-4. Ask questions in the chat box.
-5. Answers are generated using the uploaded document as context.
+2. The backend parser pipeline saves and extracts text.
+3. The extracted text is chunked and embedded locally.
+4. A FAISS vector index is built from the document chunks.
+5. User questions retrieve only the top 3 relevant chunks.
+6. Gemini answers first; if Gemini fails, Ollama is used as a fallback.
+
+## Local RAG Architecture
+
+- Upload
+- Text extraction
+- Chunking
+- Local embeddings
+- FAISS vector store
+- Retriever
+- Gemini primary
+- Ollama fallback
+- Answer returned
+
+## Ollama Setup
+
+Install Ollama and pull the Qwen model:
+
+```powershell
+# Install Ollama from https://ollama.com/docs
+ollama pull qwen3:4b
+```
+
+Verify the model is runnable:
+
+```powershell
+ollama run qwen3:4b
+```
 
 ## Backend Modules
 
