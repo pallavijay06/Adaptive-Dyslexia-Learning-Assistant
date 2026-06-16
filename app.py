@@ -14,7 +14,6 @@ Features:
 
 from __future__ import annotations
 
-import io
 import logging
 import os
 from pathlib import Path
@@ -26,6 +25,18 @@ from backend.chunker import chunk_text
 from backend.parser import process_uploaded_file
 from backend.retriever import retrieve_relevant_chunks_for_question
 from backend.vector_store import build_index
+from components.accessibility import render_accessibility_sidebar
+from components.reading.reading_view import (
+    render_key_takeaways,
+    render_learning_mode_switcher,
+    render_read_mode as render_reading_mode,
+)
+from components.reading.vocabulary_popup import render_vocabulary_panel
+from components.session_state import (
+    get_ui_preferences,
+    initialize_learning_mode,
+    initialize_ui_preferences,
+)
 from services.document_context import DocumentError, get_document_text
 from services.gemini_service import (
     GeminiAPIError,
@@ -49,7 +60,7 @@ st.set_page_config(
 
 
 def initialize_session_state() -> None:
-    """Create Streamlit session keys."""
+    """Create Streamlit session keys for backend state."""
     defaults = {
         # Document processing
         "uploaded_signature": None,
@@ -57,28 +68,21 @@ def initialize_session_state() -> None:
         "document_text": None,
         "document_chunks": None,
         "document_index": None,
-        
+
         # Generated content
         "simplified_content": None,
         "vocabulary": None,
         "visual_content": None,
         "audio_file": None,
         "word_explanation": None,
-        
+        "reading_difficult_words": [],
+
         # Settings
         "vocabulary_word_count": 10,
         "custom_word_input": "",
-        
-        # Accessibility settings
-        "font_size": "Medium",      # Small, Medium, Large, Extra Large
-        "line_spacing": "Relaxed",  # Normal, Relaxed, Extra Relaxed
-        "reading_width": "Medium",  # Narrow, Medium, Wide
-        
+
         # Chat
         "chat_history": [],
-        
-        # UI state
-        "current_mode": "Read",  # Read, Listen, or Visual Learn
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -93,278 +97,64 @@ def show_user_error(message: str, exc: Exception | None = None) -> None:
 
 
 def apply_dyslexia_friendly_styles() -> None:
-    """Apply larger fonts, wide spacing, and high readability for learners.
-    
-    Optimized for:
-    - Dark mode compatibility
-    - High contrast ratios
-    - Readability
-    - Dyslexia-friendly layout
-    - Dynamic accessibility settings
-    """
-    # Get user accessibility settings
-    font_size_map = {
-        "Small": "18px",
-        "Medium": "20px",
-        "Large": "22px",
-        "Extra Large": "24px",
-    }
-    
-    line_spacing_map = {
-        "Normal": "1.6",
-        "Relaxed": "2.0",
-        "Extra Relaxed": "2.4",
-    }
-    
-    width_map = {
-        "Narrow": "600px",
-        "Medium": "1000px",
-        "Wide": "1400px",
-    }
-    
-    font_size = font_size_map.get(st.session_state.font_size, "18px")
-    line_spacing = line_spacing_map.get(st.session_state.line_spacing, "2.0")
-    reading_width = width_map.get(st.session_state.reading_width, "1000px")
-    
+    """Apply global accessibility styles from the unified UI preferences."""
+    initialize_ui_preferences()
+    preferences = get_ui_preferences()
+
+    from components.ui_constants import CHARACTER_SPACING, FONT_SIZES, THEMES
+
+    theme = THEMES[preferences["theme"]]
+    font_size = FONT_SIZES[preferences["font_size"]]
+    character_spacing = CHARACTER_SPACING[preferences["character_spacing"]]
+    font_family = preferences["font_family"]
+
     st.markdown(
         f"""
         <style>
-        /* Base text styling */
         html, body, [class*="css"] {{
-            font-size: {font_size};
-            line-height: {line_spacing};
-            letter-spacing: 0.05em;
+            font-family: '{font_family}', sans-serif;
+            color: {theme['text_color']};
+            background-color: {theme['background_color']};
+            letter-spacing: {character_spacing};
         }}
-        
-        /* Main container */
+
+        .stApp {{
+            background-color: {theme['background_color']};
+        }}
+
         .block-container {{
-            max-width: {reading_width};
+            max-width: 1200px;
             padding-top: 2rem;
             padding-bottom: 2rem;
         }}
-        
-        /* Headings */
+
         h1, h2, h3, h4 {{
             letter-spacing: 0.02em;
             margin-top: 1.5rem !important;
             margin-bottom: 1rem !important;
             line-height: 1.4 !important;
         }}
-        
-        /* Paragraphs and text */
-        .stMarkdown p, .stChatMessage {{
-            font-size: {font_size};
-            line-height: {line_spacing};
+
+        .stMarkdown p, .stChatMessage, .stTextInput, .stSelectbox, .stRadio, .stButton > button {{
+            font-size: {font_size}px !important;
+            line-height: 1.8 !important;
+            letter-spacing: {character_spacing} !important;
         }}
-        
-        /* Learning boxes - improved contrast */
-        .document-meta, .learning-box {{
-            padding: 1.2rem;
-            border-left: 5px solid #1976d2;
-            background: #f5f5f5;
-            color: #121212;
-            margin: 1.2rem 0;
-            border-radius: 4px;
+
+        input, textarea, .stTextInput, .stSelectbox {{
+            font-size: {font_size}px !important;
+            letter-spacing: {character_spacing} !important;
         }}
-        
-        /* Dark mode support for learning boxes */
-        @media (prefers-color-scheme: dark) {{
-            .document-meta, .learning-box {{
-                background: #1e1e1e;
-                color: #e0e0e0;
-                border-left-color: #64b5f6;
-            }}
-        }}
-        
-        /* Vocabulary cards - high contrast */
-        .vocabulary-item {{
-            padding: 1.5rem;
-            margin: 1.2rem 0;
-            background: #ffffff;
-            color: #111827;
-            border-left: 6px solid #0f766e;
-            border-radius: 6px;
-            border: 1px solid #99f6e4;
-        }}
-        
-        .vocabulary-item strong {{
-            color: #0f172a;
-            display: block;
-            margin-bottom: 0.8rem;
-            font-size: 1.2em;
-            font-weight: 700;
-        }}
-        
-        .vocabulary-item p {{
-            color: #1f2937;
-            margin: 0.5rem 0 0 0;
-            font-size: 1.05em;
-            line-height: {line_spacing};
-            font-weight: 500;
-        }}
-        
-        /* Dark mode vocabulary cards */
-        @media (prefers-color-scheme: dark) {{
-            .vocabulary-item {{
-                background: #111827;
-                color: #ffffff;
-                border-left-color: #2dd4bf;
-                border-color: #0f766e;
-            }}
-            
-            .vocabulary-item strong {{
-                color: #ffffff;
-                text-shadow: 0 1px 2px rgba(0,0,0,0.5);
-            }}
-            
-            .vocabulary-item p {{
-                color: #e2e8f0;
-                text-shadow: 0 1px 1px rgba(0,0,0,0.3);
-            }}
-        }}
-        
-        /* Visual summary cards - high contrast */
-        .visual-summary {{
-            padding: 1.5rem;
-            background: #ffffff;
-            color: #111827;
-            border-left: 6px solid #7c3aed;
-            margin: 1.5rem 0;
-            border-radius: 6px;
-            border: 1px solid #ddd6fe;
-        }}
-        
-        .visual-summary h3 {{
-            color: #1f2937;
-            margin: 0 0 1rem 0;
-            font-size: 1.2em;
-            font-weight: 700;
-        }}
-        
-        .visual-summary p {{
-            color: #374151;
-            margin: 0.5rem 0;
-            font-size: 1.05em;
-            font-weight: 500;
-        }}
-        
-        /* Dark mode visual summary */
-        @media (prefers-color-scheme: dark) {{
-            .visual-summary {{
-                background: #111827;
-                color: #ffffff;
-                border-left-color: #a78bfa;
-                border-color: #6d28d9;
-            }}
-            
-            .visual-summary h3 {{
-                color: #ffffff;
-                text-shadow: 0 1px 2px rgba(0,0,0,0.5);
-            }}
-            
-            .visual-summary p {{
-                color: #f3f4f6;
-                text-shadow: 0 1px 1px rgba(0,0,0,0.3);
-            }}
-        }}
-        
-        /* Word explanation card */
-        .word-explanation {{
-            padding: 1.5rem;
-            background: #fff3e0;
-            border-left: 5px solid #f57c00;
-            border-radius: 4px;
-            margin: 1.5rem 0;
-            border: 1px solid #ffe0b2;
-        }}
-        
-        .word-explanation strong {{
-            color: #e65100;
-            font-size: 1.2em;
-        }}
-        
-        .word-explanation .meaning {{
-            color: #ef6c00;
-            font-weight: 600;
-            margin: 0.5rem 0;
-        }}
-        
-        .word-explanation .explanation {{
-            color: #e65100;
-            margin: 0.5rem 0;
-        }}
-        
-        .word-explanation .example {{
-            color: #bf360c;
-            font-style: italic;
-            margin: 0.5rem 0;
-        }}
-        
-        /* Dark mode word explanation */
-        @media (prefers-color-scheme: dark) {{
-            .word-explanation {{
-                background: #bf360c;
-                color: #ffe0b2;
-                border-left-color: #ffb74d;
-                border-color: #ff9800;
-            }}
-            
-            .word-explanation strong {{
-                color: #fff9c4;
-            }}
-            
-            .word-explanation .meaning {{
-                color: #ffcc80;
-            }}
-            
-            .word-explanation .explanation {{
-                color: #ffe0b2;
-            }}
-            
-            .word-explanation .example {{
-                color: #fff9c4;
-            }}
-        }}
-        
-        /* Buttons - high contrast */
-        .stButton > button {{
-            font-size: {font_size} !important;
-            padding: 0.8rem 1.6rem !important;
-            font-weight: 600 !important;
-            letter-spacing: 0.03em !important;
-        }}
-        
-        /* Input fields */
-        input, textarea, .stSelectbox, .stTextInput {{
-            font-size: {font_size} !important;
-            line-height: {line_spacing} !important;
-            padding: 0.8rem !important;
-        }}
-        
-        /* Radio buttons and selectors */
-        .stRadio > label, .stSelectbox > label, .stTextInput > label {{
-            font-size: {font_size} !important;
-            font-weight: 500 !important;
-            line-height: {line_spacing} !important;
-        }}
-        
-        /* Expander styling */
+
         .streamlit-expanderHeader {{
-            font-size: {font_size} !important;
+            font-size: {font_size}px !important;
             font-weight: 500 !important;
         }}
-        
-        /* Divider styling */
+
         hr {{
             margin: 2rem 0;
             border: none;
-            border-top: 2px solid #e0e0e0;
-        }}
-        
-        @media (prefers-color-scheme: dark) {{
-            hr {{
-                border-top-color: #404040;
-            }}
+            border-top: 2px solid {theme['border_color']};
         }}
         </style>
         """,
@@ -373,42 +163,8 @@ def apply_dyslexia_friendly_styles() -> None:
 
 
 def render_accessibility_settings() -> None:
-    """Render accessibility settings panel in sidebar."""
-    with st.sidebar:
-        st.divider()
-        st.markdown("### ⚙️ Accessibility Settings")
-        
-        st.session_state.font_size = st.radio(
-            "Font Size:",
-            options=["Small", "Medium", "Large", "Extra Large"],
-            index=["Small", "Medium", "Large", "Extra Large"].index(st.session_state.font_size),
-            key="font_size_selector",
-            horizontal=True,
-        )
-        
-        st.session_state.line_spacing = st.radio(
-            "Line Spacing:",
-            options=["Normal", "Relaxed", "Extra Relaxed"],
-            index=["Normal", "Relaxed", "Extra Relaxed"].index(st.session_state.line_spacing),
-            key="line_spacing_selector",
-            horizontal=True,
-        )
-        
-        st.session_state.reading_width = st.radio(
-            "Reading Width:",
-            options=["Narrow", "Medium", "Wide"],
-            index=["Narrow", "Medium", "Wide"].index(st.session_state.reading_width),
-            key="reading_width_selector",
-            horizontal=True,
-        )
-        
-        st.markdown("""
-        **Tips for comfortable reading:**
-        - **Extra Large** text with **Extra Relaxed** spacing is great for dyslexia
-        - **Narrow** width helps focus on fewer words at a time
-        - Use **Dark Mode** for better contrast at night
-        """)
-        st.divider()
+    """Deprecated: accessibility sidebar is now rendered through Prototype 2 components."""
+    pass
 
 
 def render_home() -> None:
@@ -545,40 +301,25 @@ def render_learning_modes() -> None:
     if not st.session_state.document_text:
         st.info("📤 Upload a document or image first to get started!")
         return
-    
+
     st.header("🎯 Choose Your Learning Mode")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("📖 Read", use_container_width=True, key="mode_read"):
-            st.session_state.current_mode = "Read"
-    with col2:
-        if st.button("🎵 Listen", use_container_width=True, key="mode_listen"):
-            st.session_state.current_mode = "Listen"
-    with col3:
-        if st.button("📊 Visual Learn", use_container_width=True, key="mode_visual"):
-            st.session_state.current_mode = "Visual Learn"
-    
+    initialize_learning_mode()
+    selected_mode = render_learning_mode_switcher()
     st.divider()
-    
-    # Render selected mode
-    if st.session_state.current_mode == "Read":
+
+    if selected_mode == "📖 Read":
         render_read_mode()
-    elif st.session_state.current_mode == "Listen":
+    elif selected_mode == "🔊 Listen":
         render_listen_mode()
-    elif st.session_state.current_mode == "Visual Learn":
+    elif selected_mode == "🧠 Visual Learn":
         render_visual_mode()
 
 
 def render_read_mode() -> None:
-    """Render Read mode with simplified notes and vocabulary."""
+    """Render Read mode with simplified notes, takeaways, and vocabulary."""
     st.subheader("📖 Read Mode")
-    
-    col1, col2 = st.columns(2)
-    
-    # Simplified Content
-    with col1:
-        st.markdown("### ✨ Simplified Notes")
+
+    with st.expander("✨ Simplified notes and reading experience", expanded=True):
         if st.button("Generate Simplified Version", key="gen_simplify"):
             with st.spinner("Simplifying text..."):
                 try:
@@ -587,11 +328,11 @@ def render_read_mode() -> None:
                     st.success("✅ Simplified content generated!")
                 except (SimplificationError, LLMRouterError) as exc:
                     show_user_error("Simplification could not be completed right now. Please try again.", exc)
-        
+
         if st.session_state.simplified_content:
-            st.markdown(st.session_state.simplified_content)
-            
-            # Download button
+            render_reading_mode(st.session_state.simplified_content)
+            render_key_takeaways(st.session_state.simplified_content)
+            render_vocabulary_panel(st.session_state.simplified_content)
             st.download_button(
                 label="⬇️ Download Simplified Text",
                 data=st.session_state.simplified_content,
@@ -599,16 +340,17 @@ def render_read_mode() -> None:
                 mime="text/plain",
                 key="download_simplified"
             )
-    
-    # Vocabulary
-    with col2:
-        st.markdown("### 🔤 Vocabulary List")
-        
-        # Word count selector
-        st.markdown("**How many words would you like to learn?**")
-        
+        else:
+            st.info("Generate a simplified version to view the dyslexia-friendly reading experience.")
+
+    st.divider()
+    st.markdown("### 🔤 Vocabulary Tools")
+    st.markdown("Use the backend vocabulary extractor to generate a custom study list.")
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
         word_choice = st.radio(
-            "Choose number of words:",
+            "How many words would you like to learn?",
             options=["5", "10", "20", "Custom"],
             index=(
                 ["5", "10", "20"].index(str(st.session_state.vocabulary_word_count))
@@ -618,7 +360,7 @@ def render_read_mode() -> None:
             horizontal=True,
             key="vocab_word_selector"
         )
-        
+
         if word_choice == "Custom":
             custom_count = st.number_input(
                 "Enter custom number:",
@@ -628,62 +370,59 @@ def render_read_mode() -> None:
                 step=1,
                 key="vocab_custom_input"
             )
-            
             st.session_state.vocabulary_word_count = custom_count
         else:
             st.session_state.vocabulary_word_count = int(word_choice)
-        
+
+    with col2:
         if st.button("Extract Difficult Words", key="gen_vocab"):
             with st.spinner("Extracting vocabulary..."):
                 try:
                     vocab = generate_vocabulary(
                         st.session_state.document_text,
-                        word_count=st.session_state.vocabulary_word_count
+                        word_count=st.session_state.vocabulary_word_count,
                     )
                     st.session_state.vocabulary = vocab
                     st.success(f"✅ Found {len(vocab)} difficult words!")
                 except (VocabularyError, LLMRouterError) as exc:
                     show_user_error("Vocabulary could not be extracted right now. Try again or use fewer words.", exc)
-        
-        if st.session_state.vocabulary:
-            st.markdown(f"**Found {len(st.session_state.vocabulary)} words:**")
-            for item in st.session_state.vocabulary:
-                st.markdown(
-                    f"<div class='vocabulary-item'>"
-                    f"<strong>{item.get('word', 'Unknown')}</strong>"
-                    f"<p>{item.get('meaning', 'No meaning provided')}</p>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-            
-            # Download vocabulary
-            import json
-            vocab_json = json.dumps(st.session_state.vocabulary, indent=2)
-            st.download_button(
-                label="⬇️ Download Vocabulary",
-                data=vocab_json,
-                file_name="vocabulary.json",
-                mime="application/json",
-                key="download_vocab"
+
+    if st.session_state.vocabulary:
+        st.markdown(f"**Found {len(st.session_state.vocabulary)} words:**")
+        for item in st.session_state.vocabulary:
+            st.markdown(
+                f"<div class='vocabulary-item'>"
+                f"<strong>{item.get('word', 'Unknown')}</strong>"
+                f"<p>{item.get('meaning', 'No meaning provided')}</p>"
+                f"</div>",
+                unsafe_allow_html=True,
             )
-    
-    # Custom Word Explorer Section
+        import json
+
+        vocab_json = json.dumps(st.session_state.vocabulary, indent=2)
+        st.download_button(
+            label="⬇️ Download Vocabulary",
+            data=vocab_json,
+            file_name="vocabulary.json",
+            mime="application/json",
+            key="download_vocab"
+        )
+
     st.divider()
     st.markdown("### 🔍 Custom Word Explorer")
     st.markdown("**Learn the meaning of any word - even if it's not in your document!**")
-    
+
     col_explorer1, col_explorer2 = st.columns([3, 1])
-    
     with col_explorer1:
         word_input = st.text_input(
             "Enter a word to learn about:",
             placeholder="e.g., photosynthesis, algorithm, mitochondria",
-            key="word_explorer_input"
+            key="word_explorer_input",
         )
-    
+
     with col_explorer2:
         explore_button = st.button("Explore 🔍", key="explore_word_btn")
-    
+
     if explore_button and word_input:
         with st.spinner(f"Learning about '{word_input}'..."):
             try:
@@ -692,7 +431,7 @@ def render_read_mode() -> None:
                 st.success("✅ Found explanation!")
             except (VocabularyError, LLMRouterError) as exc:
                 show_user_error("I could not explain that word right now. Please try another word.", exc)
-    
+
     if st.session_state.word_explanation:
         exp = st.session_state.word_explanation
         st.markdown(
@@ -702,7 +441,7 @@ def render_read_mode() -> None:
             f"<div class='explanation'><strong>📝 Explanation:</strong> {exp.get('explanation', '')}</div>"
             f"<div class='example'><strong>💡 Example:</strong> \"{exp.get('example', '')}\"</div>"
             f"</div>",
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
 
@@ -930,9 +669,10 @@ def render_chat_section() -> None:
 def main() -> None:
     """Run the Streamlit app."""
     initialize_session_state()
+    initialize_ui_preferences()
     apply_dyslexia_friendly_styles()
-    render_accessibility_settings()
-    
+    render_accessibility_sidebar()
+
     render_home()
     st.divider()
     render_upload_section()

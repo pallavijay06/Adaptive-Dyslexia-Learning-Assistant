@@ -1,0 +1,31 @@
+digraph conceptmap_2c158ddd {
+	fontname=Arial fontsize=18 label="The Photosynthesis Concept Map" labelloc=t margin=0.5 nodesep=0.6 pad=0.5 rankdir=TB ranksep=0.9
+	edge [arrowsize=0.9 color="#546e7a" fontname=Arial fontsize=10]
+	center [label=Photosynthesis color="#0f766e" fillcolor="#0f766e" fontcolor=white fontname=Arial fontsize=14 shape=box style="rounded,filled"]
+	concept0 [label=Photosynthesis color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept0 [label="connects to"]
+	concept1 [label="Sunlight Energy" color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept1 [label="connects to"]
+	concept2 [label="Water (from soil)" color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept2 [label="connects to"]
+	concept3 [label="Carbon Dioxide
+(from air)" color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept3 [label="connects to"]
+	concept4 [label="Leaves (main
+location)" color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept4 [label="connects to"]
+	concept5 [label="Chlorophyll (green
+pigment)" color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept5 [label="connects to"]
+	concept6 [label="Glucose (plant
+food)" color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept6 [label="connects to"]
+	concept7 [label="Oxygen
+(by-product)" color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept7 [label="connects to"]
+	concept8 [label="Food for Plants" color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept8 [label="connects to"]
+	concept9 [label="Oxygen for Living
+Organisms" color="#0891b2" fillcolor="#ecfeff" fontcolor="#111827" fontname=Arial fontsize=11 shape=note style=filled]
+	center -> concept9 [label="connects to"]
+}
