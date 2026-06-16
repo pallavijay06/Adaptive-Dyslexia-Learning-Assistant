@@ -1,138 +1,177 @@
-"""Session state management for Prototype 2 UI preferences.
+"""Session-state helpers for Prototype 2 accessibility preferences.
 
-Provides utilities for initializing and managing Streamlit session state,
-including user preferences for accessibility, reading modes, and audio settings.
+The functions in this module manage only reusable UI preferences for future
+components. They intentionally avoid upload, RAG, OCR, audio, and rendering
+state so Prototype 1 behavior remains isolated.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from typing import Any
+from typing import NotRequired, TypedDict
+
+import streamlit as st
 
 from components.ui_constants import (
-    DEFAULT_THEME,
+    CHARACTER_SPACING,
+    DEFAULT_CHARACTER_SPACING,
     DEFAULT_FONT_FAMILY,
     DEFAULT_FONT_SIZE,
-    DEFAULT_CHARACTER_SPACING,
-    DEFAULT_READING_SPACING,
-    DEFAULT_PLAYBACK_SPEED,
+    DEFAULT_LEARNING_MODE,
+    DEFAULT_THEME,
+    FONTS,
+    FONT_SIZES,
+    LEARNING_MODES,
+    THEMES,
 )
 
 
-@dataclass
-class AccessibilityPreferences:
-    """User accessibility preferences."""
+class UIPreferences(TypedDict):
+    """Complete accessibility preference values stored in session state."""
 
-    theme: str = DEFAULT_THEME
-    font_family: str = DEFAULT_FONT_FAMILY
-    font_size: str = DEFAULT_FONT_SIZE
-    character_spacing: str = DEFAULT_CHARACTER_SPACING
-    reading_spacing: str = DEFAULT_READING_SPACING
+    font_size: str
+    font_family: str
+    character_spacing: str
+    theme: str
 
 
-@dataclass
-class AudioPreferences:
-    """User audio playback preferences."""
+class UIPreferenceUpdates(TypedDict):
+    """Partial accessibility preference update payload."""
 
-    playback_speed: float = DEFAULT_PLAYBACK_SPEED
-    enable_auto_tts: bool = False
-    tts_voice: str = "default"  # TODO: Define available voices
-
-
-@dataclass
-class LearningPreferences:
-    """User learning mode preferences."""
-
-    active_mode: str = "read"  # "read", "listen", "visual"
-    show_vocabulary: bool = True
-    show_key_points: bool = True
+    font_size: NotRequired[str]
+    font_family: NotRequired[str]
+    character_spacing: NotRequired[str]
+    theme: NotRequired[str]
 
 
-def initialize_session_state() -> None:
-    """Initialize Streamlit session state with default UI preferences.
-    
-    TODO: Import streamlit and initialize st.session_state keys.
+_DEFAULT_UI_PREFERENCES: UIPreferences = {
+    "font_size": DEFAULT_FONT_SIZE,
+    "font_family": DEFAULT_FONT_FAMILY,
+    "character_spacing": DEFAULT_CHARACTER_SPACING,
+    "theme": DEFAULT_THEME,
+}
+
+
+def initialize_ui_preferences() -> None:
+    """Create missing accessibility preference keys in Streamlit session state.
+
+    Existing values are preserved when valid. Invalid or stale values are
+    repaired to defaults so downstream components can rely on known options.
     """
-    # TODO: Implement session state initialization
-    pass
+
+    for key, default_value in _DEFAULT_UI_PREFERENCES.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
+
+    _repair_invalid_preferences()
 
 
-def get_accessibility_preferences() -> AccessibilityPreferences:
-    """Retrieve current accessibility preferences from session state.
-    
+def get_ui_preferences() -> UIPreferences:
+    """Return current accessibility preferences from Streamlit session state.
+
     Returns:
-        AccessibilityPreferences: Current user accessibility settings.
-    
-    TODO: Load from st.session_state.
+        A typed dictionary containing ``font_size``, ``font_family``,
+        ``character_spacing``, and ``theme``.
     """
-    # TODO: Implement preference retrieval
-    return AccessibilityPreferences()
+
+    initialize_ui_preferences()
+    return {
+        "font_size": str(st.session_state.font_size),
+        "font_family": str(st.session_state.font_family),
+        "character_spacing": str(st.session_state.character_spacing),
+        "theme": str(st.session_state.theme),
+    }
 
 
-def set_accessibility_preferences(prefs: AccessibilityPreferences) -> None:
-    """Update accessibility preferences in session state.
-    
+def update_ui_preferences(**updates: str) -> UIPreferences:
+    """Update accessibility preferences and return the resulting values.
+
     Args:
-        prefs: New accessibility preferences.
-    
-    TODO: Save to st.session_state and persist if needed.
+        **updates: Any subset of ``font_size``, ``font_family``,
+            ``character_spacing``, and ``theme``.
+
+    Raises:
+        KeyError: If an unknown preference key is provided.
+        ValueError: If a preference value is not one of the configured options.
     """
-    # TODO: Implement preference saving
-    pass
+
+    initialize_ui_preferences()
+    _validate_update_keys(updates)
+    _validate_update_values(updates)
+
+    for key, value in updates.items():
+        st.session_state[key] = value
+
+    return get_ui_preferences()
 
 
-def get_audio_preferences() -> AudioPreferences:
-    """Retrieve current audio playback preferences from session state.
-    
-    Returns:
-        AudioPreferences: Current audio settings.
-    
-    TODO: Load from st.session_state.
-    """
-    # TODO: Implement preference retrieval
-    return AudioPreferences()
+def initialize_learning_mode() -> None:
+    """Create or repair the selected learning mode in Streamlit session state."""
+
+    if "learning_mode" not in st.session_state:
+        st.session_state.learning_mode = DEFAULT_LEARNING_MODE
+
+    if st.session_state.learning_mode not in LEARNING_MODES:
+        st.session_state.learning_mode = DEFAULT_LEARNING_MODE
 
 
-def set_audio_preferences(prefs: AudioPreferences) -> None:
-    """Update audio preferences in session state.
-    
+def get_learning_mode() -> str:
+    """Return the currently selected learning mode."""
+
+    initialize_learning_mode()
+    return str(st.session_state.learning_mode)
+
+
+def update_learning_mode(mode: str) -> str:
+    """Persist a selected learning mode and return the repaired value.
+
     Args:
-        prefs: New audio preferences.
-    
-    TODO: Save to st.session_state and persist if needed.
+        mode: One of the configured learning mode labels.
+
+    Raises:
+        ValueError: If ``mode`` is not configured in ``LEARNING_MODES``.
     """
-    # TODO: Implement preference saving
-    pass
+
+    if mode not in LEARNING_MODES:
+        raise ValueError(f"Invalid learning mode: {mode}")
+
+    st.session_state.learning_mode = mode
+    return get_learning_mode()
 
 
-def get_learning_preferences() -> LearningPreferences:
-    """Retrieve current learning mode preferences from session state.
-    
-    Returns:
-        LearningPreferences: Current learning mode settings.
-    
-    TODO: Load from st.session_state.
-    """
-    # TODO: Implement preference retrieval
-    return LearningPreferences()
+def _repair_invalid_preferences() -> None:
+    """Reset invalid session-state preference values to safe defaults."""
+
+    validators = {
+        "font_size": FONT_SIZES,
+        "font_family": FONTS,
+        "character_spacing": CHARACTER_SPACING,
+        "theme": THEMES,
+    }
+
+    for key, valid_values in validators.items():
+        if st.session_state[key] not in valid_values:
+            st.session_state[key] = _DEFAULT_UI_PREFERENCES[key]  # type: ignore[literal-required]
 
 
-def set_learning_preferences(prefs: LearningPreferences) -> None:
-    """Update learning mode preferences in session state.
-    
-    Args:
-        prefs: New learning preferences.
-    
-    TODO: Save to st.session_state and persist if needed.
-    """
-    # TODO: Implement preference saving
-    pass
+def _validate_update_keys(updates: dict[str, str]) -> None:
+    """Ensure only known preference keys are updated."""
+
+    unknown_keys = set(updates) - set(_DEFAULT_UI_PREFERENCES)
+    if unknown_keys:
+        unknown = ", ".join(sorted(unknown_keys))
+        raise KeyError(f"Unknown UI preference key(s): {unknown}")
 
 
-def reset_preferences_to_defaults() -> None:
-    """Reset all UI preferences to default values.
-    
-    TODO: Clear st.session_state preference keys.
-    """
-    # TODO: Implement preference reset
-    pass
+def _validate_update_values(updates: dict[str, str]) -> None:
+    """Ensure preference update values exist in centralized configuration."""
+
+    valid_options: dict[str, object] = {
+        "font_size": FONT_SIZES,
+        "font_family": FONTS,
+        "character_spacing": CHARACTER_SPACING,
+        "theme": THEMES,
+    }
+
+    for key, value in updates.items():
+        if value not in valid_options[key]:
+            raise ValueError(f"Invalid value for {key}: {value}")
