@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify, request
 
-from services.gemini_service import (
-    GeminiAPIError,
-    GeminiConfigurationError,
+from services.document_context import DocumentError, get_document_text
+from services.llm_router import (
+    LLMRouterError,
     extract_vocabulary,
     generate_quiz,
     simplify_document,
     summarize_document,
 )
-from services.document_context import DocumentError, get_document_text
 from backend.rag import ask_document
 
 
@@ -46,9 +45,7 @@ def chat() -> tuple[object, int]:
         return jsonify({"response": response}), 200
     except DocumentError as exc:
         return jsonify({"error": str(exc)}), 400
-    except GeminiConfigurationError as exc:
-        return jsonify({"error": str(exc)}), 500
-    except GeminiAPIError as exc:
+    except LLMRouterError as exc:
         return jsonify({"error": str(exc)}), 502
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -91,9 +88,7 @@ def _run_document_action(action) -> tuple[object, int]:
         return jsonify({"response": action(document_text)}), 200
     except DocumentError as exc:
         return jsonify({"error": str(exc)}), 400
-    except GeminiConfigurationError as exc:
-        return jsonify({"error": str(exc)}), 500
-    except GeminiAPIError as exc:
+    except LLMRouterError as exc:
         return jsonify({"error": str(exc)}), 502
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

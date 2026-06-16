@@ -10,15 +10,19 @@ from flask import Flask, jsonify
 
 from backend.chat_routes import chat_bp
 from backend.upload_routes import upload_bp
-from services.gemini_service import validate_gemini_startup
-
+from backend.learning_routes import learning_bp
 
 def create_app() -> Flask:
     """Create and configure the Flask app."""
+
     app = Flask(__name__)
+
     app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
+
+    # Register blueprints
     app.register_blueprint(chat_bp)
     app.register_blueprint(upload_bp)
+    app.register_blueprint(learning_bp)
 
     @app.get("/health")
     def health() -> tuple[object, int]:
@@ -32,5 +36,9 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    validate_gemini_startup()
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    print("[cHEAL] LLM provider order: OpenAI -> Gemini -> Ollama")
+    app.run(
+        host="127.0.0.1",
+        port=5000,
+        debug=True
+    )
