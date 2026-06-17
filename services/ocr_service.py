@@ -10,9 +10,10 @@ Supports:
 
 from __future__ import annotations
 
+import base64
 import os
 from pathlib import Path
-from typing import Any
+from urllib import response
 
 import cv2
 import numpy as np
@@ -30,114 +31,80 @@ class OCRPreprocessingError(OCRError):
 
 
 def extract_text_from_image(image_path: str) -> str:
-    """Extract text from an image using OCR with preprocessing and AI fallback.
-    
-    Args:
-        image_path: Path to image file
-        
-    Returns:
-        Extracted text
-        
-    Raises:
-        OCRError: If extraction fails
-    """
     image_path = Path(image_path)
+
     if not image_path.exists():
         raise OCRError(f"Image file not found: {image_path}")
-    
+
     try:
-        # Try direct OCR first
-        text = _extract_with_tesseract(image_path)
-        
-        # Check if text extraction was successful (more than just whitespace)
-        if text and text.strip():
-            # Quality check - if text seems very short relative to image, try with preprocessing
-            if len(text.strip()) < 50:
-                try:
-                    preprocessed_text = _extract_with_preprocessing(image_path)
-                    if len(preprocessed_text.strip()) > len(text.strip()):
-                        text = preprocessed_text
-                except OCRPreprocessingError:
-                    pass  # Fall back to original text
-        
-        # If OCR quality is poor, try Gemini Vision API
-        if not text or len(text.strip()) < 20:
-            try:
-                text = _extract_with_gemini_vision(image_path)
-            except (GeminiAPIError, GeminiConfigurationError) as exc:
-                # If Gemini also fails and we have some text, return it
-                if text and text.strip():
-                    return text
-                raise OCRError(f"Both Tesseract and Gemini Vision failed: {exc}") from exc
-        
-        return text or ""
-    
-    except OCRError:
-        raise
-    except Exception as exc:
-        raise OCRError(f"Unexpected error during OCR: {exc}") from exc
+        # Try Gemini Vision first
+        text = _extract_with_gemini_vision(image_path)
+
+        if text and len(text.strip()) > 10:
+            return text
+
+    except Exception as e:
+        print(f"Gemini OCR failed: {e}")
+
+    # Fallback to traditional OCR
+    try:
+        text = _extract_with_preprocessing(image_path)
+
+        if text:
+            return text
+
+    except Exception:
+        pass
+
+    return ""
 
 
-def extract_text_from_pdf_images(pdf_path: str) -> str:
-    """Extract text from scanned PDF by converting pages to images and running OCR.
-    
-    Args:
-        pdf_path: Path to PDF file
-        
-    Returns:
-        Concatenated text from all pages
-        
-    Raises:
-        OCRError: If PDF processing fails
+def _is_handwritten(image_path: Path) -> bool:
     """
-    try:
-        import pdf2image
-    except ImportError:
-        raise OCRError(
-            "pdf2image is not installed. Run: pip install pdf2image"
-        )
-    
-    try:
-        images = pdf2image.convert_from_path(pdf_path)
-        all_text = []
-        
-        for page_num, image in enumerate(images, 1):
-            try:
-                temp_image_path = f"/tmp/pdf_page_{page_num}.png"
-                image.save(temp_image_path)
-                page_text = extract_text_from_image(temp_image_path)
-                if page_text:
-                    all_text.append(page_text)
-                # Clean up temp file
-                try:
-                    os.remove(temp_image_path)
-                except:
-                    pass
-            except Exception as exc:
-                raise OCRError(f"Failed to process page {page_num}: {exc}") from exc
-        
-        return "\n\n---PAGE BREAK---\n\n".join(all_text)
-    
-    except OCRError:
-        raise
-    except Exception as exc:
-        raise OCRError(f"PDF to image conversion failed: {exc}") from exc
+    Rough handwriting detector.
 
+    Handwritten notes generally contain:
+    - more irregular edges
+    - varying stroke widths
+    - less alignment than printed text
+    """
+
+    try:
+        img = cv2.imread(str(image_path))
+
+        if img is None:
+            return False
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        edges = cv2.Canny(gray, 50, 150)
+
+        edge_density = np.sum(edges > 0) / edges.size
+
+        return edge_density > 0.12
+
+    except Exception:
+        return False
+    
 
 def _extract_with_tesseract(image_path: Path) -> str:
-    """Extract text directly using Tesseract OCR."""
     try:
         import pytesseract
-    except ImportError:
-        raise OCRError("pytesseract is not installed. Run: pip install pytesseract")
-    
-    try:
+
         image = Image.open(image_path)
-        text = pytesseract.image_to_string(image)
+
+        custom_config = r'--oem 3 --psm 6'
+
+        text = pytesseract.image_to_string(
+            image,
+            config=custom_config,
+            lang='eng'
+        )
+
         return text or ""
+
     except Exception as exc:
         raise OCRError(f"Tesseract extraction failed: {exc}") from exc
-
 
 def _extract_with_preprocessing(image_path: Path) -> str:
     """Extract text from preprocessed image (denoised, thresholded, etc)."""
@@ -168,10 +135,10 @@ def _extract_with_preprocessing(image_path: Path) -> str:
         )
         
         # Morph operations to clean up noise
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
         cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel, iterations=1)
-        
+        cleaned = cv2.resize(cleaned,None,fx=2,fy=2,interpolation=cv2.INTER_CUBIC)
         # Save preprocessed image temporarily
         temp_preprocessed = str(image_path.parent / f"_preprocessed_{image_path.name}")
         cv2.imwrite(temp_preprocessed, cleaned)
@@ -219,12 +186,25 @@ def _extract_with_gemini_vision(image_path: Path) -> str:
     else:
         media_type = "image/jpeg"  # Default
     
-    prompt = (
-        "Extract ALL text from this image. "
-        "Return only the extracted text, nothing else. "
-        "Preserve formatting and structure as much as possible."
-    )
-    
+    prompt = """
+You are an OCR engine specialized in handwritten student notes.
+
+Extract every visible word from the image.
+
+Requirements:
+- Preserve headings.
+- Preserve bullet points.
+- Preserve numbered lists.
+- Preserve equations and formulas.
+- Preserve line breaks.
+- Do not summarize.
+- Do not explain.
+- Do not correct grammar.
+- Return only the extracted text.
+
+Even if handwriting is messy, make the most likely interpretation.
+"""
+
     try:
         from google.genai import types
         from services.gemini_service import _get_client, _get_model_name, _extract_response_text
@@ -249,7 +229,8 @@ def _extract_with_gemini_vision(image_path: Path) -> str:
                 ),
             ],
         )
-        
+        print("GEMINI OCR OUTPUT:")
+        print(_extract_response_text(response))
         return _extract_response_text(response)
     except Exception as exc:
         raise GeminiAPIError(f"Gemini Vision extraction failed: {exc}") from exc
