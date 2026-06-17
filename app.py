@@ -4,12 +4,11 @@ Features:
 - Document Upload (PDF, PPTX, DOCX)
 - Image OCR (PNG, JPG, GIF, WebP)
 - Simplified Content Generation
-- Vocabulary Extraction with Custom Count
 - Text-to-Speech Audio (with natural text cleaning)
 - Visual Learning (Flowcharts, Concept Maps, Mermaid Diagrams)
-- Custom Word Explorer
 - Multi-mode Learning (Read, Listen, Visual Learn)
 - RAG-based Chat with Documents
+- Interactive vocabulary learning inline with reading
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ from components.reading.reading_view import (
     render_learning_mode_switcher,
     render_read_mode as render_reading_mode,
 )
-from components.reading.vocabulary_popup import render_vocabulary_panel
 from components.session_state import (
     get_ui_preferences,
     initialize_learning_mode,
@@ -45,7 +43,7 @@ from services.gemini_service import (
 from services.llm_router import generate_answer, LLMRouterError
 from services.ocr_service import extract_text_from_image, OCRError
 from services.simplification_service import simplify_text, SimplificationError
-from services.vocabulary_service import generate_vocabulary, VocabularyError, explain_word
+from services.vocabulary_service import explain_word, VocabularyError
 from services.tts_service import generate_audio, TTSError
 from services.visual_service import generate_visual_content, VisualError
 
@@ -71,22 +69,21 @@ def initialize_session_state() -> None:
 
         # Generated content
         "simplified_content": None,
-        "vocabulary": None,
         "visual_content": None,
         "audio_file": None,
-        "word_explanation": None,
-        "reading_difficult_words": [],
-
-        # Settings
-        "vocabulary_word_count": 10,
-        "custom_word_input": "",
 
         # Chat
         "chat_history": [],
+
+        # Caching
+        "vocab_explain_cache": {},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+
 
 
 def show_user_error(message: str, exc: Exception | None = None) -> None:
@@ -332,7 +329,6 @@ def render_read_mode() -> None:
         if st.session_state.simplified_content:
             render_reading_mode(st.session_state.simplified_content)
             render_key_takeaways(st.session_state.simplified_content)
-            render_vocabulary_panel(st.session_state.simplified_content)
             st.download_button(
                 label="⬇️ Download Simplified Text",
                 data=st.session_state.simplified_content,
@@ -341,108 +337,8 @@ def render_read_mode() -> None:
                 key="download_simplified"
             )
         else:
-            st.info("Generate a simplified version to view the dyslexia-friendly reading experience.")
+            st.info("Generate a simplified version to view the dyslexia-friendly reading experience. Important words will be highlighted—click them to learn meanings!")
 
-    st.divider()
-    st.markdown("### 🔤 Vocabulary Tools")
-    st.markdown("Use the backend vocabulary extractor to generate a custom study list.")
-
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        word_choice = st.radio(
-            "How many words would you like to learn?",
-            options=["5", "10", "20", "Custom"],
-            index=(
-                ["5", "10", "20"].index(str(st.session_state.vocabulary_word_count))
-                if str(st.session_state.vocabulary_word_count) in ["5", "10", "20"]
-                else 3
-            ),
-            horizontal=True,
-            key="vocab_word_selector"
-        )
-
-        if word_choice == "Custom":
-            custom_count = st.number_input(
-                "Enter custom number:",
-                min_value=1,
-                max_value=100,
-                value=10,
-                step=1,
-                key="vocab_custom_input"
-            )
-            st.session_state.vocabulary_word_count = custom_count
-        else:
-            st.session_state.vocabulary_word_count = int(word_choice)
-
-    with col2:
-        if st.button("Extract Difficult Words", key="gen_vocab"):
-            with st.spinner("Extracting vocabulary..."):
-                try:
-                    vocab = generate_vocabulary(
-                        st.session_state.document_text,
-                        word_count=st.session_state.vocabulary_word_count,
-                    )
-                    st.session_state.vocabulary = vocab
-                    st.success(f"✅ Found {len(vocab)} difficult words!")
-                except (VocabularyError, LLMRouterError) as exc:
-                    show_user_error("Vocabulary could not be extracted right now. Try again or use fewer words.", exc)
-
-    if st.session_state.vocabulary:
-        st.markdown(f"**Found {len(st.session_state.vocabulary)} words:**")
-        for item in st.session_state.vocabulary:
-            st.markdown(
-                f"<div class='vocabulary-item'>"
-                f"<strong>{item.get('word', 'Unknown')}</strong>"
-                f"<p>{item.get('meaning', 'No meaning provided')}</p>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        import json
-
-        vocab_json = json.dumps(st.session_state.vocabulary, indent=2)
-        st.download_button(
-            label="⬇️ Download Vocabulary",
-            data=vocab_json,
-            file_name="vocabulary.json",
-            mime="application/json",
-            key="download_vocab"
-        )
-
-    st.divider()
-    st.markdown("### 🔍 Custom Word Explorer")
-    st.markdown("**Learn the meaning of any word - even if it's not in your document!**")
-
-    col_explorer1, col_explorer2 = st.columns([3, 1])
-    with col_explorer1:
-        word_input = st.text_input(
-            "Enter a word to learn about:",
-            placeholder="e.g., photosynthesis, algorithm, mitochondria",
-            key="word_explorer_input",
-        )
-
-    with col_explorer2:
-        explore_button = st.button("Explore 🔍", key="explore_word_btn")
-
-    if explore_button and word_input:
-        with st.spinner(f"Learning about '{word_input}'..."):
-            try:
-                explanation = explain_word(word_input)
-                st.session_state.word_explanation = explanation
-                st.success("✅ Found explanation!")
-            except (VocabularyError, LLMRouterError) as exc:
-                show_user_error("I could not explain that word right now. Please try another word.", exc)
-
-    if st.session_state.word_explanation:
-        exp = st.session_state.word_explanation
-        st.markdown(
-            f"<div class='word-explanation'>"
-            f"<strong>{exp.get('word', 'Unknown')}</strong><br><br>"
-            f"<div class='meaning'><strong>📖 Meaning:</strong> {exp.get('meaning', '')}</div>"
-            f"<div class='explanation'><strong>📝 Explanation:</strong> {exp.get('explanation', '')}</div>"
-            f"<div class='example'><strong>💡 Example:</strong> \"{exp.get('example', '')}\"</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
 
 
 def render_listen_mode() -> None:
@@ -512,109 +408,186 @@ def render_listen_mode() -> None:
 
 
 def render_visual_mode() -> None:
-    """Render Visual Learn mode with actual PNG diagrams and visual content.
+    """Render Visual Learn mode with three educational visual types.
     
-    Displays generated educational diagrams as images with supporting information.
+    Generates and displays:
+    1. Educational Illustration - emoji-based learning flowchart
+    2. Process Flowchart - step-by-step process diagram
+    3. Concept Summary - visual summary card
     """
     st.subheader("📊 Visual Learn Mode")
     
-    st.markdown("**See your content as professional educational diagrams!**")
-    st.info("📈 Diagrams are generated as PNG images for clarity and accessibility.")
+    st.markdown("**Transform your learning into beautiful educational visuals!**")
+    st.markdown(
+        "Three visual types help you learn better:\n"
+        "• 📚 **Educational Illustration** - Visual step-by-step guide\n"
+        "• 🔄 **Process Flowchart** - Step-by-step process diagram\n"
+        "• 🎯 **Concept Summary** - Key inputs, outputs, and components"
+    )
     
-    if st.button("🎨 Generate Visual Diagram", type="primary", key="gen_visual"):
-        with st.spinner("Creating visual diagram..."):
+    # Get UI preferences for theme
+    preferences = get_ui_preferences()
+    theme = preferences.get("theme", "Light").lower().replace(" ", "_")
+    
+    # Theme mapping to educational visuals theme names
+    theme_mapping = {
+        "light": "light",
+        "dark": "dark",
+        "cream": "dyslexia_cream",
+        "yellow": "dyslexia_yellow",
+    }
+    visual_theme = theme_mapping.get(theme, "light")
+    
+    if st.button("🎨 Generate Educational Visuals", type="primary", key="gen_visual_edu"):
+        with st.spinner("Creating three educational visuals..."):
             try:
-                visual = generate_visual_content(st.session_state.document_text)
+                visual = generate_visual_content(st.session_state.document_text, theme=visual_theme)
                 st.session_state.visual_content = visual
-                st.success("✅ Visual diagram generated!")
+                st.success("✅ Three educational visuals created!")
             except (VisualError, LLMRouterError) as exc:
-                show_user_error("Visual learning could not create a diagram right now. Please try again.", exc)
+                show_user_error("Could not create educational visuals right now. Please try again.", exc)
     
     if st.session_state.visual_content:
         visual = st.session_state.visual_content
         
-        # Header with title and metadata
-        st.markdown(
-            f"<div class='visual-summary'>"
-            f"<h3>{visual.get('title', 'Visual Summary')}</h3>"
-            f"<p><strong>Type:</strong> {visual.get('type', 'flowchart').replace('_', ' ').title()}</p>"
-            f"<p><strong>Description:</strong> {visual.get('description', '')}</p>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+        # Header with topic and description
+        st.markdown(f"## 🎓 {visual.get('title', 'Learning Visuals')}")
+        st.markdown(f"**Topic:** {visual.get('topic', 'General').title()}")
+        if visual.get('description'):
+            st.markdown(f"*{visual.get('description')}*")
         
-        # Display diagram image
-        diagram_path = visual.get('diagram_image_path', '')
-        if diagram_path and os.path.exists(diagram_path):
-            st.markdown("### 📈 Educational Diagram")
-            try:
-                image = Image.open(diagram_path)
-                st.image(image, use_container_width=True, caption=visual.get('title', 'Diagram'))
-            except Exception as exc:
-                logger.exception("Could not display generated diagram.")
-                st.warning("The diagram was created, but it could not be displayed here.")
-        else:
-            st.info("Diagram image not available, showing structure instead.")
-        
-        # Display structured content
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            nodes = visual.get('nodes', [])
-            if nodes:
-                st.markdown("### 🔹 Key Concepts")
-                for node in nodes:
-                    st.markdown(f"• {node}")
-        
-        with col2:
-            edges = visual.get('edges', [])
-            if edges:
-                st.markdown("### 🔗 Connections")
-                for source, target in edges:
-                    st.markdown(f"• {source} → {target}")
-        
-        # Branches for mind maps
-        branches = visual.get('branches', {})
-        if branches:
-            st.markdown("### 🌳 Mind Map Branches")
-            for branch_name, items in branches.items():
-                with st.expander(f"📌 {branch_name}"):
-                    for item in items:
-                        st.markdown(f"• {item}")
-        
-        # Download options
         st.divider()
-        col_dl1, col_dl2, col_dl3 = st.columns(3)
         
-        # Download diagram image
-        if diagram_path and os.path.exists(diagram_path):
-            with col_dl1:
-                with open(diagram_path, "rb") as img_file:
+        # 1. EDUCATIONAL ILLUSTRATION
+        st.markdown("### 📚 Educational Illustration")
+        st.markdown("*A visual step-by-step guide to understanding the concept*")
+        
+        illustration_path = visual.get('illustration_path', '')
+        if illustration_path and os.path.exists(illustration_path):
+            try:
+                image = Image.open(illustration_path)
+                st.image(image, use_container_width=True, caption="Educational Learning Flowchart")
+                
+                # Download button for illustration
+                with open(illustration_path, "rb") as img_file:
                     st.download_button(
-                        label="⬇️ Download Diagram",
+                        label="⬇️ Download Illustration",
                         data=img_file.read(),
-                        file_name=f"{visual.get('title', 'diagram')}.png",
+                        file_name="educational_illustration.png",
                         mime="image/png",
-                        key="download_diagram_image"
+                        key="download_illustration"
                     )
+            except Exception as exc:
+                logger.exception("Could not display educational illustration.")
+                st.warning("Illustration could not be displayed.")
+        else:
+            st.info("Illustration not available.")
         
-        # Download structured data
-        with col_dl2:
-            import json
-            # Remove image path from exported JSON
-            export_data = {k: v for k, v in visual.items() if k != 'diagram_image_path'}
-            visual_json = json.dumps(export_data, indent=2)
-            st.download_button(
-                label="⬇️ Download Structure",
-                data=visual_json,
-                file_name="visual_structure.json",
-                mime="application/json",
-                key="download_visual_structure"
-            )
+        st.divider()
         
-        # Full export
-        with col_dl3:
-            st.markdown("")  # Spacer for alignment
+        # 2. PROCESS FLOWCHART
+        st.markdown("### 🔄 Process Flowchart")
+        st.markdown("*A structured diagram showing the step-by-step process*")
+        
+        flowchart_path = visual.get('flowchart_path', '')
+        if flowchart_path and os.path.exists(flowchart_path):
+            try:
+                image = Image.open(flowchart_path)
+                st.image(image, use_container_width=True, caption="Process Flowchart")
+                
+                # Download button for flowchart
+                with open(flowchart_path, "rb") as img_file:
+                    st.download_button(
+                        label="⬇️ Download Flowchart",
+                        data=img_file.read(),
+                        file_name="process_flowchart.png",
+                        mime="image/png",
+                        key="download_flowchart"
+                    )
+            except Exception as exc:
+                logger.exception("Could not display process flowchart.")
+                st.warning("Flowchart could not be displayed.")
+        else:
+            st.info("Flowchart not available.")
+        
+        st.divider()
+        
+        # 3. CONCEPT SUMMARY
+        st.markdown("### 🎯 Concept Summary")
+        st.markdown("*A visual summary of inputs, outputs, and key components*")
+        
+        summary_path = visual.get('summary_path', '')
+        if summary_path and os.path.exists(summary_path):
+            try:
+                image = Image.open(summary_path)
+                st.image(image, use_container_width=True, caption="Concept Summary Card")
+                
+                # Download button for summary
+                with open(summary_path, "rb") as img_file:
+                    st.download_button(
+                        label="⬇️ Download Summary",
+                        data=img_file.read(),
+                        file_name="concept_summary.png",
+                        mime="image/png",
+                        key="download_summary"
+                    )
+            except Exception as exc:
+                logger.exception("Could not display concept summary.")
+                st.warning("Summary could not be displayed.")
+        else:
+            st.info("Summary not available.")
+        
+        st.divider()
+        
+        # Display extracted structure
+        structure = visual.get('structure', {})
+        if structure:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                steps = structure.get('steps', [])
+                if steps:
+                    st.markdown("#### 📍 Process Steps")
+                    for i, step in enumerate(steps, 1):
+                        st.markdown(f"{i}. {step}")
+                
+                inputs = structure.get('inputs', [])
+                if inputs:
+                    st.markdown("#### 📥 Inputs/Resources")
+                    for input_item in inputs:
+                        st.markdown(f"• {input_item}")
+            
+            with col2:
+                outputs = structure.get('outputs', [])
+                if outputs:
+                    st.markdown("#### 📤 Outputs/Results")
+                    for output_item in outputs:
+                        st.markdown(f"• {output_item}")
+                
+                key_comp = structure.get('key_component', '')
+                if key_comp:
+                    st.markdown("#### ⚙️ Key Component")
+                    st.info(f"**{key_comp}**")
+        
+        st.divider()
+        
+        # Download all visuals as JSON
+        import json
+        st.markdown("#### 💾 Export Options")
+        export_data = {
+            "topic": visual.get('topic'),
+            "title": visual.get('title'),
+            "description": visual.get('description'),
+            "structure": visual.get('structure', {}),
+        }
+        visual_json = json.dumps(export_data, indent=2)
+        st.download_button(
+            label="⬇️ Download All Data as JSON",
+            data=visual_json,
+            file_name="visual_learning_data.json",
+            mime="application/json",
+            key="download_all_visuals"
+        )
 
 
 def render_chat_section() -> None:
@@ -666,6 +639,96 @@ def render_chat_section() -> None:
     st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
 
+def render_word_explorer() -> None:
+    """Render a standalone word explorer for learning any word's meaning.
+    
+    This feature works independently—no document or vocabulary generation required.
+    Uses explain_word() backend with session caching to avoid repeated LLM calls.
+    """
+    st.header("🔍 Word Explorer")
+    st.markdown("**Learn the meaning of any word—even if it's not in your document!**")
+    
+    # Initialize session state for word exploration
+    if "word_explorer_input" not in st.session_state:
+        st.session_state.word_explorer_input = ""
+    if "word_explorer_result" not in st.session_state:
+        st.session_state.word_explorer_result = None
+    
+    # Input layout: text field and button side-by-side
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        word_input = st.text_input(
+            "Enter a word to explore:",
+            placeholder="e.g., photosynthesis, algorithm, mitochondria",
+            key="word_explorer_input_field",
+            help="Type any word you'd like to learn about."
+        )
+    
+    with col2:
+        explore_clicked = st.button("Explore 🔍", type="primary", key="word_explorer_btn")
+    
+    # Handle exploration
+    if explore_clicked:
+        if not word_input or not word_input.strip():
+            st.error("🚫 Please enter a word.")
+        else:
+            with st.spinner(f"Looking up '{word_input.strip()}'..."):
+                try:
+                    # Check cache first
+                    cache = st.session_state.get("vocab_explain_cache", {})
+                    cache_key = word_input.strip().lower()
+                    
+                    if cache_key in cache:
+                        explanation = cache[cache_key]
+                    else:
+                        # Fetch from backend
+                        explanation = explain_word(word_input.strip())
+                        cache[cache_key] = explanation
+                        st.session_state["vocab_explain_cache"] = cache
+                    
+                    st.session_state.word_explorer_result = explanation
+                    st.success("✅ Explanation found!")
+                    
+                except VocabularyError as exc:
+                    st.error("❌ Unable to explain this word right now. Please try another word.")
+                    logger.warning("Word exploration failed for '%s': %s", word_input, exc)
+                except LLMRouterError as exc:
+                    st.error("❌ AI service temporarily unavailable. Please try again.")
+                    logger.warning("LLM routing failed for word exploration: %s", exc)
+                except Exception as exc:
+                    st.error("❌ Something went wrong. Please try again.")
+                    logger.exception("Unexpected error during word exploration")
+    
+    # Display result if available
+    if st.session_state.word_explorer_result:
+        exp = st.session_state.word_explorer_result
+        
+        from components.ui_constants import CHARACTER_SPACING, FONT_SIZES, THEMES
+        preferences = get_ui_preferences()
+        theme = THEMES[preferences["theme"]]
+        font_size = FONT_SIZES[preferences["font_size"]]
+        character_spacing = CHARACTER_SPACING[preferences["character_spacing"]]
+        
+        # Simple accent color logic
+        accent_color = "#93C5FD" if theme["background_color"] == "#121826" else "#1D4ED8"
+        
+        html_result = f"""
+        <div style="margin-top: 1rem; padding: 1rem; background-color: {theme['secondary_background']}; 
+                    border: 1px solid {theme['border_color']}; border-radius: 8px; font-size: {font_size}px; 
+                    line-height: 1.8; letter-spacing: {character_spacing};">
+            <div style="display: inline-block; background-color: {accent_color}; color: {theme['background_color']}; 
+                        padding: 0.5rem 0.75rem; border-radius: 6px; font-weight: 800; margin-bottom: 0.9rem;">
+                {exp.get('word', 'Unknown').capitalize()}
+            </div>
+            <div style="margin-top: 0.75rem;"><strong>📖 Meaning:</strong> {exp.get('meaning', '')}</div>
+            <div style="margin-top: 0.5rem;"><strong>📝 Explanation:</strong> {exp.get('explanation', '')}</div>
+            <div style="margin-top: 0.5rem;"><strong>💡 Example:</strong> \"{exp.get('example', '')}</strong></div>
+        </div>
+        """
+        st.markdown(html_result, unsafe_allow_html=True)
+
+
 def main() -> None:
     """Run the Streamlit app."""
     initialize_session_state()
@@ -676,6 +739,8 @@ def main() -> None:
     render_home()
     st.divider()
     render_upload_section()
+    st.divider()
+    render_word_explorer()
     st.divider()
     render_learning_modes()
     st.divider()

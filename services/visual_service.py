@@ -1,4 +1,10 @@
-"""Visual learning generator for flowcharts, concept maps, and diagrams."""
+"""Educational visual learning generator - redesigned for true learning visuals.
+
+Generates three types of educational visuals:
+1. Educational Illustration (emoji-based learning flowchart)
+2. Process Flowchart (step-by-step process diagram)
+3. Concept Summary (visual summary of inputs/outputs/key concepts)
+"""
 
 from __future__ import annotations
 
@@ -7,13 +13,11 @@ import logging
 import re
 from typing import Any
 
-from services.diagram_generator import (
-    generate_flowchart_diagram,
-    generate_concept_map,
-    generate_process_diagram,
-    generate_mind_map,
-    DiagramGenerationError,
-    cleanup_old_diagrams,
+from services.educational_visuals import (
+    create_educational_illustration,
+    create_process_flowchart,
+    create_concept_summary,
+    detect_topic,
 )
 from services.llm_router import generate_content, LLMRouterError
 from services.ollama_service import clean_ollama_response
@@ -25,20 +29,26 @@ class VisualError(RuntimeError):
     """Raised when visual content generation fails."""
 
 
-def generate_visual_content(text: str) -> dict[str, Any]:
-    """Generate visual learning structure with PNG diagrams.
+def generate_visual_content(text: str, theme: str = "light") -> dict[str, Any]:
+    """Generate three types of educational visual learning content.
     
-    Creates structured educational content with:
-    - Diagram type (flowchart, concept_map, process, mind_map)
-    - PNG image file path
-    - Node and edge structure
-    - Educational summary
+    Creates:
+    1. Educational Illustration - emoji-based learning flowchart
+    2. Process Flowchart - styled step-by-step diagram
+    3. Concept Summary - visual card with inputs/outputs/key concepts
     
     Args:
         text: Content to visualize
+        theme: Color theme (light, dark, dyslexia_cream, dyslexia_yellow)
         
     Returns:
-        Dict with diagram_image_path, nodes, edges, and description
+        Dict with:
+        - topic: Detected topic
+        - illustration_path: Path to illustration PNG
+        - flowchart_path: Path to flowchart PNG
+        - summary_path: Path to concept summary PNG
+        - structure: Extracted concepts, steps, inputs, outputs
+        - description: Generated summary
         
     Raises:
         VisualError: If generation fails
@@ -46,256 +56,240 @@ def generate_visual_content(text: str) -> dict[str, Any]:
     if not text or not text.strip():
         raise VisualError("Text cannot be empty.")
     
-    # First, get structured content from AI
-    prompt = (
-        "Convert this content into a visual learning structure.\n\n"
-        "Return ONLY valid JSON (no markdown, no code blocks).\n\n"
-        "Format:\n"
-        "{\n"
-        '  "title": "Topic Name",\n'
-        '  "type": "flowchart or concept_map or process or mind_map",\n'
-        '  "central_concept": "Main concept (for concept maps)",\n'
-        '  "nodes": ["Node 1", "Node 2", "Node 3", ...],\n'
-        '  "edges": [["source1", "target1"], ["source2", "target2"], ...],\n'
-        '  "branches": {"Main Branch 1": ["Sub 1", "Sub 2"], ...},\n'
-        '  "description": "Brief description of the concept"\n'
-        "}\n\n"
-        "Rules:\n"
-        "- title: Clear, engaging title\n"
-        "- type: One of: flowchart, concept_map, process, mind_map\n"
-        "- Use educational diagrams only: flowcharts, concept maps, or process diagrams\n"
-        "- Do not create network graphs or abstract graph diagrams\n"
-        "- central_concept: Main topic (required for concept_map, mind_map)\n"
-        "- nodes: 4-12 key concepts or steps\n"
-        "- edges: List of connections [[source, target], ...]\n"
-        "- branches: For mind maps - main topics with subtopics\n"
-        "- description: One sentence summary\n"
-        "- Return ONLY JSON, no extra text\n\n"
-        f"Content:\n{text.strip()}"
-    )
-    
     try:
-        try:
-            response = generate_content(prompt)
-            structured_data = _parse_visual_json(response)
-        except Exception as exc:
-            logger.exception("Visual JSON generation failed. Using local fallback.")
-            structured_data = _fallback_visual_structure(text, exc)
+        # Step 1: Detect topic
+        topic = detect_topic(text)
         
-        # Generate PNG diagram
-        diagram_path = _generate_png_diagram(structured_data)
+        # Step 2: Extract structure from AI
+        structure = _extract_visual_structure(text)
         
-        # Add image path to response
-        structured_data["diagram_image_path"] = diagram_path
+        # Step 3: Generate three educational visuals
+        illustration_path = _generate_illustration(
+            topic, 
+            structure.get("steps", []), 
+            theme
+        )
         
-        # Clean up old diagrams periodically
-        cleanup_old_diagrams(keep_count=30)
+        flowchart_path = _generate_flowchart(
+            structure.get("title", "Process"), 
+            structure.get("steps", []), 
+            theme
+        )
         
-        return structured_data
+        summary_path = _generate_summary(
+            structure.get("title", "Concept"),
+            structure.get("inputs", []),
+            structure.get("outputs", []),
+            structure.get("key_component", ""),
+            theme
+        )
+        
+        return {
+            "topic": topic,
+            "title": structure.get("title", "Visual Learning"),
+            "description": structure.get("description", ""),
+            "illustration_path": illustration_path,
+            "flowchart_path": flowchart_path,
+            "summary_path": summary_path,
+            "structure": structure,
+        }
         
     except VisualError:
         raise
     except Exception as exc:
-        raise VisualError(f"Visual content generation failed: {exc}") from exc
+        logger.exception("Visual content generation failed")
+        raise VisualError(f"Failed to generate educational visuals: {exc}") from exc
 
 
-def _parse_visual_json(response: str) -> dict[str, Any]:
-    """Safely parse visual content JSON from AI response.
-    
-    Handles:
-    - JSON in markdown code blocks
-    - Extra whitespace
-    - Malformed JSON
-    - Missing fields (provides defaults)
+def _extract_visual_structure(text: str) -> dict[str, Any]:
+    """Extract visual structure (concepts, steps, inputs, outputs) from text.
     
     Args:
-        response: Raw response from AI
+        text: Content to analyze
         
     Returns:
-        Validated visual content dict
-        
-    Raises:
-        VisualError: If JSON cannot be parsed
+        Dict with title, description, steps, inputs, outputs, key_component
     """
-    if not response or not response.strip():
-        raise VisualError("Empty response from visual generator.")
+    prompt = (
+        "Analyze this educational content and extract a visual learning structure.\n\n"
+        "Return ONLY valid JSON (no markdown, no code blocks).\n\n"
+        "Format:\n"
+        "{\n"
+        '  "title": "Topic Title",\n'
+        '  "description": "One sentence summary",\n'
+        '  "steps": ["Step 1", "Step 2", "Step 3", "Step 4", "Step 5"],\n'
+        '  "inputs": ["Input 1", "Input 2", "Input 3"],\n'
+        '  "outputs": ["Output 1", "Output 2", "Output 3"],\n'
+        '  "key_component": "Most important component or process"\n'
+        "}\n\n"
+        "Rules:\n"
+        "- title: Clear, engaging topic (4-8 words)\n"
+        "- description: Single sentence explaining the concept\n"
+        "- steps: 4-6 sequential steps in the process (clear, educational)\n"
+        "- inputs: 2-4 main inputs/resources/raw materials\n"
+        "- outputs: 2-4 main outputs/products/results\n"
+        "- key_component: The central process or most important component\n"
+        "- Use simple, student-friendly language\n"
+        "- Return ONLY JSON, no extra text\n\n"
+        f"Content:\n{text.strip()[:2000]}"
+    )
     
+    try:
+        response = generate_content(prompt)
+        structure = _parse_json_response(response)
+        
+        # Validate structure
+        if not structure.get("steps"):
+            structure["steps"] = _fallback_steps_from_text(text)
+        if not structure.get("inputs"):
+            structure["inputs"] = ["Input/Resource 1", "Input/Resource 2"]
+        if not structure.get("outputs"):
+            structure["outputs"] = ["Output/Result 1", "Output/Result 2"]
+        if not structure.get("title"):
+            structure["title"] = "Learning Concept"
+            
+        return structure
+        
+    except Exception as exc:
+        logger.warning("Structure extraction failed, using fallback: %s", exc)
+        return _fallback_visual_structure(text)
+
+
+def _parse_json_response(response: str) -> dict[str, Any]:
+    """Safely parse JSON from AI response."""
+    if not response or not response.strip():
+        return {}
+    
+    # Clean response
     cleaned = clean_ollama_response(response)
     cleaned = re.sub(r'```(?:json)?\s*([\s\S]*?)```', r'\1', cleaned).strip()
     
-    # Try to find JSON object
+    # Extract JSON
     if "{" not in cleaned:
-        raise VisualError("Response does not contain a JSON object.")
+        return {}
     
-    # Extract JSON from response (in case there's extra text)
     start_idx = cleaned.find("{")
     end_idx = cleaned.rfind("}")
     
     if start_idx == -1 or end_idx == -1 or start_idx >= end_idx:
-        raise VisualError("Could not find valid JSON object in response.")
+        return {}
     
     json_str = cleaned[start_idx:end_idx + 1]
     
-    json_str = _sanitize_json(json_str)
     try:
-        data = json.loads(json_str)
+        return json.loads(json_str)
     except json.JSONDecodeError:
-        try:
-            data = json.loads(_repair_json(json_str))
-        except json.JSONDecodeError as exc:
-            logger.warning("Visual JSON repair failed: %s", exc)
-            raise VisualError("The visual generator returned an unclear structure.") from exc
-    
-    if not isinstance(data, dict):
-        raise VisualError(f"Expected JSON object, got {type(data).__name__}")
-    
-    # Validate and normalize structure
-    title = (data.get("title") or "Visual Summary").strip()
-    visual_type = (data.get("type") or "flowchart").strip().lower()
-    visual_type = visual_type.replace(" ", "_").replace("-", "_")
-    if visual_type in {"network", "graph", "network_graph", "diagram"}:
-        visual_type = "concept_map"
-    if visual_type not in {"flowchart", "concept_map", "process", "mind_map"}:
-        visual_type = "flowchart"
-    description = (data.get("description") or "").strip()
-    central_concept = (data.get("central_concept") or "").strip()
-    
-    # Parse nodes
-    nodes = data.get("nodes", [])
-    if not isinstance(nodes, list):
-        nodes = []
-    nodes = [str(n).strip() for n in nodes if n and str(n).strip()][:12]
-    
-    # Parse edges
-    edges = data.get("edges", [])
-    if not isinstance(edges, list):
-        edges = []
-    
-    # Validate edges (should be [source, target] pairs)
-    valid_edges = []
-    for edge in edges:
-        if isinstance(edge, (list, tuple)) and len(edge) >= 2:
-            source = str(edge[0]).strip()
-            target = str(edge[1]).strip()
-            if source and target:
-                valid_edges.append([source, target])
-    edges = valid_edges[:15]
-    
-    # Parse branches (for mind maps)
-    branches = data.get("branches", {})
-    if not isinstance(branches, dict):
-        branches = {}
-    branches = {
-        str(branch).strip(): [str(item).strip() for item in items[:5] if str(item).strip()]
-        for branch, items in branches.items()
-        if isinstance(items, list) and str(branch).strip()
-    }
-    
-    # Ensure nodes exist
-    if not nodes:
-        nodes = [description] if description else ["Main Topic"]
-    
-    return {
-        "title": title,
-        "type": visual_type,
-        "central_concept": central_concept,
-        "nodes": nodes,
-        "edges": edges,
-        "branches": branches,
-        "description": description,
-    }
+        logger.warning("JSON parsing failed")
+        return {}
 
 
-def _sanitize_json(json_str: str) -> str:
-    json_str = json_str.replace("\r", " ").replace("\n", " ").replace("\t", " ")
-    json_str = re.sub(r"[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]", " ", json_str)
-    return re.sub(r"\s+", " ", json_str).strip()
-
-
-def _repair_json(json_str: str) -> str:
-    repaired = json_str.replace("“", '"').replace("”", '"').replace("’", "'")
-    repaired = re.sub(
-        r'([{,]\s*)(title|type|central_concept|nodes|edges|branches|description)(\s*:)',
-        r'\1"\2"\3',
-        repaired,
-    )
-    repaired = re.sub(r",\s*}", "}", repaired)
-    repaired = re.sub(r",\s*\]", "]", repaired)
-    return repaired
-
-
-def _fallback_visual_structure(text: str, exc: Exception) -> dict[str, Any]:
+def _fallback_steps_from_text(text: str) -> list[str]:
+    """Extract steps from text when AI extraction fails."""
     sentences = [
-        sentence.strip(" .")
-        for sentence in re.split(r"(?<=[.!?])\s+|\n+", text.strip())
-        if sentence.strip()
+        s.strip(" .") 
+        for s in re.split(r"(?<=[.!?])\s+|\n+", text.strip()) 
+        if s.strip()
     ]
-    nodes = [sentence[:70] for sentence in sentences[:8]]
-    if not nodes:
-        nodes = ["Read the topic", "Find key ideas", "Connect the ideas", "Review the learning"]
-    edges = [[nodes[index], nodes[index + 1]] for index in range(len(nodes) - 1)]
+    
+    # Take first 5-6 sentences as steps
+    return [s[:80] for s in sentences[:6] if s]
+
+
+def _fallback_visual_structure(text: str) -> dict[str, Any]:
+    """Fallback structure when everything else fails."""
+    steps = _fallback_steps_from_text(text)
+    
     return {
-        "title": "Visual Learning Summary",
-        "type": "process",
-        "central_concept": nodes[0],
-        "nodes": nodes,
-        "edges": edges,
-        "branches": {},
-        "description": "A simple step-by-step visual summary was created from the text.",
+        "title": "Educational Content",
+        "description": "Visual learning summary created from content",
+        "steps": steps or ["Begin here", "Learn key concepts", "Understand connections", "Review summary"],
+        "inputs": ["Information", "Context"],
+        "outputs": ["Understanding", "Knowledge"],
+        "key_component": "Learning",
     }
 
 
-def _generate_png_diagram(visual_data: dict[str, Any]) -> str:
-    """Generate PNG diagram based on visual content structure.
+def _generate_illustration(topic: str, steps: list[str], theme: str) -> str:
+    """Generate educational illustration.
     
     Args:
-        visual_data: Structured visual content dict
+        topic: Topic name
+        steps: Process steps
+        theme: Color theme
         
     Returns:
-        Path to generated PNG file
-        
-    Raises:
-        VisualError: If diagram generation fails
+        Path to generated PNG
     """
     try:
-        title = visual_data.get("title", "Diagram")
-        diagram_type = visual_data.get("type", "flowchart")
-        nodes = visual_data.get("nodes", [])
-        edges = visual_data.get("edges", [])
-        branches = visual_data.get("branches", {})
-        central_concept = visual_data.get("central_concept", title)
-        
-        # Generate appropriate diagram type
-        if diagram_type == "concept_map":
-            return generate_concept_map(
-                title=title,
-                central_concept=central_concept,
-                concepts=nodes,
-                edges=[(e[0], e[1], "") for e in edges[:15]],
-            )
-        
-        elif diagram_type == "mind_map":
-            return generate_mind_map(
-                title=title,
-                central_idea=central_concept,
-                branches=branches or {title: nodes[:5]},
-            )
-        
-        elif diagram_type == "process":
-            return generate_process_diagram(
-                title=title,
-                steps=nodes,
-                connections=[(e[0], e[1]) for e in edges[:15]],
-            )
-        
-        else:  # Default to flowchart
-            return generate_flowchart_diagram(
-                title=title,
-                nodes=nodes,
-                edges=[(e[0], e[1]) for e in edges[:15]],
-            )
-    
-    except DiagramGenerationError as exc:
-        raise VisualError(f"PNG diagram generation failed: {str(exc)}") from exc
+        return create_educational_illustration(topic, steps[:8], theme)
     except Exception as exc:
-        raise VisualError(f"PNG diagram generation failed: {str(exc)}") from exc
+        logger.error("Educational illustration generation failed: %s", exc)
+        raise VisualError(f"Could not create illustration: {exc}") from exc
+
+
+def _generate_flowchart(title: str, steps: list[str], theme: str) -> str:
+    """Generate process flowchart.
+    
+    Args:
+        title: Flowchart title
+        steps: Process steps
+        theme: Color theme
+        
+    Returns:
+        Path to generated PNG
+    """
+    try:
+        return create_process_flowchart(title, steps[:10], theme)
+    except Exception as exc:
+        logger.error("Flowchart generation failed: %s", exc)
+        raise VisualError(f"Could not create flowchart: {exc}") from exc
+
+
+def _generate_summary(
+    title: str,
+    inputs: list[str],
+    outputs: list[str],
+    key_component: str,
+    theme: str,
+) -> str:
+    """Generate concept summary card.
+    
+    Args:
+        title: Concept title
+        inputs: Input items
+        outputs: Output items
+        key_component: Key component/process
+        theme: Color theme
+        
+    Returns:
+        Path to generated PNG
+    """
+    try:
+        return create_concept_summary(title, inputs[:3], outputs[:3], key_component, theme)
+    except Exception as exc:
+        logger.error("Concept summary generation failed: %s", exc)
+        raise VisualError(f"Could not create summary: {exc}") from exc
+
+
+def cleanup_old_visuals(keep_count: int = 50) -> None:
+    """Clean up old visual files."""
+    import os
+    from pathlib import Path
+    
+    visuals_folder = Path("generated_diagrams")
+    if not visuals_folder.exists():
+        return
+    
+    # Get all visual files
+    visual_files = sorted(
+        visuals_folder.glob("*.png"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True
+    )
+    
+    # Remove old ones
+    for old_file in visual_files[keep_count:]:
+        try:
+            old_file.unlink()
+        except Exception as exc:
+            logger.warning("Could not delete old visual file %s: %s", old_file, exc)

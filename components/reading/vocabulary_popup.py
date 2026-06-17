@@ -111,6 +111,7 @@ def render_vocabulary_panel(content: str | None = None) -> None:
 
     import streamlit as st
     from components.session_state import get_ui_preferences
+    from services.vocabulary_service import explain_word
 
     words = extract_difficult_words(content) if content is not None else _get_stored_words()
     if not words:
@@ -121,72 +122,111 @@ def render_vocabulary_panel(content: str | None = None) -> None:
     font_size = FONT_SIZES[preferences["font_size"]]
     character_spacing = CHARACTER_SPACING[preferences["character_spacing"]]
 
-    items = "\n".join(
-        (
-            '<li class="vocabulary-item">'
-            f'<span class="vocabulary-word">{_display_word(word)}</span>'
-            f'<span class="vocabulary-definition">{_get_definition(word)}</span>'
-            "</li>"
-        )
-        for word in words
-    )
+    # Present a simple list of words only. Selecting a word shows details below.
+    st.markdown(f"""
+    <div class="vocabulary-card" aria-label="Vocabulary support">
+      <h2 class="vocabulary-heading">Vocabulary</h2>
+    </div>
+    <style>
+      .vocabulary-card {{
+        background-color: {theme["secondary_background"]};
+        color: {theme["text_color"]};
+        border: {READING_CARD_BORDER_WIDTH} solid {theme["border_color"]};
+        border-radius: {READING_CONTAINER_RADIUS};
+        padding: {READING_CONTAINER_PADDING};
+        margin-top: {READING_SECTION_GAP};
+        font-size: {font_size}px;
+        line-height: {READING_LINE_HEIGHT};
+        letter-spacing: {character_spacing};
+      }}
+      .vocabulary-heading {{
+        color: {theme["text_color"]};
+        font-size: {READING_SECONDARY_HEADING_SCALE};
+        margin: 0 0 {READING_SECTION_GAP};
+      }}
+            .vocab-highlight {{
+                background-color: {theme["secondary_background"]};
+        padding: 0.5rem 0.75rem;
+        border-radius: 6px;
+        font-weight: 700;
+      }}
+    </style>
+    """ , unsafe_allow_html=True)
 
-    html_content = dedent(
-        f"""
-        <div class="vocabulary-card" aria-label="Vocabulary support">
-        <h2 class="vocabulary-heading">Vocabulary</h2>
-        <ul class="vocabulary-list">
-        {items}
-        </ul>
-        </div>
-        <style>
-        .vocabulary-card {{
-            background-color: {theme["secondary_background"]};
-            color: {theme["text_color"]};
-            border: {READING_CARD_BORDER_WIDTH} solid {theme["border_color"]};
-            border-radius: {READING_CONTAINER_RADIUS};
-            padding: {READING_CONTAINER_PADDING};
-            margin-top: {READING_SECTION_GAP};
-            font-size: {font_size}px;
-            line-height: {READING_LINE_HEIGHT};
-            letter-spacing: {character_spacing};
-        }}
+    display_options = [_display_word(w) for w in words]
+    selected_display = st.selectbox("Select a word to explore:", options=display_options, key="reading_vocab_select")
 
-        .vocabulary-heading {{
-            color: {theme["text_color"]};
-            font-size: {READING_SECONDARY_HEADING_SCALE};
-            margin: 0 0 {READING_SECTION_GAP};
-        }}
+    if selected_display:
+        # Map back to original lowercase word
+        sel_word = None
+        for w in words:
+            if _display_word(w) == selected_display:
+                sel_word = w
+                break
+        sel_word = sel_word or selected_display.lower()
 
-        .vocabulary-list {{
-            list-style: none;
-            margin: 0;
-            padding: 0;
-        }}
+        # Simple accent color for highlight to increase contrast
+        def _vocab_accent_color(theme_dict: dict[str, str]) -> str:
+            if theme_dict.get("background_color") == "#121826":
+                return "#93C5FD"
+            return "#1D4ED8"
 
-        .vocabulary-item {{
-            border-top: {READING_CARD_BORDER_WIDTH} solid {theme["border_color"]};
-            display: grid;
-            gap: {READING_COMPACT_GAP};
-            padding: {READING_LIST_ITEM_PADDING};
-        }}
+        accent = _vocab_accent_color(theme)
 
-        .vocabulary-item:first-child {{
-            border-top: 0;
-            padding-top: 0;
-        }}
+        # Use session cache to avoid repeated LLM calls across reruns
+        cache = st.session_state.setdefault("vocab_explain_cache", {})
+        key = str(sel_word).strip().lower()
+        if key in cache:
+            explanation = cache[key]
+        else:
+            with st.spinner("Looking up the word..."):
+                try:
+                    explanation = explain_word(sel_word)
+                except Exception:
+                    explanation = {
+                        "word": _display_word(sel_word),
+                        "meaning": _get_definition(sel_word),
+                        "explanation": "",
+                        "example": "",
+                    }
+            cache[key] = explanation
+            st.session_state["vocab_explain_cache"] = cache
 
-        .vocabulary-word {{
-            font-weight: 700;
-        }}
+        html = dedent(
+            f"""
+            <div class="vocab-details" role="region" aria-live="polite">
+              <div class="vocab-highlight">{explanation.get('word', selected_display)}</div>
+              <div style="margin-top:0.9rem">
+                <div><strong>📖 Meaning:</strong> {explanation.get('meaning','')}</div>
+                <div style="margin-top:0.6rem"><strong>📝 Explanation:</strong> {explanation.get('explanation','')}</div>
+                <div style="margin-top:0.6rem"><strong>💡 Example:</strong> "{explanation.get('example','')}"</div>
+              </div>
+            </div>
+            <style>
+              .vocab-details {{
+                margin-top: {READING_SECTION_GAP};
+                font-size: {font_size}px;
+                line-height: {READING_LINE_HEIGHT};
+                letter-spacing: {character_spacing};
+                background-color: {theme['background_color']};
+                padding: 0.75rem;
+                border-radius: 8px;
+                border: 1px solid {theme['border_color']};
+              }}
+              .vocab-highlight {{
+                display: inline-block;
+                background-color: {accent};
+                color: {theme['background_color']};
+                padding: 0.5rem 0.75rem;
+                border-radius: 6px;
+                font-weight: 800;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+              }}
+            </style>
+            """
+        ).strip()
 
-        .vocabulary-definition {{
-            opacity: 0.92;
-        }}
-        </style>
-        """
-    ).strip()
-    _render_html(st, html_content)
+        _render_html(st, html)
 
 
 def _render_html(streamlit_module: object, html_content: str) -> None:
