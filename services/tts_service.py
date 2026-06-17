@@ -116,11 +116,12 @@ def generate_audio(text: str, lang: str = "en", slow: bool = False) -> str:
         filename = f"{uuid.uuid4()}.mp3"
         filepath = os.path.join(AUDIO_FOLDER, filename)
         
-        # Create gTTS object
+        # Create gTTS object. Playback speed is controlled in the browser,
+        # so we always generate a single MP3 file at normal speed.
         tts = gTTS(
             text=text,
             lang=lang,
-            slow=slow,
+            slow=False,
             tld="co.uk"  # TLD for stability
         )
         

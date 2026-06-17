@@ -6,7 +6,6 @@ import html
 import re
 from dataclasses import dataclass, field
 from textwrap import dedent
-from urllib.parse import quote
 
 import streamlit as st
 
@@ -45,9 +44,6 @@ from components.ui_constants import (
 
 _SENTENCE_PATTERN = re.compile(r"[^.!?]+[.!?]?")
 _WORD_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z'-]*\b")
-_VOCABULARY_QUERY_PARAM = "reading_vocab"
-_VOCABULARY_CLEAR_VALUE = "__clear__"
-_VOCABULARY_SESSION_KEY = "reading_active_vocabulary_key"
 
 
 @dataclass
@@ -98,16 +94,14 @@ def render_read_mode(content: str) -> None:
     st.session_state.reading_difficult_words = difficult_words
 
     sections = _group_blocks_into_sections(blocks)
-    active_vocabulary_key = _get_active_vocabulary_key()
-    seen_words: set[str] = set()
+    seen_word_set: set[str] = set()
     section_html = "\n".join(
         (
             _render_interactive_section(
                 section,
                 difficult_words,
                 section_index,
-                active_vocabulary_key,
-                seen_words,
+                seen_word_set,
             )
             for section_index, section in enumerate(sections)
         )
@@ -189,8 +183,7 @@ def _render_interactive_section(
     section: _ReadingSection,
     difficult_words: list[str],
     section_index: int,
-    active_vocabulary_key: str,
-    seen_words: set[str],
+    seen_word_set: set[str],
 ) -> str:
     """Render one section as continuous reading HTML."""
 
@@ -205,8 +198,7 @@ def _render_interactive_section(
             difficult_words,
             section_index,
             block_index,
-            active_vocabulary_key,
-            seen_words,
+            seen_word_set,
         )
         for block_index, block in enumerate(section.blocks)
     )
@@ -224,46 +216,46 @@ def _render_interactive_block(
     difficult_words: list[str],
     section_index: int,
     block_index: int,
-    active_vocabulary_key: str,
-    seen_words: set[str],
+    seen_word_set: set[str],
 ) -> str:
     """Render a paragraph or list while preserving natural text flow."""
 
+    group_name = f"reading_vocab_{section_index}_{block_index}"
+
     if block.kind == "bullet_list":
-        items = "\n".join(
-            _render_interactive_list_item(
+        item_html_blocks: list[str] = []
+        hidden_html = ""
+        definition_html = ""
+
+        for item in block.items:
+            item_html, item_hidden, item_definitions = _link_difficult_words(
                 item,
                 difficult_words,
-                section_index,
-                block_index,
-                item_index,
-                active_vocabulary_key,
-                seen_words,
+                seen_word_set,
+                group_name,
             )
-            for item_index, item in enumerate(block.items)
-        )
-        return f'<ul class="reading-bullet-list">{items}</ul>'
+            item_html_blocks.append(f'<li>{item_html}</li>')
+            hidden_html += item_hidden
+            definition_html += item_definitions
 
-    block_key = _build_block_key(section_index, block_index)
-    vocabulary_words: list[str] = []
-    paragraph_html = _link_difficult_words(
+        return (
+            f'<div class="reading-paragraph-block">'
+            f'<ul class="reading-bullet-list">{"\n".join(item_html_blocks)}</ul>'
+            f'{hidden_html}'
+            "</div>"
+        )
+
+    paragraph_html, hidden_inputs_html, definition_html = _link_difficult_words(
         block.text,
         difficult_words,
-        block_key,
-        seen_words,
-        vocabulary_words,
-        active_vocabulary_key,
-    )
-    definition_html = _render_vocabulary_definitions(
-        block_key,
-        vocabulary_words,
-        active_vocabulary_key,
+        seen_word_set,
+        group_name,
     )
 
     return (
-        f'<div class="reading-paragraph-block" id="{html.escape(block_key)}">'
+        f'<div class="reading-paragraph-block">'
         f'<p class="reading-paragraph">{paragraph_html}</p>'
-        f"{definition_html}"
+        f'{hidden_inputs_html}'
         "</div>"
     )
 
@@ -271,155 +263,72 @@ def _render_interactive_block(
 def _render_interactive_list_item(
     text: str,
     difficult_words: list[str],
-    section_index: int,
-    block_index: int,
-    item_index: int,
-    active_vocabulary_key: str,
-    seen_words: set[str],
-) -> str:
-    """Render one list item with inline vocabulary links."""
+    seen_word_set: set[str],
+    group_name: str,
+) -> tuple[str, str]:
+    """Render one list item with inline vocabulary highlights."""
 
-    block_key = _build_block_key(section_index, block_index, item_index)
-    vocabulary_words: list[str] = []
-    item_html = _link_difficult_words(
+    item_html, _, _ = _link_difficult_words(
         text,
         difficult_words,
-        block_key,
-        seen_words,
-        vocabulary_words,
-        active_vocabulary_key,
-    )
-    definition_html = _render_vocabulary_definitions(
-        block_key,
-        vocabulary_words,
-        active_vocabulary_key,
+        seen_word_set,
+        group_name,
     )
 
-    return f'<li id="{html.escape(block_key)}">{item_html}{definition_html}</li>'
+    return item_html, item_html
 
 
 def _link_difficult_words(
     text: str,
     difficult_words: list[str],
-    block_key: str,
-    seen_words: set[str],
-    vocabulary_words: list[str],
-    active_vocabulary_key: str,
-) -> str:
-    """Return escaped text with only first-use difficult words as links."""
+    seen_word_set: set[str],
+    group_name: str,
+) -> tuple[str, str, str]:
+    """Return inline HTML, hidden inputs, and definitions for first-use difficult words."""
 
     if not difficult_words:
-        return html.escape(text)
+        return html.escape(text), "", ""
 
     difficult_word_lookup = {word.lower() for word in difficult_words}
+    hidden_blocks: list[str] = []
+    word_index = 0
 
     def replace_word(match: re.Match[str]) -> str:
+        nonlocal word_index
+
         word = match.group(0)
         normalized_word = word.lower()
 
         if normalized_word not in difficult_word_lookup:
             return html.escape(word)
 
-        if normalized_word in seen_words:
+        if normalized_word in seen_word_set:
             return html.escape(word)
 
-        seen_words.add(normalized_word)
-        vocabulary_words.append(normalized_word)
-        target_id = _build_vocabulary_target_id(block_key, normalized_word)
-        query_value = (
-            _VOCABULARY_CLEAR_VALUE
-            if active_vocabulary_key == target_id
-            else target_id
-        )
-        return (
-            '<a class="reading-vocabulary-link" '
-            f'href="?{_VOCABULARY_QUERY_PARAM}={quote(query_value, safe="")}" '
-            f'aria-describedby="{html.escape(target_id)}">'
-            f"{html.escape(word)}</a>"
-        )
+        seen_word_set.add(normalized_word)
+        input_id = f"{group_name}_{word_index}"
+        word_index += 1
 
-    return _WORD_PATTERN.sub(replace_word, text)
-
-
-def _render_vocabulary_definitions(
-    block_key: str,
-    vocabulary_words: list[str],
-    active_vocabulary_key: str,
-) -> str:
-    """Render locally revealable vocabulary definitions for the current block."""
-
-    if not vocabulary_words:
-        return ""
-
-    definitions: list[str] = []
-    for word in vocabulary_words:
-        target_id = _build_vocabulary_target_id(block_key, word)
-        active_class = (
-            " reading-vocabulary-definition-active"
-            if active_vocabulary_key == target_id
-            else ""
-        )
-        definitions.append(
+        hidden_blocks.append(
             dedent(
                 f"""
-                <div id="{html.escape(target_id)}" class="reading-vocabulary-definition{active_class}" role="note">
+                <input type="radio" name="{group_name}" id="{input_id}" class="reading-vocab-input">
+                <div class="reading-vocabulary-definition reading-vocab-{input_id}">
                     <span class="reading-vocabulary-label">Meaning:</span>
-                    <strong>{html.escape(word.capitalize())}</strong>
-                    <span>{html.escape(_get_definition(word))}</span>
+                    {html.escape(_get_definition(normalized_word))}
                 </div>
                 """
             ).strip()
         )
 
-    return "\n".join(definitions)
-
-
-def _get_active_vocabulary_key() -> str:
-    """Store the selected vocabulary target and return session state."""
-
-    selected_key = _get_requested_vocabulary_key()
-    if selected_key:
-        st.session_state[_VOCABULARY_SESSION_KEY] = (
-            "" if selected_key == _VOCABULARY_CLEAR_VALUE else selected_key
+        return (
+            f'<span class="reading-vocabulary-word">'
+            f'<label for="{input_id}">{html.escape(word)}</label>'
+            '</span>'
         )
 
-    return str(st.session_state.get(_VOCABULARY_SESSION_KEY, ""))
-
-
-def _get_requested_vocabulary_key() -> str:
-    """Read a vocabulary selection from Streamlit query parameters."""
-
-    try:
-        value = st.query_params.get(_VOCABULARY_QUERY_PARAM, "")
-    except AttributeError:
-        value = st.experimental_get_query_params().get(
-            _VOCABULARY_QUERY_PARAM,
-            [""],
-        )
-
-    if isinstance(value, list):
-        return str(value[0]) if value else ""
-
-    return str(value)
-
-
-def _build_block_key(
-    section_index: int,
-    block_index: int,
-    item_index: int | None = None,
-) -> str:
-    """Build a stable key for paragraph-level vocabulary state."""
-
-    if item_index is None:
-        return f"section-{section_index}-block-{block_index}"
-
-    return f"section-{section_index}-block-{block_index}-item-{item_index}"
-
-
-def _build_vocabulary_target_id(block_key: str, word: str) -> str:
-    """Build a local HTML target id for a vocabulary definition."""
-
-    return f"{block_key}-vocab-{word}"
+    paragraph_html = _WORD_PATTERN.sub(replace_word, text)
+    return paragraph_html, "".join(hidden_blocks), ""
 
 
 def _get_vocabulary_link_color(style: _ReadingStyle) -> str:
@@ -578,6 +487,9 @@ def _build_reading_styles(style: _ReadingStyle) -> str:
             line-height: {READING_LINE_HEIGHT};
             letter-spacing: {style.character_spacing};
             color: {style.text_color};
+            background-color: {style.background_color};
+            padding: {READING_CONTAINER_PADDING};
+            border-radius: {READING_CONTAINER_RADIUS};
         }}
 
         .reading-section-card {{
@@ -605,45 +517,43 @@ def _build_reading_styles(style: _ReadingStyle) -> str:
             margin-bottom: 0;
         }}
 
-        .reading-vocabulary-link {{
+        .reading-vocabulary-word {{
             color: {vocabulary_color};
             font-weight: 700;
             text-decoration-color: {vocabulary_color};
             text-decoration-line: underline;
             text-decoration-thickness: 0.12em;
             text-underline-offset: 0.18em;
+            cursor: pointer;
+            display: inline;
         }}
 
-        .reading-vocabulary-link:hover,
-        .reading-vocabulary-link:focus {{
+        .reading-vocabulary-word:hover,
+        .reading-vocabulary-word:focus {{
             color: {vocabulary_color};
             text-decoration-thickness: 0.18em;
         }}
 
-        .reading-vocabulary-link:focus {{
-            outline: {READING_CARD_BORDER_WIDTH} solid {vocabulary_color};
-            outline-offset: 0.16rem;
+        .reading-vocab-input {{
+            display: none;
+        }}
+
+        .reading-vocab-input:checked + .reading-vocabulary-definition {{
+            display: block;
         }}
 
         .reading-vocabulary-definition {{
-            background-color: {style.background_color};
-            border-left: 0.22rem solid {vocabulary_color};
-            color: {style.text_color};
             display: none;
-            font-size: {style.font_size}px;
-            gap: 0.1rem;
-            line-height: {READING_LINE_HEIGHT};
-            margin: -0.35rem 0 {READING_SECTION_GAP};
+            background-color: {style.background_color};
+            border: 1px solid {style.border_color};
+            border-radius: 0.5rem;
+            color: {style.text_color};
+            margin-top: 0.4rem;
+            padding: 0.45rem 0.65rem;
             max-width: {READING_CONTENT_MAX_WIDTH};
-            padding: {READING_COMPACT_GAP} 0 {READING_COMPACT_GAP} {READING_COMPACT_GAP};
-            scroll-margin-top: {READING_SECTION_GAP};
+            white-space: normal;
         }}
 
-        .reading-vocabulary-definition-active {{
-            display: grid;
-        }}
-
-        .reading-vocabulary-definition strong,
         .reading-vocabulary-label {{
             font-weight: 700;
         }}

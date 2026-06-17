@@ -20,7 +20,10 @@ from services.ollama_service import (
     generate_answer as ollama_generate_answer,
     generate_content as ollama_generate_content,
 )
-from services.text_cleanup import remove_ansi_escape_codes
+from services.text_cleanup import (
+    remove_ansi_escape_codes,
+    remove_markdown_and_html,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +43,16 @@ def generate_answer(question: str, context: str) -> str:
         raise ValueError("Context cannot be empty.")
 
     try:
-        return remove_ansi_escape_codes(openai_generate_answer(question, context))
+        return _clean_model_response(openai_generate_answer(question, context))
     except OpenAIServiceError as exc:
         logger.warning("OpenAI answer generation failed; falling back to Gemini: %s", exc)
 
     try:
-        return remove_ansi_escape_codes(gemini_generate_answer(question, context))
+        return _clean_model_response(gemini_generate_answer(question, context))
     except (GeminiAPIError, GeminiConfigurationError) as exc:
         logger.warning("Gemini answer generation failed; falling back to Ollama: %s", exc)
         try:
-            return remove_ansi_escape_codes(ollama_generate_answer(question, context))
+            return _clean_model_response(ollama_generate_answer(question, context))
         except OllamaServiceError as ollama_exc:
             logger.exception("All LLM providers failed for answer generation.")
             raise LLMRouterError(
@@ -57,36 +60,32 @@ def generate_answer(question: str, context: str) -> str:
             ) from ollama_exc
 
 
+def _clean_model_response(text: str) -> str:
+    """Clean raw model output before returning to the service layer."""
+    cleaned = remove_ansi_escape_codes(text)
+    return remove_markdown_and_html(cleaned)
+
+
 def generate_content(prompt: str) -> str:
     """Generate content with OpenAI first, then Gemini, then Ollama.
     
     Used for content generation tasks like simplification, vocabulary extraction,
     visual learning generation, etc. Does NOT use chat history.
-    
-    Args:
-        prompt: The task prompt (e.g., "Simplify this: ...")
-        
-    Returns:
-        Generated content text.
-        
-    Raises:
-        ValueError: If prompt is empty.
-        LLMRouterError: If both Gemini and Ollama fail.
     """
     if not prompt or not prompt.strip():
         raise ValueError("Prompt cannot be empty.")
 
     try:
-        return remove_ansi_escape_codes(openai_generate_content(prompt))
+        return _clean_model_response(openai_generate_content(prompt))
     except OpenAIServiceError as exc:
         logger.warning("OpenAI content generation failed; falling back to Gemini: %s", exc)
 
     try:
-        return remove_ansi_escape_codes(gemini_generate_content(prompt))
+        return _clean_model_response(gemini_generate_content(prompt))
     except (GeminiAPIError, GeminiConfigurationError) as exc:
         logger.warning("Gemini content generation failed; falling back to Ollama: %s", exc)
         try:
-            return remove_ansi_escape_codes(ollama_generate_content(prompt))
+            return _clean_model_response(ollama_generate_content(prompt))
         except OllamaServiceError as ollama_exc:
             logger.exception("All LLM providers failed for content generation.")
             raise LLMRouterError(

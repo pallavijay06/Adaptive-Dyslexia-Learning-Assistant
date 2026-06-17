@@ -14,18 +14,21 @@ Features:
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import os
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 from backend.chunker import chunk_text
 from backend.parser import process_uploaded_file
 from backend.retriever import retrieve_relevant_chunks_for_question
 from backend.vector_store import build_index
-from components.accessibility import render_accessibility_sidebar
+from components.accessibility.read_mode_accessibility import render_read_mode_accessibility_panel
 from components.reading.reading_view import (
     render_key_takeaways,
     render_learning_mode_switcher,
@@ -46,7 +49,7 @@ from services.llm_router import generate_answer, LLMRouterError
 from services.ocr_service import extract_text_from_image, OCRError
 from services.simplification_service import simplify_text, SimplificationError
 from services.vocabulary_service import generate_vocabulary, VocabularyError, explain_word
-from services.tts_service import generate_audio, TTSError
+from services.tts_service import cleanup_audio_file, generate_audio, TTSError
 from services.visual_service import generate_visual_content, VisualError
 
 logger = logging.getLogger(__name__)
@@ -320,6 +323,8 @@ def render_read_mode() -> None:
     st.subheader("📖 Read Mode")
 
     with st.expander("✨ Simplified notes and reading experience", expanded=True):
+        render_read_mode_accessibility_panel()
+
         if st.button("Generate Simplified Version", key="gen_simplify"):
             with st.spinner("Simplifying text..."):
                 try:
@@ -475,21 +480,14 @@ def render_listen_mode() -> None:
         else st.session_state.document_text
     )
     
-    # Audio generation options
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        speed = st.select_slider(
-            "Speaking Speed",
-            options=["Slow", "Normal"],
-            value="Normal",
-            key="audio_speed"
-        )
-    
     if st.button("🎙️ Generate Audio", type="primary", key="gen_audio"):
         with st.spinner("Generating audio..."):
             try:
-                slow = (speed == "Slow")
-                audio_path = generate_audio(text_to_listen, slow=slow)
+                previous_audio = st.session_state.get("audio_file")
+                if previous_audio and os.path.exists(previous_audio):
+                    cleanup_audio_file(previous_audio)
+
+                audio_path = generate_audio(text_to_listen)
                 st.session_state.audio_file = audio_path
                 st.success("✅ Audio generated!")
             except TTSError as exc:
@@ -499,9 +497,149 @@ def render_listen_mode() -> None:
         st.markdown("### 🎧 Play Audio")
         with open(st.session_state.audio_file, "rb") as audio_file:
             audio_data = audio_file.read()
-            st.audio(audio_data, format="audio/mp3")
-        
-        # Download button
+
+        audio_base64 = base64.b64encode(audio_data).decode("ascii")
+        audio_text = json.dumps(text_to_listen)
+        audio_html = f"""
+        <style>
+            #ttsAudio::-webkit-media-controls-playback-rate-button {{
+                display: none !important;
+            }}
+            #ttsAudio::-moz-media-controls-playback-rate-button {{
+                display: none !important;
+            }}
+            #ttsAudio::-ms-media-controls-playback-rate-button {{
+                display: none !important;
+            }}
+            .listen-sentence {{
+                padding: 12px 14px;
+                margin-bottom: 10px;
+                border-radius: 12px;
+                transition: background-color 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+                background-color: transparent;
+                border: 1px solid transparent;
+            }}
+            .listen-sentence.active {{
+                background-color: rgba(255, 241, 130, 0.25);
+                border-color: rgba(255, 210, 0, 0.6);
+                box-shadow: 0 0 0 1px rgba(255, 210, 0, 0.3);
+            }}
+            .listen-text-container {{
+                margin-top: 18px;
+                padding: 12px;
+                border-radius: 14px;
+                background-color: rgba(255, 255, 255, 0.04);
+            }}
+        </style>
+        <div class='audio-player-container'>
+            <audio id='ttsAudio' controls style='width: 100%; display: block; min-height: 48px;'>
+                <source src='data:audio/mp3;base64,{audio_base64}' type='audio/mpeg'>
+                Your browser does not support HTML5 audio.
+            </audio>
+            <div style='margin-top: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;'>
+                <label for='speedSelector' style='font-weight: 600; margin-bottom: 0;'>Playback speed:</label>
+                <select id='speedSelector' style='padding: 6px 10px;'>
+                    <option value='0.75'>0.75x</option>
+                    <option value='1.0' selected>1.0x</option>
+                    <option value='1.25'>1.25x</option>
+                    <option value='1.5'>1.5x</option>
+                    <option value='1.75'>1.75x</option>
+                    <option value='2.0'>2.0x</option>
+                </select>
+            </div>
+            <div id='sentenceContainer' class='listen-text-container'></div>
+        </div>
+        <script>
+            const audioText = JSON.parse({audio_text});
+            const sentenceContainer = document.getElementById('sentenceContainer');
+            const audioElem = document.getElementById('ttsAudio');
+            const speedSelector = document.getElementById('speedSelector');
+
+            const sentences = audioText
+                .replace(/\s+/g, ' ')
+                .trim()
+                .split(/(?<=[.!?])\s+/)
+                .filter(Boolean);
+
+            let sentenceDuration = 0;
+            let activeSentence = -1;
+
+            function renderSentences() {{
+                sentenceContainer.innerHTML = '<p>TEST TEXT</p>' + sentences
+                    .map(function(sentence, index) {{
+                        return '<div class="listen-sentence" data-index="' + index + '">' + sentence + '</div>';
+                    }})
+                    .join('');
+            }}
+
+            function updateActiveSentence() {{
+                if (sentences.length === 0 || !audioElem.duration || isNaN(audioElem.duration)) {{
+                    return;
+                }}
+
+                const currentTime = audioElem.currentTime;
+                const index = Math.min(
+                    sentences.length - 1,
+                    Math.floor(currentTime / sentenceDuration)
+                );
+
+                if (audioElem.ended) {{
+                    activeSentence = -1;
+                }} else {{
+                    activeSentence = index;
+                }}
+
+                const sentenceNodes = sentenceContainer.querySelectorAll('.listen-sentence');
+                sentenceNodes.forEach(function(node) {{
+                    const nodeIndex = Number(node.dataset.index);
+                    node.classList.toggle('active', nodeIndex === activeSentence);
+                }});
+            }}
+
+            function resetSentences() {{
+                activeSentence = -1;
+                const sentenceNodes = sentenceContainer.querySelectorAll('.listen-sentence');
+                sentenceNodes.forEach(function(node) {{
+                    node.classList.remove('active');
+                }});
+            }}
+
+            audioElem.addEventListener('loadedmetadata', function() {{
+                sentenceDuration = audioElem.duration / Math.max(sentences.length, 1);
+                updateActiveSentence();
+            }});
+
+            audioElem.addEventListener('play', function() {{
+                updateActiveSentence();
+            }});
+
+            audioElem.addEventListener('pause', function() {{
+                updateActiveSentence();
+            }});
+
+            audioElem.addEventListener('timeupdate', function() {{
+                updateActiveSentence();
+            }});
+
+            audioElem.addEventListener('ended', function() {{
+                resetSentences();
+            }});
+
+            audioElem.addEventListener('seeked', function() {{
+                updateActiveSentence();
+            }});
+
+            speedSelector.addEventListener('change', function() {{
+                audioElem.playbackRate = parseFloat(this.value);
+                updateActiveSentence();
+            }});
+
+            renderSentences();
+        </script>
+        """
+
+        components.html(audio_html, height=900)
+
         st.download_button(
             label="⬇️ Download Audio",
             data=audio_data,
@@ -670,8 +808,6 @@ def main() -> None:
     """Run the Streamlit app."""
     initialize_session_state()
     initialize_ui_preferences()
-    apply_dyslexia_friendly_styles()
-    render_accessibility_sidebar()
 
     render_home()
     st.divider()
