@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import Blueprint, request, jsonify
 
-from services.ocr_service import extract_text_from_image, extract_text_from_pdf_images, OCRError
+from services.ocr_service import extract_text_from_image, OCRError
 from services.simplification_service import simplify_text, SimplificationError
 from services.vocabulary_service import generate_vocabulary, VocabularyError
 from services.tts_service import generate_audio, TTSError

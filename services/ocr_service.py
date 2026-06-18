@@ -238,6 +238,7 @@ Requirements:
 - Do not correct grammar.
 - Return only the extracted text.
 
+
 Even if handwriting is messy, make the most likely interpretation.
 """
 
