@@ -1,9 +1,8 @@
-"""Educational visual learning generator - redesigned for true learning visuals.
+"""Visual learning generator focused on Flowcharts and Mind Maps.
 
-Generates three types of educational visuals:
-1. Educational Illustration (emoji-based learning flowchart)
-2. Process Flowchart (step-by-step process diagram)
-3. Concept Summary (visual summary of inputs/outputs/key concepts)
+Produces emoji-first visuals designed for quick visual learning
+and dyslexia-friendly readability: short labels, large spacing,
+diagram structure, and extensive emoji use.
 """
 
 from __future__ import annotations
@@ -14,9 +13,8 @@ import re
 from typing import Any
 
 from services.educational_visuals import (
-    create_educational_illustration,
     create_process_flowchart,
-    create_concept_summary,
+    create_mind_map,
     detect_topic,
 )
 from services.llm_router import generate_content, LLMRouterError
@@ -29,71 +27,60 @@ class VisualError(RuntimeError):
     """Raised when visual content generation fails."""
 
 
-def generate_visual_content(text: str, theme: str = "light") -> dict[str, Any]:
-    """Generate three types of educational visual learning content.
-    
-    Creates:
-    1. Educational Illustration - emoji-based learning flowchart
-    2. Process Flowchart - styled step-by-step diagram
-    3. Concept Summary - visual card with inputs/outputs/key concepts
-    
+def generate_visual_content(text: str, theme: str = "light", visual_type: str | None = None) -> dict[str, Any]:
+    """Generate visual learning content for one or both supported visual types.
+
     Args:
-        text: Content to visualize
-        theme: Color theme (light, dark, dyslexia_cream, dyslexia_yellow)
-        
-    Returns:
-        Dict with:
-        - topic: Detected topic
-        - illustration_path: Path to illustration PNG
-        - flowchart_path: Path to flowchart PNG
-        - summary_path: Path to concept summary PNG
-        - structure: Extracted concepts, steps, inputs, outputs
-        - description: Generated summary
-        
-    Raises:
-        VisualError: If generation fails
+        text: Source text to visualize.
+        theme: Visual theme for color styling.
+        visual_type: One of "flowchart", "mind_map", "mindmap", or None for both.
+
+    Returns a dict with `flowchart_path`, `mindmap_path`, `structure`,
+    `topic`, and short `description`.
     """
     if not text or not text.strip():
         raise VisualError("Text cannot be empty.")
-    
+
+    if isinstance(visual_type, str):
+        normalized_visual_type = visual_type.strip().lower().replace("-", "_")
+        if normalized_visual_type == "mindmap":
+            normalized_visual_type = "mind_map"
+    else:
+        normalized_visual_type = None
+
+    if normalized_visual_type not in {None, "flowchart", "mind_map"}:
+        raise VisualError("Unsupported visual_type. Use 'flowchart' or 'mind_map'.")
+
     try:
-        # Step 1: Detect topic
         topic = detect_topic(text)
-        
-        # Step 2: Extract structure from AI
         structure = _extract_visual_structure(text)
-        
-        # Step 3: Generate three educational visuals
-        illustration_path = _generate_illustration(
-            topic, 
-            structure.get("steps", []), 
-            theme
-        )
-        
-        flowchart_path = _generate_flowchart(
-            structure.get("title", "Process"), 
-            structure.get("steps", []), 
-            theme
-        )
-        
-        summary_path = _generate_summary(
-            structure.get("title", "Concept"),
-            structure.get("inputs", []),
-            structure.get("outputs", []),
-            structure.get("key_component", ""),
-            theme
-        )
-        
+
+        flowchart_path = None
+        mindmap_path = None
+
+        if normalized_visual_type in {None, "flowchart"}:
+            flowchart_path = _generate_flowchart(
+                structure.get("title", "Process"),
+                structure.get("steps", []),
+                theme,
+            )
+
+        if normalized_visual_type in {None, "mind_map"}:
+            mindmap_path = _generate_mindmap(
+                structure.get("title", "Concept"),
+                structure.get("inputs", []) + structure.get("outputs", []) + structure.get("steps", []),
+                theme,
+            )
+
         return {
             "topic": topic,
             "title": structure.get("title", "Visual Learning"),
             "description": structure.get("description", ""),
-            "illustration_path": illustration_path,
             "flowchart_path": flowchart_path,
-            "summary_path": summary_path,
+            "mindmap_path": mindmap_path,
             "structure": structure,
         }
-        
+
     except VisualError:
         raise
     except Exception as exc:
@@ -111,26 +98,25 @@ def _extract_visual_structure(text: str) -> dict[str, Any]:
         Dict with title, description, steps, inputs, outputs, key_component
     """
     prompt = (
-        "Analyze this educational content and extract a visual learning structure.\n\n"
+        "Analyze this educational content and extract a compact visual structure for two outputs:"
+        " a Flowchart (sequential steps) and a Mind Map (central concept + related nodes).\n\n"
         "Return ONLY valid JSON (no markdown, no code blocks).\n\n"
         "Format:\n"
         "{\n"
         '  "title": "Topic Title",\n'
-        '  "description": "One sentence summary",\n'
-        '  "steps": ["Step 1", "Step 2", "Step 3", "Step 4", "Step 5"],\n'
-        '  "inputs": ["Input 1", "Input 2", "Input 3"],\n'
-        '  "outputs": ["Output 1", "Output 2", "Output 3"],\n'
-        '  "key_component": "Most important component or process"\n'
+        '  "description": "One short sentence (<=12 words)",\n'
+        '  "steps": ["short step label 1", "step 2", ...],\n'
+        '  "inputs": ["short label"],\n'
+        '  "outputs": ["short label"],\n'
+        '  "related": ["node1", "node2", "node3"]\n'
         "}\n\n"
         "Rules:\n"
-        "- title: Clear, engaging topic (4-8 words)\n"
-        "- description: Single sentence explaining the concept\n"
-        "- steps: 4-6 sequential steps in the process (clear, educational)\n"
-        "- inputs: 2-4 main inputs/resources/raw materials\n"
-        "- outputs: 2-4 main outputs/products/results\n"
-        "- key_component: The central process or most important component\n"
-        "- Use simple, student-friendly language\n"
-        "- Return ONLY JSON, no extra text\n\n"
+        "- Use emojis for key concepts when possible (emoji + short label).\n"
+        "- Keep labels very short (1-4 words).\n"
+        "- Prefer visual structure: steps (flow), related nodes (mind map).\n"
+        "- Minimize text; use hierarchy and short labels.\n"
+        "- Make outputs dyslexia-friendly: short labels, wide spacing.\n"
+        "- Return ONLY JSON.\n\n"
         f"Content:\n{text.strip()[:2000]}"
     )
     
@@ -220,11 +206,7 @@ def _generate_illustration(topic: str, steps: list[str], theme: str) -> str:
     Returns:
         Path to generated PNG
     """
-    try:
-        return create_educational_illustration(topic, steps[:8], theme)
-    except Exception as exc:
-        logger.error("Educational illustration generation failed: %s", exc)
-        raise VisualError(f"Could not create illustration: {exc}") from exc
+    raise VisualError("Educational illustration is removed in this build.")
 
 
 def _generate_flowchart(title: str, steps: list[str], theme: str) -> str:
@@ -264,11 +246,16 @@ def _generate_summary(
     Returns:
         Path to generated PNG
     """
+    raise VisualError("Concept Summary is removed in this build.")
+
+
+def _generate_mindmap(title: str, nodes: list[str], theme: str) -> str:
+    """Generate a mind map using the educational visuals module."""
     try:
-        return create_concept_summary(title, inputs[:3], outputs[:3], key_component, theme)
+        return create_mind_map(title, nodes[:10], theme)
     except Exception as exc:
-        logger.error("Concept summary generation failed: %s", exc)
-        raise VisualError(f"Could not create summary: {exc}") from exc
+        logger.error("Mind map generation failed: %s", exc)
+        raise VisualError(f"Could not create mind map: {exc}") from exc
 
 
 def cleanup_old_visuals(keep_count: int = 50) -> None:

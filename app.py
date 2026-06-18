@@ -5,7 +5,7 @@ Features:
 - Image OCR (PNG, JPG, GIF, WebP)
 - Simplified Content Generation
 - Text-to-Speech Audio (with natural text cleaning)
-- Visual Learning (Flowcharts, Concept Maps, Mermaid Diagrams)
+- Visual Learning (Flowcharts, Mind Maps)
 - Multi-mode Learning (Read, Listen, Visual Learn)
 - RAG-based Chat with Documents
 - Interactive vocabulary learning inline with reading
@@ -47,7 +47,7 @@ from services.llm_router import generate_answer, LLMRouterError
 from services.ocr_service import extract_text_from_image, OCRError
 from services.simplification_service import simplify_text, SimplificationError
 from services.vocabulary_service import generate_vocabulary, VocabularyError, explain_word
-from services.tts_service import cleanup_audio_file, generate_audio, TTSError
+from services.tts_service import cleanup_audio_file, generate_audio, split_text_into_sentences, TTSError
 from services.visual_service import generate_visual_content, VisualError
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,8 @@ def initialize_session_state() -> None:
         "simplified_content": None,
         "visual_content": None,
         "audio_file": None,
+        "selected_visual": None,
+        "visual_choice": "Select a visual",
 
         # Chat
         "chat_history": [],
@@ -395,7 +397,9 @@ def render_listen_mode() -> None:
             audio_data = audio_file.read()
 
         audio_base64 = base64.b64encode(audio_data).decode("ascii")
-        audio_text = json.dumps(text_to_listen)
+        sentences = split_text_into_sentences(text_to_listen)
+        sentences_b64 = base64.b64encode(json.dumps(sentences).encode('utf-8')).decode('ascii')
+        full_text_b64 = base64.b64encode(text_to_listen.encode('utf-8')).decode('ascii')
         audio_html = f"""
         <style>
             #ttsAudio::-webkit-media-controls-playback-rate-button {{
@@ -407,134 +411,227 @@ def render_listen_mode() -> None:
             #ttsAudio::-ms-media-controls-playback-rate-button {{
                 display: none !important;
             }}
-            .listen-sentence {{
-                padding: 12px 14px;
-                margin-bottom: 10px;
-                border-radius: 12px;
-                transition: background-color 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-                background-color: transparent;
-                border: 1px solid transparent;
+            .audio-player-container {{
+                max-width: 100%;
             }}
-            .listen-sentence.active {{
-                background-color: rgba(255, 241, 130, 0.25);
-                border-color: rgba(255, 210, 0, 0.6);
-                box-shadow: 0 0 0 1px rgba(255, 210, 0, 0.3);
+            .speed-buttons {{
+                margin-top: 12px;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+            }}
+            .speed-button {{
+                padding: 10px 16px;
+                border-radius: 999px;
+                border: 1px solid rgba(255, 255, 255, 0.22);
+                background-color: rgba(255, 255, 255, 0.05);
+                color: #f8fafc;
+                font-weight: 600;
+                cursor: pointer;
+                transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+            }}
+            .speed-button:hover {{
+                background-color: rgba(255, 255, 255, 0.12);
+                transform: translateY(-1px);
+            }}
+            .speed-button.active {{
+                background-color: rgba(255, 214, 88, 0.28);
+                border-color: rgba(255, 214, 88, 0.75);
             }}
             .listen-text-container {{
                 margin-top: 18px;
-                padding: 12px;
-                border-radius: 14px;
-                background-color: rgba(255, 255, 255, 0.04);
+                padding: 18px 18px;
+                border-radius: 18px;
+                background-color: rgba(15, 23, 42, 0.97);
+                color: #f8fafc;
+                line-height: 1.9;
+                font-size: 1.08rem;
+                letter-spacing: 0.01em;
+                word-break: break-word;
+                word-wrap: break-word;
+                white-space: normal;
+            }}
+            .listen-text-header {{
+                margin: 0 0 16px 0;
+                font-size: 1.1rem;
+                font-weight: 700;
+                color: #f8fafc;
+            }}
+            .listen-sentence {{
+                display: inline;
+                padding: 0;
+                margin: 0;
+                border-radius: 6px;
+                transition: background-color 0.15s ease, box-shadow 0.15s ease;
+                background-color: transparent;
+            }}
+            .listen-sentence.active {{
+                background-color: rgba(255, 214, 88, 0.28);
+                box-shadow: 0 0 0 2px rgba(255, 214, 88, 0.4), inset 0 0 0 1px rgba(255, 214, 88, 0.2);
+                padding: 2px 6px;
+                border-radius: 8px;
+            }}
+            @media (max-width: 768px) {{
+                .listen-text-container {{
+                    padding: 16px;
+                    font-size: 1rem;
+                    line-height: 1.8;
+                }}
             }}
         </style>
         <div class='audio-player-container'>
-            <audio id='ttsAudio' controls style='width: 100%; display: block; min-height: 48px;'>
+            <audio id='ttsAudio' controls controlsList='nodownload' style='width: 100%; display: block; min-height: 48px;'>
                 <source src='data:audio/mp3;base64,{audio_base64}' type='audio/mpeg'>
                 Your browser does not support HTML5 audio.
             </audio>
-            <div style='margin-top: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;'>
-                <label for='speedSelector' style='font-weight: 600; margin-bottom: 0;'>Playback speed:</label>
-                <select id='speedSelector' style='padding: 6px 10px;'>
-                    <option value='0.75'>0.75x</option>
-                    <option value='1.0' selected>1.0x</option>
-                    <option value='1.25'>1.25x</option>
-                    <option value='1.5'>1.5x</option>
-                    <option value='1.75'>1.75x</option>
-                    <option value='2.0'>2.0x</option>
-                </select>
-            </div>
-            <div id='sentenceContainer' class='listen-text-container'></div>
+            <div class='speed-buttons' id='speedButtons'></div>
+            <div id='sentenceContainer' class='listen-text-container' aria-live='polite'></div>
+            <div id='fullTextContainer' class='listen-text-container' aria-live='polite'></div>
         </div>
         <script>
-            const audioText = JSON.parse({audio_text});
+            const sentences = JSON.parse(atob('{sentences_b64}'));
+            const fullText = atob('{full_text_b64}');
             const sentenceContainer = document.getElementById('sentenceContainer');
+            const fullTextContainer = document.getElementById('fullTextContainer');
             const audioElem = document.getElementById('ttsAudio');
-            const speedSelector = document.getElementById('speedSelector');
-
-            const sentences = audioText
-                .replace(/\s+/g, ' ')
-                .trim()
-                .split(/(?<=[.!?])\s+/)
-                .filter(Boolean);
-
-            let sentenceDuration = 0;
+            const speedButtons = document.getElementById('speedButtons');
+            const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
             let activeSentence = -1;
+            const sentenceWeights = sentences.map(function(sentence) {{
+                return Math.max(1, sentence.trim().split(/\s+/).length);
+            }});
+            const sentenceTimings = [];
+
+            console.log('Sentence count:', sentences.length);
+            console.log('Full text length:', fullText.length);
+            console.log('Sentences array:', sentences);
+
+            function createSpeedButtons() {{
+                speedButtons.innerHTML = '';
+                speeds.forEach(function(speed) {{
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'speed-button';
+                    button.dataset.speed = speed;
+                    button.textContent = speed + 'x';
+                    if (speed === 1.0) {{
+                        button.classList.add('active');
+                    }}
+                    button.addEventListener('click', function() {{
+                        audioElem.playbackRate = parseFloat(this.dataset.speed);
+                        updateSpeedButtons();
+                    }});
+                    speedButtons.appendChild(button);
+                }});
+            }}
+
+            function updateSpeedButtons() {{
+                const nodes = speedButtons.querySelectorAll('.speed-button');
+                nodes.forEach(function(node) {{
+                    node.classList.toggle('active', parseFloat(node.dataset.speed) === audioElem.playbackRate);
+                }});
+            }}
+
+            function computeSentenceTimings() {{
+                sentenceTimings.length = 0;
+                const duration = audioElem.duration || 0;
+                const totalWeight = sentenceWeights.reduce(function(sum, weight) {{
+                    return sum + weight;
+                }}, 0);
+                console.log('Audio duration:', duration);
+                if (!duration || totalWeight === 0) {{
+                    return;
+                }}
+                let start = 0;
+                sentences.forEach(function(_, index) {{
+                    const weight = sentenceWeights[index];
+                    const length = (weight / totalWeight) * duration;
+                    const end = Math.min(duration, start + length);
+                    sentenceTimings.push({{ start: start, end: end }});
+                    start = end;
+                }});
+            }}
 
             function renderSentences() {{
-                sentenceContainer.innerHTML = '<p>TEST TEXT</p>' + sentences
-                    .map(function(sentence, index) {{
-                        return '<div class="listen-sentence" data-index="' + index + '">' + sentence + '</div>';
-                    }})
-                    .join('');
+                if (!sentences || sentences.length === 0) {{
+                    sentenceContainer.innerHTML =
+                        '<div class="listen-text-header">Text being read:</div>' +
+                        '<p style="margin: 0;">No sentences were found.</p>';
+                }} else {{
+                    const sentenceSpans = sentences
+                        .map(function(sentence, index) {{
+                            return '<span class="listen-sentence" data-index="' + index + '">' +
+                                sentence +
+                                '</span>';
+                        }})
+                        .join(' ');
+                    sentenceContainer.innerHTML =
+                        '<div class="listen-text-header">Text being read:</div>' +
+                        '<p style="margin: 0; text-align: left; word-wrap: break-word;">' +
+                        sentenceSpans +
+                        '</p>';
+                }}
+            }}
+
+            function renderFullText() {{
+                if (!fullText || fullText.trim().length === 0) {{
+                    fullTextContainer.innerHTML = '';
+                }}
             }}
 
             function updateActiveSentence() {{
-                if (sentences.length === 0 || !audioElem.duration || isNaN(audioElem.duration)) {{
+                const currentTime = audioElem.currentTime;
+                console.log('audio currentTime:', currentTime);
+                console.log('audio duration (rechecked):', audioElem.duration);
+                if (sentences.length === 0 || sentenceTimings.length === 0) {{
                     return;
                 }}
-
-                const currentTime = audioElem.currentTime;
-                const index = Math.min(
-                    sentences.length - 1,
-                    Math.floor(currentTime / sentenceDuration)
-                );
-
+                let index = sentenceTimings.findIndex(function(timing) {{
+                    return currentTime >= timing.start && currentTime < timing.end;
+                }});
+                if (index === -1 && !audioElem.ended) {{
+                    index = currentTime >= audioElem.duration ? sentenceTimings.length - 1 : 0;
+                }}
                 if (audioElem.ended) {{
                     activeSentence = -1;
                 }} else {{
                     activeSentence = index;
                 }}
-
+                console.log('active sentence index:', activeSentence);
                 const sentenceNodes = sentenceContainer.querySelectorAll('.listen-sentence');
                 sentenceNodes.forEach(function(node) {{
                     const nodeIndex = Number(node.dataset.index);
-                    node.classList.toggle('active', nodeIndex === activeSentence);
+                    const shouldBeActive = nodeIndex === activeSentence;
+                    node.classList.toggle('active', shouldBeActive);
+                    if (shouldBeActive) {{
+                        node.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+                    }}
                 }});
             }}
 
-            function resetSentences() {{
-                activeSentence = -1;
-                const sentenceNodes = sentenceContainer.querySelectorAll('.listen-sentence');
-                sentenceNodes.forEach(function(node) {{
-                    node.classList.remove('active');
+            function initialize() {{
+                createSpeedButtons();
+                renderSentences();
+                renderFullText();
+                if (sentences.length > 0) {{
+                    console.log('Loaded sentences:', sentences.length);
+                }} else {{
+                    console.log('No sentences loaded.');
+                }}
+                audioElem.addEventListener('loadedmetadata', function() {{
+                    computeSentenceTimings();
+                    updateActiveSentence();
+                }});
+                ['play', 'pause', 'timeupdate', 'seeked'].forEach(function(eventName) {{
+                    audioElem.addEventListener(eventName, updateActiveSentence);
                 }});
             }}
 
-            audioElem.addEventListener('loadedmetadata', function() {{
-                sentenceDuration = audioElem.duration / Math.max(sentences.length, 1);
-                updateActiveSentence();
-            }});
-
-            audioElem.addEventListener('play', function() {{
-                updateActiveSentence();
-            }});
-
-            audioElem.addEventListener('pause', function() {{
-                updateActiveSentence();
-            }});
-
-            audioElem.addEventListener('timeupdate', function() {{
-                updateActiveSentence();
-            }});
-
-            audioElem.addEventListener('ended', function() {{
-                resetSentences();
-            }});
-
-            audioElem.addEventListener('seeked', function() {{
-                updateActiveSentence();
-            }});
-
-            speedSelector.addEventListener('change', function() {{
-                audioElem.playbackRate = parseFloat(this.value);
-                updateActiveSentence();
-            }});
-
-            renderSentences();
+            initialize();
         </script>
         """
 
-        components.html(audio_html, height=900)
+        components.html(audio_html, height=950)
 
         st.download_button(
             label="⬇️ Download Audio",
@@ -546,28 +643,18 @@ def render_listen_mode() -> None:
 
 
 def render_visual_mode() -> None:
-    """Render Visual Learn mode with three educational visual types.
-    
-    Generates and displays:
-    1. Educational Illustration - emoji-based learning flowchart
-    2. Process Flowchart - step-by-step process diagram
-    3. Concept Summary - visual summary card
-    """
-    st.subheader("📊 Visual Learn Mode")
-    
-    st.markdown("**Transform your learning into beautiful educational visuals!**")
+    """Render Visual Learn mode with a single selected visual type."""
+    st.subheader("🖼️ Choose a visual learning style")
+
+    st.markdown("**Pick one visual type before generating:**")
     st.markdown(
-        "Three visual types help you learn better:\n"
-        "• 📚 **Educational Illustration** - Visual step-by-step guide\n"
-        "• 🔄 **Process Flowchart** - Step-by-step process diagram\n"
-        "• 🎯 **Concept Summary** - Key inputs, outputs, and components"
+        "🔄 Flowchart – Step-by-step visual process\n"
+        "🧠 Mind Map – Concept connections and relationships"
     )
-    
+
     # Get UI preferences for theme
     preferences = get_ui_preferences()
     theme = preferences.get("theme", "Light").lower().replace(" ", "_")
-    
-    # Theme mapping to educational visuals theme names
     theme_mapping = {
         "light": "light",
         "dark": "dark",
@@ -575,157 +662,120 @@ def render_visual_mode() -> None:
         "yellow": "dyslexia_yellow",
     }
     visual_theme = theme_mapping.get(theme, "light")
-    
-    if st.button("🎨 Generate Educational Visuals", type="primary", key="gen_visual_edu"):
-        with st.spinner("Creating three educational visuals..."):
-            try:
-                visual = generate_visual_content(st.session_state.document_text, theme=visual_theme)
-                st.session_state.visual_content = visual
-                st.success("✅ Three educational visuals created!")
-            except (VisualError, LLMRouterError) as exc:
-                show_user_error("Could not create educational visuals right now. Please try again.", exc)
-    
+
+    selected_label = st.selectbox(
+        "Choose one visual type",
+        options=["Select a visual", "🔄 Flowchart", "🧠 Mind Map"],
+        key="visual_choice",
+    )
+
+    if selected_label == "🔄 Flowchart":
+        st.session_state.selected_visual = "flowchart"
+    elif selected_label == "🧠 Mind Map":
+        st.session_state.selected_visual = "mind_map"
+    else:
+        st.session_state.selected_visual = None
+
+    selected_visual = st.session_state.get("selected_visual")
+    if not selected_visual:
+        st.info("Please select exactly one visual type before generating.")
+
+    if st.button("🎨 Generate Visual", type="primary", key="gen_visual"):
+        if not st.session_state.document_text:
+            st.warning("Upload a document or extract text before generating a visual.")
+        elif selected_visual not in {"flowchart", "mind_map"}:
+            st.warning("Please select exactly one visual type before generating.")
+        else:
+            with st.spinner("Generating visual..."):
+                try:
+                    visual = generate_visual_content(
+                        st.session_state.document_text,
+                        theme=visual_theme,
+                        visual_type=selected_visual,
+                    )
+                    st.session_state.visual_content = visual
+                    st.success(f"✅ { 'Flowchart' if selected_visual == 'flowchart' else 'Mind Map' } created")
+                except (VisualError, LLMRouterError) as exc:
+                    show_user_error("Could not create the selected visual. Please try again.", exc)
+
     if st.session_state.visual_content:
         visual = st.session_state.visual_content
-        
-        # Header with topic and description
-        st.markdown(f"## 🎓 {visual.get('title', 'Learning Visuals')}")
+        st.markdown(f"## 🖼️ {visual.get('title', 'Visual Learning')}")
         st.markdown(f"**Topic:** {visual.get('topic', 'General').title()}")
-        if visual.get('description'):
+        if visual.get("description"):
             st.markdown(f"*{visual.get('description')}*")
-        
+
         st.divider()
-        
-        # 1. EDUCATIONAL ILLUSTRATION
-        st.markdown("### 📚 Educational Illustration")
-        st.markdown("*A visual step-by-step guide to understanding the concept*")
-        
-        illustration_path = visual.get('illustration_path', '')
-        if illustration_path and os.path.exists(illustration_path):
-            try:
-                image = Image.open(illustration_path)
-                st.image(image, use_container_width=True, caption="Educational Learning Flowchart")
-                
-                # Download button for illustration
-                with open(illustration_path, "rb") as img_file:
-                    st.download_button(
-                        label="⬇️ Download Illustration",
-                        data=img_file.read(),
-                        file_name="educational_illustration.png",
-                        mime="image/png",
-                        key="download_illustration"
-                    )
-            except Exception as exc:
-                logger.exception("Could not display educational illustration.")
-                st.warning("Illustration could not be displayed.")
-        else:
-            st.info("Illustration not available.")
-        
+
+        if selected_visual == "flowchart":
+            st.markdown("### 🔄 Flowchart")
+            st.markdown("*Step-by-step process — emoji nodes, color-coded boxes, minimal text*")
+            flowchart_path = visual.get("flowchart_path", "")
+            if flowchart_path and os.path.exists(flowchart_path):
+                try:
+                    image = Image.open(flowchart_path)
+                    st.image(image, use_container_width=True, caption="Flowchart")
+                    with open(flowchart_path, "rb") as img_file:
+                        st.download_button(
+                            label="⬇️ Download Flowchart",
+                            data=img_file.read(),
+                            file_name="flowchart.png",
+                            mime="image/png",
+                            key="download_flowchart",
+                        )
+                except Exception as exc:
+                    logger.exception("Could not display flowchart.")
+                    st.warning("Flowchart could not be displayed.")
+            else:
+                st.info("Flowchart not available.")
+
+        elif selected_visual == "mind_map":
+            st.markdown("### 🧠 Mind Map")
+            st.markdown("*Central concept with colorful emoji branches and short labels*")
+            mindmap_path = visual.get("mindmap_path", "")
+            if mindmap_path and os.path.exists(mindmap_path):
+                try:
+                    image = Image.open(mindmap_path)
+                    st.image(image, use_container_width=True, caption="Mind Map")
+                    with open(mindmap_path, "rb") as img_file:
+                        st.download_button(
+                            label="⬇️ Download Mind Map",
+                            data=img_file.read(),
+                            file_name="mind_map.png",
+                            mime="image/png",
+                            key="download_mindmap",
+                        )
+                except Exception as exc:
+                    logger.exception("Could not display mind map.")
+                    st.warning("Mind map could not be displayed.")
+            else:
+                st.info("Mind map not available.")
+
         st.divider()
-        
-        # 2. PROCESS FLOWCHART
-        st.markdown("### 🔄 Process Flowchart")
-        st.markdown("*A structured diagram showing the step-by-step process*")
-        
-        flowchart_path = visual.get('flowchart_path', '')
-        if flowchart_path and os.path.exists(flowchart_path):
-            try:
-                image = Image.open(flowchart_path)
-                st.image(image, use_container_width=True, caption="Process Flowchart")
-                
-                # Download button for flowchart
-                with open(flowchart_path, "rb") as img_file:
-                    st.download_button(
-                        label="⬇️ Download Flowchart",
-                        data=img_file.read(),
-                        file_name="process_flowchart.png",
-                        mime="image/png",
-                        key="download_flowchart"
-                    )
-            except Exception as exc:
-                logger.exception("Could not display process flowchart.")
-                st.warning("Flowchart could not be displayed.")
-        else:
-            st.info("Flowchart not available.")
-        
-        st.divider()
-        
-        # 3. CONCEPT SUMMARY
-        st.markdown("### 🎯 Concept Summary")
-        st.markdown("*A visual summary of inputs, outputs, and key components*")
-        
-        summary_path = visual.get('summary_path', '')
-        if summary_path and os.path.exists(summary_path):
-            try:
-                image = Image.open(summary_path)
-                st.image(image, use_container_width=True, caption="Concept Summary Card")
-                
-                # Download button for summary
-                with open(summary_path, "rb") as img_file:
-                    st.download_button(
-                        label="⬇️ Download Summary",
-                        data=img_file.read(),
-                        file_name="concept_summary.png",
-                        mime="image/png",
-                        key="download_summary"
-                    )
-            except Exception as exc:
-                logger.exception("Could not display concept summary.")
-                st.warning("Summary could not be displayed.")
-        else:
-            st.info("Summary not available.")
-        
-        st.divider()
-        
-        # Display extracted structure
-        structure = visual.get('structure', {})
+        structure = visual.get("structure", {})
         if structure:
             col1, col2 = st.columns(2)
-            
             with col1:
-                steps = structure.get('steps', [])
+                steps = structure.get("steps", [])
                 if steps:
                     st.markdown("#### 📍 Process Steps")
                     for i, step in enumerate(steps, 1):
                         st.markdown(f"{i}. {step}")
-                
-                inputs = structure.get('inputs', [])
+                inputs = structure.get("inputs", [])
                 if inputs:
                     st.markdown("#### 📥 Inputs/Resources")
                     for input_item in inputs:
                         st.markdown(f"• {input_item}")
-            
             with col2:
-                outputs = structure.get('outputs', [])
+                outputs = structure.get("outputs", [])
                 if outputs:
                     st.markdown("#### 📤 Outputs/Results")
                     for output_item in outputs:
                         st.markdown(f"• {output_item}")
-                
-                key_comp = structure.get('key_component', '')
+                key_comp = structure.get("key_component", "")
                 if key_comp:
                     st.markdown("#### ⚙️ Key Component")
                     st.info(f"**{key_comp}**")
-        
-        st.divider()
-        
-        # Download all visuals as JSON
-        import json
-        st.markdown("#### 💾 Export Options")
-        export_data = {
-            "topic": visual.get('topic'),
-            "title": visual.get('title'),
-            "description": visual.get('description'),
-            "structure": visual.get('structure', {}),
-        }
-        visual_json = json.dumps(export_data, indent=2)
-        st.download_button(
-            label="⬇️ Download All Data as JSON",
-            data=visual_json,
-            file_name="visual_learning_data.json",
-            mime="application/json",
-            key="download_all_visuals"
-        )
 
 
 def render_chat_section() -> None:

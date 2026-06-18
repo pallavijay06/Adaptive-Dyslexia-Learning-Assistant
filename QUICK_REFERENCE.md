@@ -1,264 +1,35 @@
-# 🚀 Quick Reference - Visual Learning System
+## Quick Reference — Visual Learn Mode
 
-## One-Minute Overview
+This project now produces two dyslexia-friendly, emoji-rich visual types:
 
-The Visual Learning system has been **completely redesigned** to generate **3 educational visuals** instead of technical graphs.
+- 🔄 Flowchart — Step-by-step, diagrammatic process (boxes, arrows, emoji nodes)
+- 🧠 Mind Map — Central concept with related emoji nodes and large spacing
 
-### What Changed
-- ❌ Old: One technical graph with green circles
-- ✅ New: Three beautiful educational visuals (Illustration, Flowchart, Summary)
+Key points:
+- Outputs use short labels, emojis, and minimal text for quick scanning.
+- Flowcharts include emoji-prefixed nodes and clear arrows.
+- Mind maps are radial, emoji-first, and optimized for readability.
 
-### What You Get
-```
-Document Upload
-    ↓
-Generate Button
-    ↓
-📚 Educational Illustration    (0.5s)
-🔄 Process Flowchart          (1.0s)
-🎯 Concept Summary            (0.3s)
-    ↓
-Display + Download (2-3 seconds total)
-```
-
----
-
-## Start Using It
-
-### 1. Launch App
-```bash
-cd "c:\Users\palla\OneDrive\Desktop\Adaptive-Dyslexia-Learning-Assistant"
-streamlit run app.py
-```
-
-### 2. Upload Document
-- Click upload button
-- Select PDF/DOCX with educational content
-- Wait for preview
-
-### 3. Generate Visuals
-- Go to "Visual Learn" mode
-- Click "🎨 Generate Educational Visuals"
-- Wait 2-3 seconds
-- See three beautiful visuals!
-
-### 4. Download
-- Download individual visuals as PNG
-- Export data as JSON
-- Share with students/teachers
-
----
-
-## Three Visual Types
-
-### 📚 Educational Illustration
-**What:** Step-by-step learning guide with emojis
-**Use:** Photosynthesis, water cycle, digestion, etc.
-**Size:** 25-26 KB
-**Time:** 0.5 seconds
-
-### 🔄 Process Flowchart
-**What:** Professional process diagram
-**Use:** Detailed procedures, workflows
-**Size:** 30-35 KB
-**Time:** 1.0 second
-
-### 🎯 Concept Summary
-**What:** Inputs/Key Component/Outputs card
-**Use:** Understanding relationships
-**Size:** 16-18 KB
-**Time:** 0.3 seconds
-
----
-
-## Color Themes
-
-### 4 Themes (All Dyslexia-Friendly)
-- 💡 **Light** - White background, dark text
-- 🌙 **Dark** - Dark background, light text
-- 🟤 **Cream** - Warm, off-white (dyslexia-friendly)
-- 🟡 **Yellow** - Bright yellow (dyslexia-friendly)
-
-### Switch Theme
-1. Go to Settings/Preferences
-2. Select theme
-3. Regenerate visuals
-4. See new colors!
-
----
-
-## Topic Examples
-
-### Automatic Topic Detection
-Upload documents about:
-- ✅ Photosynthesis → Topic detected, emoji-enhanced
-- ✅ Water Cycle → Topic detected, emoji-enhanced
-- ✅ Digestive System → Topic detected, emoji-enhanced
-- ✅ Anything else → Generic generation
-
----
-
-## API Usage (Developers)
-
-### Generate All Visuals
+API (developer):
 ```python
 from services.visual_service import generate_visual_content
 
-visuals = generate_visual_content(
-    text="Your content here...",
-    theme="light"
-)
-
-# Returns:
-# - illustration_path
-# - flowchart_path
-# - summary_path
-# - structure (steps, inputs, outputs)
-# - topic, title, description
+visuals = generate_visual_content(text="...", theme="light")
+print(list(visuals.keys()))
+# -> ['topic','title','description','flowchart_path','mindmap_path','structure']
 ```
 
-### Generate Specific Visual
-```python
-from services.educational_visuals import (
-    create_educational_illustration,
-    create_process_flowchart,
-    create_concept_summary,
-)
-
-# Illustration
-path = create_educational_illustration(
-    topic="Photosynthesis",
-    steps=["Step 1", "Step 2", ...],
-    theme="light"
-)
-
-# Flowchart
-path = create_process_flowchart(
-    title="Process Name",
-    steps=["Step 1", "Step 2", ...],
-    theme="light"
-)
-
-# Summary
-path = create_concept_summary(
-    title="Concept",
-    inputs=["Input 1", "Input 2"],
-    outputs=["Output 1", "Output 2"],
-    key_component="Key Process",
-    theme="light"
-)
-```
-
-### Detect Topic
-```python
-from services.educational_visuals import detect_topic
-
-topic = detect_topic("Your document text...")
-# Returns: "photosynthesis", "water_cycle", etc.
-```
-
----
-
-## File Locations
-
-### Generated Visuals
+Generated files:
 ```
 generated_diagrams/
-├─ edu_illustration_*.png
 ├─ flowchart_edu_*.png
-└─ concept_summary_*.png
+└─ mindmap_*.png
 ```
 
-### Source Code
-```
-services/
-├─ educational_visuals.py (NEW - core engine)
-├─ visual_service.py (REDESIGNED - orchestration)
-└─ visual_service_old.py (BACKUP)
+If you'd like, I can now:
+- Update other docs to remove older references, or
+- Further tweak emoji selection, fonts, and spacing in visuals.
 
-app.py (render_visual_mode updated)
-
-test_educational_visuals.py (test suite)
-```
-
-### Documentation
-```
-IMPLEMENTATION_SUMMARY.md
-VISUAL_LEARNING_REDESIGN.md
-VISUAL_LEARNING_IMPLEMENTATION.md
-DEPLOYMENT_CHECKLIST.md
-```
-
----
-
-## Troubleshooting
-
-### Visuals not displaying?
-- Check file paths exist
-- Clear Streamlit cache: `st.cache_data.clear()`
-- Restart app
-
-### Emoji showing as boxes?
-- Normal on some systems
-- Text still readable
-- Colors still visible
-
-### Generation taking too long?
-- Check LLM service (OpenAI/Gemini/Ollama)
-- Should be 2-3 seconds total
-- Check network connection
-
-### Theme colors not applying?
-- Regenerate visuals after theme change
-- Clear app cache if needed
-- Check theme setting saved
-
----
-
-## Performance
-
-### Speed
-| Task | Time |
-|------|------|
-| Topic detection | ~0.1s |
-| Structure extraction | ~1.2s |
-| Illustration | ~0.5s |
-| Flowchart | ~1.0s |
-| Summary | ~0.3s |
-| **Total** | **~3s** |
-
-### Sizes
-| Visual | Size |
-|--------|------|
-| Illustration | 25-26 KB |
-| Flowchart | 30-35 KB |
-| Summary | 16-18 KB |
-| **Total** | **~70 KB** |
-
----
-
-## Testing
-
-### Run Tests
-```bash
-python test_educational_visuals.py
-```
-
-**Output:**
-- Topic detection: ✓
-- All visuals generated: ✓
-- All themes: ✓
-- File creation: ✓
-
----
-
-## Features Checklist
-
-### ✅ Completed
-- [x] Three visual types
-- [x] Topic detection
-- [x] Four color themes
-- [x] Emoji support
 - [x] Dyslexia-friendly design
 - [x] Fast generation (2-3s)
 - [x] Download support

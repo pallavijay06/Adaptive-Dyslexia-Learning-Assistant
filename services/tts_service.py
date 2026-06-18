@@ -80,6 +80,30 @@ def clean_text_for_speech(text: str) -> str:
 
     return text
 
+_SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[.!?])\s+')
+
+
+def split_text_into_sentences(text: str) -> list[str]:
+    """Split cleaned text into readable sentences for audio sync.
+
+    Args:
+        text: Raw text to process.
+
+    Returns:
+        List of sentence strings with punctuation preserved.
+    """
+    if not text or not text.strip():
+        return []
+
+    cleaned_text = clean_text_for_speech(text)
+    sentences = [
+        sentence.strip()
+        for sentence in _SENTENCE_BOUNDARY_RE.split(cleaned_text)
+        if sentence.strip()
+    ]
+    return sentences
+
+
 def generate_audio(text: str, lang: str = "en", slow: bool = False) -> str:
     """Generate MP3 audio from text using Google Text-to-Speech.
     

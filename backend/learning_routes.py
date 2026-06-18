@@ -199,12 +199,13 @@ def visualize():
     """
     data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
+    visual_type = (data.get("visual_type") or None)
 
     if not text:
         return jsonify({"error": "Text cannot be empty"}), 400
 
     try:
-        visual_content = generate_visual_content(text)
+        visual_content = generate_visual_content(text, visual_type=visual_type)
         return jsonify({
             "visual": visual_content,
             "success": True
