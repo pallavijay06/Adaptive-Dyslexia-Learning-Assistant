@@ -144,12 +144,13 @@ def render_vocabulary_panel(content: str | None = None) -> None:
         font-size: {READING_SECONDARY_HEADING_SCALE};
         margin: 0 0 {READING_SECTION_GAP};
       }}
-            .vocab-highlight {{
-                background-color: {theme["secondary_background"]};
-        padding: 0.5rem 0.75rem;
-        border-radius: 6px;
-        font-weight: 700;
-      }}
+                        .vocab-highlight {{
+                                background-color: {theme["secondary_background"]};
+                color: {theme['text_color']};
+                padding: 0.5rem 0.75rem;
+                border-radius: 6px;
+                font-weight: 700;
+            }}
     </style>
     """ , unsafe_allow_html=True)
 
@@ -172,6 +173,22 @@ def render_vocabulary_panel(content: str | None = None) -> None:
             return "#1D4ED8"
 
         accent = _vocab_accent_color(theme)
+
+        # Determine whether accent is light/dark to pick readable text color
+        def _is_light_hex(hex_color: str) -> bool:
+            c = hex_color.lstrip("#")
+            if len(c) == 3:
+                c = ''.join([ch*2 for ch in c])
+            try:
+                r = int(c[0:2], 16)
+                g = int(c[2:4], 16)
+                b = int(c[4:6], 16)
+            except Exception:
+                return False
+            brightness = (r * 299 + g * 587 + b * 114) / 1000
+            return brightness > 160
+
+        highlight_text_color = "#000" if _is_light_hex(accent) else "#fff"
 
         # Use session cache to avoid repeated LLM calls across reruns
         cache = st.session_state.setdefault("vocab_explain_cache", {})
@@ -203,25 +220,26 @@ def render_vocabulary_panel(content: str | None = None) -> None:
               </div>
             </div>
             <style>
-              .vocab-details {{
-                margin-top: {READING_SECTION_GAP};
-                font-size: {font_size}px;
-                line-height: {READING_LINE_HEIGHT};
-                letter-spacing: {character_spacing};
-                background-color: {theme['background_color']};
-                padding: 0.75rem;
-                border-radius: 8px;
-                border: 1px solid {theme['border_color']};
-              }}
-              .vocab-highlight {{
-                display: inline-block;
-                background-color: {accent};
-                color: {theme['background_color']};
-                padding: 0.5rem 0.75rem;
-                border-radius: 6px;
-                font-weight: 800;
-                box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-              }}
+                            .vocab-details {{
+                                margin-top: {READING_SECTION_GAP};
+                                font-size: {font_size}px;
+                                line-height: {READING_LINE_HEIGHT};
+                                letter-spacing: {character_spacing};
+                                background-color: {theme['background_color']};
+                                color: {theme['text_color']};
+                                padding: 0.75rem;
+                                border-radius: 8px;
+                                border: 1px solid {theme['border_color']};
+                            }}
+                            .vocab-highlight {{
+                                display: inline-block;
+                                background-color: {accent};
+                                color: {highlight_text_color};
+                                padding: 0.5rem 0.75rem;
+                                border-radius: 6px;
+                                font-weight: 800;
+                                box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+                            }}
             </style>
             """
         ).strip()
