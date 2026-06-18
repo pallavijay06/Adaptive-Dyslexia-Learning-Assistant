@@ -41,6 +41,7 @@ data.sqlite
 # OS Files
 .DS_Store
 Thumbs.db
+data.sqlite
 
 # Build Files
 build/
