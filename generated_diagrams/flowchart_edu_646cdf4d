@@ -1,0 +1,16 @@
+digraph flowchart_87949ff1 {
+	fontsize=20 label="Educational Content" labelloc=t margin=0.5 nodesep=0.8 pad=0.5 rankdir=TB ranksep=1.2
+	node [color="#0C63E4" fillcolor="#DBEAFE" fontcolor="#111827" fontname=Arial fontsize=14 penwidth=2 shape=box style="rounded,filled"]
+	edge [arrowsize=1.8 color="#6366F1" fontname=Arial penwidth=2.5]
+	step0 [label=Photosynthesis]
+	step1 [label="Photosynthesis is the process by which green plant..."]
+	step2 [label="carbon dioxide"]
+	step3 [label="Key Points"]
+	step4 [label=" Photosynthesis takes place mainly in the leaves"]
+	step5 [label=" Chlorophyll is the green pigment that absorbs su..."]
+	step0 -> step1
+	step1 -> step2
+	step2 -> step3
+	step3 -> step4
+	step4 -> step5
+}
