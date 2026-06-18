@@ -11,7 +11,10 @@ from flask import Flask, jsonify
 from backend.chat_routes import chat_bp
 from backend.upload_routes import upload_bp
 from backend.learning_routes import learning_bp
+from backend.quiz_routes import quiz_bp
+
 from database import init_db
+
 
 def create_app() -> Flask:
     """Create and configure the Flask app."""
@@ -27,6 +30,7 @@ def create_app() -> Flask:
     app.register_blueprint(chat_bp)
     app.register_blueprint(upload_bp)
     app.register_blueprint(learning_bp)
+    app.register_blueprint(quiz_bp)
 
     @app.get("/health")
     def health() -> tuple[object, int]:

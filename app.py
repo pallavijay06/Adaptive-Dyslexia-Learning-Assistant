@@ -942,11 +942,15 @@ def render_word_explorer() -> None:
         
         # Simple accent color logic
         accent_color = "#93C5FD" if theme["background_color"] == "#121826" else "#1D4ED8"
+
+        # Ensure generated content text remains readable on all themes.
+        is_dark_theme = theme["background_color"] == "#121826"
+        content_text_color = theme["text_color"] if is_dark_theme else "#1a1a1a"
         
         html_result = f"""
         <div style="margin-top: 1rem; padding: 1rem; background-color: {theme['secondary_background']}; 
                     border: 1px solid {theme['border_color']}; border-radius: 8px; font-size: {font_size}px; 
-                    line-height: 1.8; letter-spacing: {character_spacing};">
+                    line-height: 1.8; letter-spacing: {character_spacing}; color: {content_text_color};">
             <div style="display: inline-block; background-color: {accent_color}; color: {theme['background_color']}; 
                         padding: 0.5rem 0.75rem; border-radius: 6px; font-weight: 800; margin-bottom: 0.9rem;">
                 {exp.get('word', 'Unknown').capitalize()}
