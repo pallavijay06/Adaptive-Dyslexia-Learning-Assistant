@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from flask import Blueprint, jsonify, request
 
 from services.document_context import DocumentError, get_document_text
@@ -13,25 +15,41 @@ from services.llm_router import (
     summarize_document,
 )
 from backend.rag import ask_document
+from database.db import save_chat, save_user, get_user
 
+logger = logging.getLogger(__name__)
 
 chat_bp = Blueprint("chat", __name__)
 
 
+def _resolve_user_id() -> int:
+    """Resolve a user id for chat storage using a fallback anonymous account."""
+    user = get_user("anonymous@cheal.local")
+    if user is not None:
+        return user.id  # type: ignore[index]
+
+    anonymous = save_user(
+        name="Anonymous Learner",
+        email="anonymous@cheal.local",
+        password_hash="",
+    )
+    return anonymous.id  # type: ignore[index]
+
+
 @chat_bp.post("/chat")
 def chat() -> tuple[object, int]:
-    """Handle a single chat turn.
-
-    Expected request:
-        {"message": "Explain photosynthesis"}
-
-    Optional future-compatible field:
-        {"document_text": "..."} can be supplied after parser integration.
-    """
+    """Handle a single chat turn and persist the conversation."""
     payload = request.get_json(silent=True) or {}
     message = (payload.get("message") or "").strip()
     document_id = payload.get("document_id")
     document_text = payload.get("document_text")
+    document_id_for_db = None
+
+    if document_id is not None:
+        try:
+            document_id_for_db = int(document_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "document_id must be an integer."}), 400
 
     if not message:
         return jsonify({"error": "Message cannot be empty."}), 400
@@ -41,6 +59,19 @@ def chat() -> tuple[object, int]:
             message,
             document_id=document_id,
             document_text=document_text,
+        )
+        user_id = _resolve_user_id()
+        saved_chat = save_chat(
+            user_id=user_id,
+            document_id=document_id_for_db,
+            user_message=message,
+            ai_response=response,
+        )
+        logger.info(
+            "Chat saved to database: id=%s, user_id=%s, document_id=%s",
+            saved_chat.id,
+            saved_chat.user_id,
+            saved_chat.document_id,
         )
         return jsonify({"response": response}), 200
     except DocumentError as exc:

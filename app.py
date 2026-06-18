@@ -27,6 +27,7 @@ from backend.chunker import chunk_text
 from backend.parser import process_uploaded_file
 from backend.retriever import retrieve_relevant_chunks_for_question
 from backend.vector_store import build_index
+from database.db import save_document, save_user, get_user, save_chat
 from components.accessibility.read_mode_accessibility import render_read_mode_accessibility_panel
 from components.reading.reading_view import (
     render_key_takeaways,
@@ -86,6 +87,20 @@ def initialize_session_state() -> None:
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+def _resolve_anonymous_user_id() -> int:
+    """Return an existing anonymous user id or create one for local storage.
+
+    This helper mirrors the backend fallback used by Flask routes so Streamlit
+    interactions can persist without a full auth system.
+    """
+    user = get_user("anonymous@cheal.local")
+    if user is not None:
+        return user.id  # type: ignore[index]
+
+    anonymous = save_user(name="Anonymous Learner", email="anonymous@cheal.local", password_hash="")
+    return anonymous.id  # type: ignore[index]
 
 
 
@@ -226,7 +241,21 @@ def _process_document(uploaded_file) -> None:
             file_bytes = uploaded_file.getvalue()
             record = process_uploaded_file(uploaded_file.name, file_bytes)
             document_text = get_document_text(record.document_id)
-            
+
+            # Persist the uploaded document and extracted text to SQLite so the
+            # Streamlit client and Flask backend share the same store of records.
+            user_id = _resolve_anonymous_user_id()
+            saved_document = save_document(
+                user_id=user_id,
+                file_name=record.original_filename,
+                file_type=Path(record.original_filename).suffix.lstrip("."),
+                document_text=document_text or "",
+            )
+
+            # Expose saved DB id to the session so chat turns can reference it.
+            print(f"Saved document: {record.original_filename}")
+            st.session_state.saved_document_id = saved_document.id
+
             st.session_state.document_record = record
             st.session_state.document_text = document_text
             st.session_state.document_chunks = chunk_text(document_text or "")
@@ -823,6 +852,19 @@ def render_chat_section() -> None:
                 answer = "Something went wrong while answering. Please try again."
         
         st.markdown(answer)
+        # Persist chat turn to SQLite so chat_history appears immediately
+        try:
+            user_id = _resolve_anonymous_user_id()
+            document_id_for_db = st.session_state.get("saved_document_id")
+            save_chat(
+                user_id=user_id,
+                document_id=document_id_for_db,
+                user_message=user_question,
+                ai_response=answer,
+            )
+            print("Chat saved to database")
+        except Exception as exc:
+            logger.exception("Failed to save chat to database: %s", exc)
     
     st.session_state.chat_history.append({"role": "assistant", "content": answer})
 

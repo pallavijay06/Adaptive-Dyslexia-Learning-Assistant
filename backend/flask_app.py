@@ -11,6 +11,7 @@ from flask import Flask, jsonify
 from backend.chat_routes import chat_bp
 from backend.upload_routes import upload_bp
 from backend.learning_routes import learning_bp
+from database import init_db
 
 def create_app() -> Flask:
     """Create and configure the Flask app."""
@@ -18,6 +19,9 @@ def create_app() -> Flask:
     app = Flask(__name__)
 
     app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
+
+    # Initialize database on startup so tables exist before requests arrive.
+    init_db()
 
     # Register blueprints
     app.register_blueprint(chat_bp)

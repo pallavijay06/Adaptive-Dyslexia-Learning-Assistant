@@ -17,7 +17,8 @@ from urllib import response
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
+import pytesseract
 
 from services.gemini_service import GeminiAPIError, GeminiConfigurationError
 
@@ -89,17 +90,22 @@ def _is_handwritten(image_path: Path) -> bool:
 
 def _extract_with_tesseract(image_path: Path) -> str:
     try:
-        import pytesseract
-
         image = Image.open(image_path)
 
+        # Use a robust default configuration suitable for printed educational text
         custom_config = r'--oem 3 --psm 6'
 
-        text = pytesseract.image_to_string(
-            image,
-            config=custom_config,
-            lang='eng'
-        )
+        text = pytesseract.image_to_string(image, config=custom_config, lang="eng")
+
+        # Try to obtain an average confidence where possible
+        try:
+            data = pytesseract.image_to_data(image, config=custom_config, lang="eng", output_type=pytesseract.Output.DICT)
+            confs = [int(v) for v in data.get('conf', []) if v and v != '-1']
+            avg_conf = sum(confs) / len(confs) if confs else None
+            if avg_conf is not None:
+                print(f"Tesseract avg confidence: {avg_conf:.1f}")
+        except Exception:
+            pass
 
         return text or ""
 
@@ -113,41 +119,71 @@ def _extract_with_preprocessing(image_path: Path) -> str:
         img = cv2.imread(str(image_path))
         if img is None:
             raise OCRPreprocessingError(f"Could not load image: {image_path}")
-        
+        # Log original size
+        orig_h, orig_w = img.shape[:2]
+        print(f"OCR original image size: {orig_w}x{orig_h}")
+
         # Convert to grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Denoise
-        denoised = cv2.fastNlMeansDenoising(gray, h=10)
-        
-        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) for better contrast
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+
+        # Denoise using a combination of median blur and fastNlMeans
+        denoised = cv2.medianBlur(gray, 3)
+        denoised = cv2.fastNlMeansDenoising(denoised, h=8)
+
+        # Increase contrast with CLAHE
+        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(denoised)
-        
-        # Apply adaptive thresholding (better for varying lighting conditions)
+
+        # Detect if text is light on dark and invert if necessary
+        mean_intensity = int(np.mean(enhanced))
+        if mean_intensity < 127:
+            # dark background -> likely light text; invert to get dark text
+            enhanced = cv2.bitwise_not(enhanced)
+
+        # Adaptive thresholding with block size scaled to image size
+        block_size = 15 if max(orig_w, orig_h) > 1000 else 11
         binary = cv2.adaptiveThreshold(
             enhanced,
             255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY,
-            11,
+            block_size,
             2
         )
-        
-        # Morph operations to clean up noise
+
+        # Morphological cleaning
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
         cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel, iterations=1)
-        cleaned = cv2.resize(cleaned,None,fx=2,fy=2,interpolation=cv2.INTER_CUBIC)
+
+        # Resize small images to improve OCR on small text
+        target_width = 1600
+        if orig_w < target_width:
+            scale = target_width / orig_w
+            cleaned = cv2.resize(cleaned, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+        proc_h, proc_w = cleaned.shape[:2]
+        print(f"OCR processed image size: {proc_w}x{proc_h}")
+
         # Save preprocessed image temporarily
         temp_preprocessed = str(image_path.parent / f"_preprocessed_{image_path.name}")
         cv2.imwrite(temp_preprocessed, cleaned)
-        
+
         try:
-            # Extract text from preprocessed image
-            import pytesseract
+            # Extract text from preprocessed image using Tesseract and gather confidences
             pil_image = Image.open(temp_preprocessed)
-            text = pytesseract.image_to_string(pil_image)
+            custom_config = r'--oem 3 --psm 6'
+            text = pytesseract.image_to_string(pil_image, config=custom_config, lang="eng")
+
+            try:
+                data = pytesseract.image_to_data(pil_image, config=custom_config, lang="eng", output_type=pytesseract.Output.DICT)
+                confs = [int(v) for v in data.get('conf', []) if v and v != '-1']
+                avg_conf = sum(confs) / len(confs) if confs else None
+                if avg_conf is not None:
+                    print(f"Preprocessed OCR avg confidence: {avg_conf:.1f}")
+            except Exception:
+                pass
+
             return text or ""
         finally:
             # Clean up temp file
