@@ -3,31 +3,28 @@
 ## Phase 1: Files & Code ✅
 
 ### Created Files
-- [x] `services/educational_visuals.py` (280 lines)
-  - Educational illustration generator
-  - Process flowchart generator
-  - Concept summary generator
+  - Flowchart + Mind Map generator
+  - Visual generator (Flowchart + Mind Map)
   - Topic detection
   - Emoji mappings
   - Color schemes
 
 - [x] `test_educational_visuals.py` (240 lines)
   - Topic detection tests
-  - Illustration generation tests
-  - Flowchart generation tests
-  - Concept summary tests
+  -- Flowchart generation tests
+    - Mind Map generation tests
   - Full pipeline tests
 
 ### Modified Files
 - [x] `services/visual_service.py` (Complete redesign)
   - New orchestration logic
-  - Three-visual generation
+  - Two-visual generation (Flowchart + Mind Map)
   - Structure extraction
   - Cleanup functions
 
 - [x] `app.py` (render_visual_mode function)
   - New UI layout
-  - Three visual display
+  - Two visual display (Flowchart + Mind Map)
   - Theme integration
   - Download options
 
@@ -68,10 +65,9 @@
 
 Results:
   ✓ Topic Detection: 3/3 passed
-  ✓ Illustration Generation: 4 themes × 1 topic = 4 visuals
-  ✓ Flowchart Generation: 2 themes × 2 topics = 4 visuals
-  ✓ Concept Summary: 3 themes × 3 topics = 9 visuals
-  ✓ Full Pipeline: All three visuals generated successfully
+  ✓ Flowchart Generation: 4 themes × 1 topic = 4 visuals
+  ✓ Mind Map Generation: 4 themes × 1 topic = 4 visuals
+  ✓ Full Pipeline: All visuals generated successfully
 
 Generated Files: 23 PNG files (70 KB total per topic)
 ```
@@ -79,17 +75,12 @@ Generated Files: 23 PNG files (70 KB total per topic)
 ### Generated Samples
 ```
 generated_diagrams/
-├─ edu_illustration_17333cdd.png (26.1 KB) - Photosynthesis (Light)
-├─ edu_illustration_4dbc928c.png (26.1 KB) - Photosynthesis (Dark)
-├─ edu_illustration_a816125c.png (26.1 KB) - Photosynthesis (Cream)
-├─ edu_illustration_b4d1dcc0.png (25.8 KB) - Photosynthesis (Yellow)
 ├─ flowchart_edu_1e714eaa.png (34.2 KB) - Photosynthesis (Light)
 ├─ flowchart_edu_f641b00e.png (33.3 KB) - Photosynthesis (Dark)
 ├─ flowchart_edu_5b13576e.png (31.8 KB) - Water Cycle
-├─ concept_summary_419a8a60.png (16.7 KB) - Photosynthesis
-├─ concept_summary_65d1a30a.png (18.1 KB) - Water Cycle
-├─ concept_summary_86940a5a.png (18.1 KB) - Digestive System
-└─ ... (13 more files)
+├─ mindmap_photosynthesis_17333cdd.png (18.2 KB) - Photosynthesis
+├─ mindmap_watercycle_5b13576e.png (17.9 KB) - Water Cycle
+└─ ... (more files)
 ```
 
 ### Manual Testing Steps
@@ -113,19 +104,15 @@ Expected: App opens at http://localhost:8501
 - [ ] Wait 2-3 seconds for generation
 - [ ] Verify success message appears
 
-#### Step 4: Verify Three Visuals Display
-- [ ] 📚 **Educational Illustration** displays at top
-  - [ ] Shows clear step-by-step boxes
-  - [ ] Has arrows between steps
-  - [ ] Text is large and readable
-- [ ] 🔄 **Process Flowchart** displays in middle
+#### Step 4: Verify Visuals Display
+- [ ] 🔄 **Process Flowchart** displays
   - [ ] Shows rounded boxes
   - [ ] Has clear flow arrows
-  - [ ] Professional appearance
-- [ ] 🎯 **Concept Summary** displays at bottom
-  - [ ] Shows Inputs, Key Component, Outputs
-  - [ ] Color-coded sections
-  - [ ] Clean card layout
+  - [ ] Text is large and readable
+- [ ] 🧠 **Mind Map** displays
+  - [ ] Central concept node present
+  - [ ] Related emoji nodes arranged radially
+  - [ ] Short labels and large spacing
 
 #### Step 5: Test Theme Variations
 - [ ] Go to Settings/Preferences
@@ -143,15 +130,12 @@ Expected: App opens at http://localhost:8501
   - [ ] Dark blue text
 
 #### Step 6: Test Downloads
-- [ ] Click "⬇️ Download Illustration"
-  - [ ] PNG downloads successfully
-  - [ ] File size ~25-26 KB
 - [ ] Click "⬇️ Download Flowchart"
   - [ ] PNG downloads successfully
   - [ ] File size ~30-35 KB
-- [ ] Click "⬇️ Download Summary"
+- [ ] Click "⬇️ Download Mind Map"
   - [ ] PNG downloads successfully
-  - [ ] File size ~16-18 KB
+  - [ ] File size ~15-20 KB
 - [ ] Click "⬇️ Download All Data as JSON"
   - [ ] JSON file downloads
   - [ ] Contains topic, title, structure
@@ -243,18 +227,18 @@ Verify each generates all three visuals correctly.
 - [x] Download buttons functional
 
 ### Visual Service Integration
-- [x] Topic detection working
-- [x] Structure extraction working
-- [x] All three visuals generating
-- [x] Path handling correct
-- [x] Cleanup running periodically
+  - [x] Topic detection working
+  - [x] Structure extraction working
+  - [x] Flowchart + Mind Map generation working
+  - [x] Path handling correct
+  - [x] Cleanup running periodically
 
 ### Educational Visuals Integration
-- [x] Pillow rendering working
-- [x] Graphviz fallback working
-- [x] Color schemes applied correctly
-- [x] Emoji mapping working
-- [x] Theme support comprehensive
+  - [x] Pillow rendering working
+  - [x] Graphviz fallback working
+  - [x] Color schemes applied correctly
+  - [x] Emoji mapping working
+  - [x] Theme support comprehensive
 
 ---
 
@@ -392,9 +376,9 @@ python test_educational_visuals.py
 Expected Output:
 ```
 ✓ TESTING TOPIC DETECTION - 3/3 passed
-✓ TESTING EDUCATIONAL ILLUSTRATION GENERATION - All themes
+✓ TESTING TOPIC DETECTION - 3/3 passed
 ✓ TESTING PROCESS FLOWCHART GENERATION - All topics
-✓ TESTING CONCEPT SUMMARY GENERATION - All visuals
+✓ TESTING MIND MAP GENERATION - All topics
 ✓ TESTING COMPLETE VISUAL GENERATION PIPELINE - Success
 ```
 
@@ -407,7 +391,7 @@ Then verify:
 1. Upload document → Works ✓
 2. Visual Learn mode → Shows ✓
 3. Generate button → Functional ✓
-4. All three visuals → Display ✓
+4. All visuals (Flowchart + Mind Map) → Display ✓
 5. Themes work → Verified ✓
 6. Downloads work → Successful ✓
 

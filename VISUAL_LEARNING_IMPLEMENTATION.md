@@ -2,7 +2,7 @@
 
 ## ✨ What's New
 
-The Visual Learning mode has been completely redesigned to generate **three types of beautiful educational visuals** instead of technical graphs.
+The Visual Learning mode has been redesigned to generate focused, dyslexia-friendly educational visuals: Flowcharts and Mind Maps.
 
 ### Old System ❌
 - Single technical diagram
@@ -11,49 +11,26 @@ The Visual Learning mode has been completely redesigned to generate **three type
 - Confusing for learners
 
 ### New System ✅
-- **3 educational visuals** per topic
-- Educational illustrations
-- Process flowcharts
-- Concept summary cards
-- Dyslexia-friendly design
+- **2 educational visuals** per topic
+- Process Flowcharts (emoji-first, diagrammatic)
+- Mind Maps (central concept + related emoji nodes)
+- Dyslexia-friendly design (short labels, large spacing)
 
 ---
 
-## 🎯 The Three Visual Types
+## 🎯 Visual Types
 
-### 1. 📚 Educational Illustration
-A step-by-step visual learning guide with:
-- Large, clear boxes for each step
-- Downward arrows showing progression
-- Emoji for visual interest
-- High contrast colors
-- Perfect for linear processes
+### 🔄 Flowchart
+Step-by-step, emoji-prefixed nodes with clear arrows and large spacing.
 
-**Generated in:** Pillow (PIL)
-**File size:** ~25-26 KB
-**Best for:** Processes with clear steps (Photosynthesis, Water Cycle, Digestion, etc.)
+**Generated in:** Graphviz (preferred) with Pillow fallback
+**Best for:** Procedures and sequential processes
 
-### 2. 🔄 Process Flowchart
-A professional process diagram with:
-- Rounded boxes (educational styling)
-- Vertical flow layout
-- Clear sequential arrows
-- Professional appearance
-- High readability
+### 🧠 Mind Map
+Central concept with related emoji nodes placed radially. Short labels, big spacing.
 
-**Generated in:** Graphviz
-**File size:** ~30-35 KB
-**Best for:** Detailed process documentation
-
-### 3. 🎯 Concept Summary
-A visual summary card showing:
-- **Inputs** (resources/raw materials)
-- **Key Component** (most important element)
-- **Outputs** (products/results)
-
-**Generated in:** Pillow (PIL)
-**File size:** ~16-18 KB
-**Best for:** Understanding relationships between inputs, processes, and outputs
+**Generated in:** Pillow
+**Best for:** Concept relationships and quick overviews
 
 ---
 
@@ -69,18 +46,18 @@ A visual summary card showing:
 ### Modified Files
 1. **`services/visual_service.py`** (Completely redesigned)
    - New orchestration logic
-   - Three-visual generation pipeline
+   - Two-visual generation pipeline (Flowchart + Mind Map)
    - AI-powered structure extraction
 
 2. **`app.py`** (render_visual_mode function)
-   - Displays all three visuals
+   - Displays Flowchart and Mind Map
    - Theme-aware rendering
    - Better download options
 
 ### Test Files
 1. **`test_educational_visuals.py`** (240 lines)
    - Complete test suite
-   - Validates all three visual types
+   - Validates Flowchart and Mind Map generation
    - Tests all themes
 
 ---
@@ -93,7 +70,7 @@ A visual summary card showing:
 2. Upload a document (PDF, DOCX, etc.)
 3. Go to "Visual Learn" mode
 4. Click "Generate Educational Visuals"
-5. View three beautiful educational diagrams
+5. View generated visuals (Flowchart and Mind Map)
 6. Download any visual you want
 ```
 
@@ -108,9 +85,8 @@ visuals = generate_visual_content(
 )
 
 # Access the visuals
-print(visuals['illustration_path'])  # Educational Illustration
 print(visuals['flowchart_path'])      # Process Flowchart
-print(visuals['summary_path'])        # Concept Summary
+print(visuals['mindmap_path'])        # Mind Map
 print(visuals['structure'])           # Extracted structure
 ```
 
@@ -133,39 +109,25 @@ All visuals automatically use the user's selected theme:
 
 ### Example 1: Photosynthesis
 
-**Educational Illustration:**
+**Flowchart:**
 ```
-📚 Photosynthesis
-┌────────────────────────────┐
-│ ☀️ Sunlight enters leaf     │
-└────────────┬────────────────┘
+🔄 Photosynthesis
+[☀️ Sunlight enters leaf]
              ↓
-┌────────────────────────────┐
-│ 🌿 Chlorophyll captures... │
-└────────────┬────────────────┘
+[🌿 Chlorophyll captures light]
              ↓
-┌────────────────────────────┐
-│ 💧 Water is split into...  │
-└────────────┬────────────────┘
+[💧 Water is split into hydrogen and oxygen]
              ↓
-   (continues with 3 more steps)
+[🍃 Glucose is produced]
 ```
 
-**Concept Summary:**
+**Mind Map:**
 ```
-🎯 Photosynthesis
-
-📥 INPUTS:
-• Sunlight
-• Water
-• Carbon Dioxide
-
-⚙️ KEY COMPONENT:
-    Chlorophyll
-
-📤 OUTPUTS:
-• Glucose
-• Oxygen
+🧠 Photosynthesis
+├─ ☀️ Sunlight
+├─ 🌿 Chlorophyll
+├─ 💧 Water
+└─ 🍃 Glucose
 ```
 
 ---
@@ -224,16 +186,14 @@ python test_educational_visuals.py
 
 **Output:**
 - Topic detection validation ✓
-- Illustration generation (4 themes) ✓
 - Flowchart generation ✓
-- Concept summary generation ✓
+- Mind Map generation ✓
 - Full pipeline integration ✓
 
 ### Generated Test Files
 The test script generates sample visuals in `generated_diagrams/`:
-- `edu_illustration_*.png` (4 per topic)
-- `flowchart_edu_*.png`
-- `concept_summary_*.png`
+-- `flowchart_edu_*.png`
+-- `mindmap_*.png`
 
 ---
 
@@ -251,9 +211,8 @@ The test script generates sample visuals in `generated_diagrams/`:
     "topic": "photosynthesis",
     "title": "Photosynthesis: Turning Light into Food",
     "description": "Plants convert light energy into chemical energy...",
-    "illustration_path": "generated_diagrams/edu_illustration_xxxxx.png",
-    "flowchart_path": "generated_diagrams/flowchart_edu_xxxxx.png",
-    "summary_path": "generated_diagrams/concept_summary_xxxxx.png",
+   "flowchart_path": "generated_diagrams/flowchart_edu_xxxxx.png",
+   "mindmap_path": "generated_diagrams/mindmap_xxxxx.png",
     "structure": {
         "steps": [...],
         "inputs": [...],
@@ -263,7 +222,7 @@ The test script generates sample visuals in `generated_diagrams/`:
 }
 ```
 
-### create_educational_illustration(topic, steps, theme)
+### create_process_flowchart(title, steps, theme)
 
 **Parameters:**
 - `topic` (str): Topic name (e.g., "Photosynthesis")
@@ -281,7 +240,7 @@ The test script generates sample visuals in `generated_diagrams/`:
 
 **Returns:** Path to PNG file
 
-### create_concept_summary(title, inputs, outputs, key_component, theme)
+### create_mind_map(title, nodes, theme)
 
 **Parameters:**
 - `title` (str): Concept title
@@ -306,17 +265,15 @@ The test script generates sample visuals in `generated_diagrams/`:
 ### Generation Time
 | Visual Type | Time | Notes |
 |------------|------|-------|
-| Educational Illustration | ~0.5s | Pillow-based |
 | Process Flowchart | ~1.0s | Graphviz-based |
-| Concept Summary | ~0.3s | Pillow-based |
+| Mind Map | ~0.5s | Pillow-based |
 | **Total** | **~2-3s** | Per document |
 
 ### File Sizes
 | Visual Type | Size | Compression |
 |------------|------|------------|
-| Illustration | 25-26 KB | PNG (optimized) |
 | Flowchart | 30-35 KB | PNG (optimized) |
-| Summary | 16-18 KB | PNG (optimized) |
+| Mind Map | 15-20 KB | PNG (optimized) |
 | **Total** | **~70 KB** | Per topic |
 
 ---
@@ -360,15 +317,11 @@ The system gracefully handles failures:
 
 ```
 Generation Order:
-1. Educational Illustration
+1. Process Flowchart
    ├─ Success? → Display + Continue
    └─ Fail? → Log + Try next
 
-2. Process Flowchart
-   ├─ Success? → Display + Continue
-   └─ Fail? → Log + Try next
-
-3. Concept Summary
+2. Mind Map
    ├─ Success? → Display + Continue
    └─ Fail? → Log + Continue
 
@@ -443,8 +396,8 @@ Even if all visuals fail, the app shows the extracted structure as fallback.
    - Biology/Chemistry content
 
 3. **Generate visuals**
-   - Click "Generate Educational Visuals"
-   - View three visuals
+   - Click "Generate Visuals"
+   - View Flowchart and Mind Map
    - Download as needed
 
 4. **Customize themes**
@@ -482,6 +435,6 @@ A: Download visuals as PNG and upload to your learning management system
 
 ## 📄 Summary
 
-The Visual Learning system is now a true educational tool that generates beautiful, accessible visuals designed specifically for student learning. The three-visual approach provides multiple representations of concepts, helping students understand more deeply and remember longer.
+The Visual Learning system is now a true educational tool that generates beautiful, accessible visuals designed specifically for student learning. The two-visual approach (Flowchart + Mind Map) provides complementary representations of concepts, helping students understand more deeply and remember longer.
 
 **Ready to use!** 🎉

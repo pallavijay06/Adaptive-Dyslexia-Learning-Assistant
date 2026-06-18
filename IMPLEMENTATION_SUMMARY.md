@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The Visual Learning mode of the Adaptive Dyslexia Learning Assistant has been **completely redesigned** from a technical diagram generator into a true **educational visual learning system**. The new system generates **three types of beautiful, accessible educational visuals** designed specifically for student learning, replacing the old network graphs and node-link diagrams that were unsuitable for dyslexic learners.
+The Visual Learning mode of the Adaptive Dyslexia Learning Assistant has been redesigned from a technical diagram generator into a focused **educational visual learning system**. The new system generates **two dyslexia-friendly visuals** designed specifically for student learning: Flowcharts and Mind Maps.
 
 ---
 
@@ -20,10 +20,9 @@ The Visual Learning mode of the Adaptive Dyslexia Learning Assistant has been **
 ## Solution Overview
 
 ### New System Features
-✅ **Three educational visual types** generated for every topic:
-- 📚 **Educational Illustration** - Step-by-step learning guide
-- 🔄 **Process Flowchart** - Professional process diagram  
-- 🎯 **Concept Summary** - Visual input/output/component card
+✅ **Two educational visual types** generated for every topic:
+- 🔄 **Process Flowchart** - Professional process diagram
+- 🧠 **Mind Map** - Central concept with related emoji nodes
 
 ✅ **Intelligent topic detection** - Automatically identifies content topic
 
@@ -38,7 +37,7 @@ The Visual Learning mode of the Adaptive Dyslexia Learning Assistant has been **
 
 ✅ **Fast generation** - 2-3 seconds per document
 
-✅ **Easy to use** - One button to generate all three visuals
+✅ **Easy to use** - One button to generate visuals (Flowchart + Mind Map)
 
 ---
 
@@ -48,9 +47,8 @@ The Visual Learning mode of the Adaptive Dyslexia Learning Assistant has been **
 
 #### 1. **services/educational_visuals.py** (280 lines)
 Core visual generation engine with:
-- `create_educational_illustration()` - Pillow-based illustration generator
 - `create_process_flowchart()` - Graphviz/Pillow-based flowchart generator
-- `create_concept_summary()` - Pillow-based summary card generator
+- `create_mind_map()` - Emoji-first mind map generator
 - `detect_topic()` - Automatic topic detection
 - `get_topic_emojis()` - Topic-specific emoji mapping
 - Color schemes for 4 themes
@@ -63,9 +61,8 @@ Core visual generation engine with:
 #### 2. **test_educational_visuals.py** (240 lines)
 Comprehensive test suite covering:
 - Topic detection validation (3/3 passed)
-- Illustration generation (4 themes)
 - Flowchart generation (all topics)
-- Concept summary generation (all visuals)
+- Mind Map generation (all topics)
 - Full pipeline integration test
 
 **Test Results:**
@@ -81,12 +78,12 @@ New orchestration logic:
 - `generate_visual_content()` - Main entry point
 - `_extract_visual_structure()` - AI-powered structure extraction
 - `_parse_json_response()` - Safe JSON parsing
-- Three-visual generation pipeline
+- Two-visual generation pipeline (Flowchart + Mind Map)
 - Cleanup and resource management
 
 #### 2. **app.py** (render_visual_mode function)
 New UI rendering:
-- Display all three visuals in sequence
+- Display Flowchart and Mind Map
 - Theme-aware rendering
 - Individual download buttons
 - Structure information display
@@ -102,41 +99,7 @@ New UI rendering:
 
 ## Visual Types Explained
 
-### 1. 📚 Educational Illustration
-
-**Purpose:** Visual step-by-step learning guide
-
-**What It Shows:**
-```
-Topic Title
-├─ [Step 1] with emoji → large readable text
-│  ↓
-├─ [Step 2] with emoji → large readable text
-│  ↓
-├─ [Step 3] with emoji → large readable text
-│  ↓
-└─ [More steps...] → clear progression
-```
-
-**Features:**
-- Clear vertical flow with arrows
-- Emoji for visual interest
-- Large boxes for each step (100px height)
-- Topic-specific emojis
-- High contrast colors
-- Dyslexia-friendly spacing
-
-**Use Cases:**
-- Processes with clear linear steps
-- Photosynthesis, water cycle, digestion
-- Any concept with sequential progression
-
-**Generation:**
-- **Engine:** Pillow (PIL)
-- **Time:** ~0.5 seconds
-- **Size:** 25-26 KB
-
-### 2. 🔄 Process Flowchart
+### 🔄 Process Flowchart
 
 **Purpose:** Professional step-by-step process diagram
 
@@ -172,45 +135,35 @@ Flowchart Title (at top)
 - **Time:** ~1.0 second
 - **Size:** 30-35 KB
 
-### 3. 🎯 Concept Summary
+### 🧠 Mind Map
 
-**Purpose:** Visual summary card showing inputs, processes, outputs
+**Purpose:** Central concept with related nodes for quick conceptual overview.
 
 **What It Shows:**
 ```
-Concept Title
-
-📥 INPUTS:
-├─ Input 1
-├─ Input 2
-└─ Input 3
-
-⚙️ KEY COMPONENT:
-   [Central Process/Component]
-
-📤 OUTPUTS:
-├─ Output 1
-├─ Output 2
-└─ Output 3
+🧠 Photosynthesis
+├─ ☀️ Sunlight
+├─ 🌿 Chlorophyll
+├─ 💧 Water
+└─ 🍃 Glucose
 ```
 
 **Features:**
-- Three-section layout (inputs, process, outputs)
-- Color-coded sections
-- Emphasized key component
-- Clean card appearance
-- Easy relationships to understand
+- Emoji-first nodes
+- Radial layout for visual hierarchy
+- Short labels with large spacing
+- Dyslexia-friendly readability
 
 **Use Cases:**
-- Understanding inputs and outputs
-- Identifying key components
-- Quick conceptual overview
-- Summary on test/quiz
+- Concept relationships
+- Brainstorm-style overviews
+- Visual memory anchors
+- Quick review guides
 
 **Generation:**
 - **Engine:** Pillow (PIL)
-- **Time:** ~0.3 seconds
-- **Size:** 16-18 KB
+- **Time:** ~0.5 seconds
+- **Size:** 15-20 KB
 
 ---
 
@@ -306,7 +259,7 @@ User Clicks "Generate Educational Visuals"
     └─ Validate and sanitize
     ↓
 [3] VISUAL GENERATION
-    ├─ [A] Create Educational Illustration
+    ├─ [A] Create Process Flowchart
     │   ├─ Use Pillow to render boxes + arrows + text
     │   ├─ Apply topic-specific emojis
     │   ├─ Apply color theme
@@ -319,44 +272,27 @@ User Clicks "Generate Educational Visuals"
     │   ├─ Apply colors + styling
     │   └─ Save PNG file
     │
-    └─ [C] Create Concept Summary
-        ├─ Use Pillow to render card
-        ├─ Show Inputs, Key Component, Outputs
-        ├─ Color-code sections
-        ├─ Apply theme colors
-        └─ Save PNG file
-    ↓
-[4] DISPLAY IN STREAMLIT
-    ├─ Show all three visuals
-    ├─ Display extracted structure
-    ├─ Provide download buttons
-    └─ Show metadata (topic, title, description)
-    ↓
-[5] USER ACTIONS
-    ├─ View visuals
-    ├─ Download individual PNG files
-    ├─ Export structure as JSON
-    └─ Switch themes and regenerate
-```
+    ### 🧠 Mind Map
 
----
+    **Purpose:** Central concept with related emoji nodes arranged radially for quick scanning.
 
-## Performance Metrics
+    **What It Shows:**
+    ```
+    Central Concept (emoji)
+        ├─ Related Idea 1 (emoji)
+        ├─ Related Idea 2 (emoji)
+        └─ Related Idea N (emoji)
+    ```
 
-### Generation Time
-| Component | Time | Notes |
-|-----------|------|-------|
-| Topic Detection | ~0.1s | Fast keyword matching |
-| Structure Extraction | ~1.2s | LLM call + parsing |
-| Educational Illustration | ~0.5s | Pillow rendering |
-| Process Flowchart | ~1.0s | Graphviz rendering |
-| Concept Summary | ~0.3s | Pillow rendering |
-| **Total** | **~3 seconds** | Per document |
+    **Features:**
+    - Emoji-first nodes
+    - Radial layout with large spacing
+    - Short labels optimized for dyslexia-friendly reading
 
-### File Sizes
-| Visual | Size | Compression | Quality |
-|--------|------|------------|---------|
-| Illustration | 25-26 KB | PNG optimized | Clear, readable |
+    **Generation:**
+    - **Engine:** Pillow (PIL)
+    - **Time:** ~0.5 seconds
+    - **Size:** ~15-20 KB
 | Flowchart | 30-35 KB | PNG optimized | Professional |
 | Summary | 16-18 KB | PNG optimized | Clean card |
 | **Total** | **~70 KB** | Per topic | Production quality |
@@ -396,23 +332,17 @@ User Clicks "Generate Educational Visuals"
 ### Test Generation Results
 Successfully generated **23 visual files** in test run:
 
-**Educational Illustrations (4 themes):**
-- Photosynthesis - Light (26.1 KB) ✅
-- Photosynthesis - Dark (26.1 KB) ✅
-- Photosynthesis - Cream (26.1 KB) ✅
-- Photosynthesis - Yellow (25.8 KB) ✅
-
-**Process Flowcharts (all topics):**
+**Process Flowcharts (examples):**
 - Photosynthesis - Light (34.2 KB) ✅
 - Photosynthesis - Dark (33.3 KB) ✅
 - Water Cycle - Light (31.8 KB) ✅
 - Water Cycle - Dark (31 KB) ✅
 
-**Concept Summaries (all topics):**
-- Photosynthesis (16.7 KB) ✅
-- Water Cycle (18.1 KB) ✅
-- Digestive System (18.1 KB) ✅
-- ... (9 more files) ✅
+**Mind Maps (examples):**
+- Photosynthesis (18.2 KB) ✅
+- Water Cycle (17.9 KB) ✅
+- Digestive System (17.5 KB) ✅
+*... (more files)* ✅
 
 **All tests PASSED** ✅
 
@@ -457,10 +387,9 @@ Successfully generated **23 visual files** in test run:
 1. Upload document
 2. Click "Generate Educational Visuals"
 3. Wait 2-3 seconds
-4. See THREE beautiful visuals:
-   📚 Step-by-step learning illustration
-   🔄 Professional process flowchart
-   🎯 Summary card with inputs/outputs
+4. See generated visuals:
+    🔄 Flowchart (process)
+    🧠 Mind Map (concept connections)
 5. Understand concept immediately
 6. Perfect for all learners, especially dyslexic
 7. Download any visual as PNG
