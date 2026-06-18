@@ -1,19 +1,20 @@
-"""Route LLM calls through OpenAI, Gemini, then Ollama."""
+"""Route LLM calls through OpenRouter, Gemini, then Ollama."""
 
 from __future__ import annotations
 
 import logging
 
+from services.openrouter_service import (
+    OpenRouterAPIError,
+    OpenRouterConfigurationError,
+    generate_answer as openrouter_generate_answer,
+    generate_content as openrouter_generate_content,
+)
 from services.gemini_service import (
     GeminiAPIError,
     GeminiConfigurationError,
     generate_answer as gemini_generate_answer,
     generate_content as gemini_generate_content,
-)
-from services.openai_service import (
-    OpenAIServiceError,
-    generate_answer as openai_generate_answer,
-    generate_content as openai_generate_content,
 )
 from services.ollama_service import (
     OllamaServiceError,
@@ -33,7 +34,7 @@ class LLMRouterError(RuntimeError):
 
 
 def generate_answer(question: str, context: str) -> str:
-    """Generate an answer with OpenAI first, then Gemini, then Ollama.
+    """Generate an answer with OpenRouter first, then Gemini, then Ollama.
     
     Used for RAG-style question answering with context.
     """
@@ -43,9 +44,9 @@ def generate_answer(question: str, context: str) -> str:
         raise ValueError("Context cannot be empty.")
 
     try:
-        return _clean_model_response(openai_generate_answer(question, context))
-    except OpenAIServiceError as exc:
-        logger.warning("OpenAI answer generation failed; falling back to Gemini: %s", exc)
+        return _clean_model_response(openrouter_generate_answer(question, context))
+    except (OpenRouterAPIError, OpenRouterConfigurationError) as exc:
+        logger.warning("OpenRouter answer generation failed; falling back to Gemini: %s", exc)
 
     try:
         return _clean_model_response(gemini_generate_answer(question, context))
@@ -67,7 +68,7 @@ def _clean_model_response(text: str) -> str:
 
 
 def generate_content(prompt: str) -> str:
-    """Generate content with OpenAI first, then Gemini, then Ollama.
+    """Generate content with OpenRouter first, then Gemini, then Ollama.
     
     Used for content generation tasks like simplification, vocabulary extraction,
     visual learning generation, etc. Does NOT use chat history.
@@ -76,9 +77,9 @@ def generate_content(prompt: str) -> str:
         raise ValueError("Prompt cannot be empty.")
 
     try:
-        return _clean_model_response(openai_generate_content(prompt))
-    except OpenAIServiceError as exc:
-        logger.warning("OpenAI content generation failed; falling back to Gemini: %s", exc)
+        return _clean_model_response(openrouter_generate_content(prompt))
+    except (OpenRouterAPIError, OpenRouterConfigurationError) as exc:
+        logger.warning("OpenRouter content generation failed; falling back to Gemini: %s", exc)
 
     try:
         return _clean_model_response(gemini_generate_content(prompt))

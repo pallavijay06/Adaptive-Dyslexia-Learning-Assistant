@@ -1,0 +1,19 @@
+digraph flowchart_f5ff6dc0 {
+	fontsize=24 label=Photosynthesis labelloc=t margin=0.5 nodesep=1.6 pad=0.5 rankdir=TB ranksep=2.0 splines=ortho
+	node [color="#0C63E4" fillcolor="#DBEAFE" fontcolor="#111827" fontname=Arial fontsize=16 margin="0.35,0.25" penwidth=2 shape=box style="rounded,filled"]
+	edge [arrowsize=1.8 color="#6366F1" fontname=Arial minlen=2 penwidth=2.5]
+	step0 [label="🌱
+💧 Absorb Water"]
+	step1 [label="☀️
+💨 Take CO2"]
+	step2 [label="🌿
+☀️ Capture Sunlight"]
+	step3 [label="💧
+🍎 Produce Glucose"]
+	step4 [label="🍃
+🌬️ Release Oxygen"]
+	step0 -> step1
+	step1 -> step2
+	step2 -> step3
+	step3 -> step4
+}
