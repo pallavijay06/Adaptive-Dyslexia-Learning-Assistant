@@ -18,6 +18,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from services.text_cleanup import remove_ansi_escape_codes
+
 
 DEFAULT_MODEL_NAME = "gemini-2.5-flash"
 
@@ -75,6 +77,40 @@ def generate_answer(question: str, context: str | None = None) -> str:
     """Generate a Gemini answer using retrieved context, not the full document."""
     message = build_document_prompt(question, context)
     return _send_chat_message(message)
+
+
+def generate_content(prompt: str) -> str:
+    """Generate content from a prompt without chat history (for simplification, vocab, visual, etc).
+    
+    This method does NOT use chat history - it's for one-off content generation tasks
+    like simplifying text, extracting vocabulary, or creating visual summaries.
+    
+    Args:
+        prompt: The task prompt (e.g., "Simplify this: ...")
+        
+    Returns:
+        Generated content text.
+        
+    Raises:
+        ValueError: If prompt is empty.
+        GeminiConfigurationError: If API key or SDK is missing.
+        GeminiAPIError: If generation fails.
+    """
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise ValueError("Prompt cannot be empty.")
+    
+    try:
+        client = _get_client()
+        response = client.models.generate_content(
+            model=_get_model_name(),
+            contents=prompt,
+        )
+        return _extract_response_text(response)
+    except GeminiServiceError:
+        raise
+    except Exception as exc:
+        raise GeminiAPIError(f"Gemini content generation failed: {exc}") from exc
 
 
 def _send_chat_message(message: str) -> str:
@@ -321,6 +357,6 @@ def _extract_response_text(response: Any) -> str:
     """Safely read text from a Gemini response object."""
     text = getattr(response, "text", None)
     if text and text.strip():
-        return text.strip()
+        return remove_ansi_escape_codes(text)
 
     raise GeminiAPIError("Gemini returned an empty response.")
