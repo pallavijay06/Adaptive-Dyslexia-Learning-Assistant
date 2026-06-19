@@ -44,7 +44,6 @@ from services.gemini_service import (
     GeminiAPIError,
     GeminiConfigurationError,
 )
-<<<<<<< HEAD
 from services.llm_router import generate_answer
 from services.quiz_service import (
     evaluate_mcq,
@@ -52,7 +51,6 @@ from services.quiz_service import (
     generate_mcq_quiz,
     generate_short_questions,
 )
-=======
 from services.llm_router import generate_answer, LLMRouterError
 from services.ocr_service import extract_text_from_image, OCRError
 from services.simplification_service import simplify_text, SimplificationError
@@ -61,7 +59,6 @@ from services.tts_service import cleanup_audio_file, generate_audio, split_text_
 from services.visual_service import generate_visual_content, VisualError
 
 logger = logging.getLogger(__name__)
->>>>>>> main
 
 
 st.set_page_config(
@@ -90,18 +87,15 @@ def initialize_session_state() -> None:
 
         # Chat
         "chat_history": [],
-<<<<<<< HEAD
         "quiz_mcqs": None,
         "quiz_short_questions": None,
         "quiz_answers": None,
         "quiz_short_answers": None,
         "quiz_report": None,
         "quiz_short_feedback": None,
-=======
 
         # Caching
         "vocab_explain_cache": {},
->>>>>>> main
     }
     for key, value in defaults.items():
         if key not in st.session_state:
