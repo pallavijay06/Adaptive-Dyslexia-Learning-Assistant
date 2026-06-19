@@ -17,6 +17,12 @@ from services.gemini_service import (
     simplify_document,
 )
 from services.llm_router import generate_answer
+from services.quiz_service import (
+    evaluate_mcq,
+    evaluate_short_answer,
+    generate_mcq_quiz,
+    generate_short_questions,
+)
 
 
 st.set_page_config(
@@ -35,6 +41,12 @@ def initialize_session_state() -> None:
         "document_index": None,
         "simplified_content": None,
         "chat_history": [],
+        "quiz_mcqs": None,
+        "quiz_short_questions": None,
+        "quiz_answers": None,
+        "quiz_short_answers": None,
+        "quiz_report": None,
+        "quiz_short_feedback": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -144,6 +156,146 @@ def render_document_status() -> None:
     )
 
 
+def render_quiz_section() -> None:
+    """Render the intelligent quiz mode UI."""
+    st.header("📚 Quiz Mode")
+
+    if not st.session_state.document_record:
+        st.info("Upload and process a document first to generate a quiz.")
+        return
+
+    if st.button("Generate Quiz", type="primary"):
+        with st.spinner("Generating quiz from your document..."):
+            try:
+                document_text = st.session_state.document_text or ""
+                mcqs = generate_mcq_quiz(document_text, num_questions=8)
+                short_questions = generate_short_questions(document_text, num_questions=4)
+                st.session_state.quiz_mcqs = mcqs
+                st.session_state.quiz_short_questions = short_questions
+                st.session_state.quiz_answers = ["" for _ in mcqs]
+                st.session_state.quiz_short_answers = ["" for _ in short_questions]
+                st.session_state.quiz_report = None
+                st.session_state.quiz_short_feedback = None
+            except (DocumentError, GeminiConfigurationError, GeminiAPIError, ValueError) as exc:
+                st.error(str(exc))
+                return
+            except Exception as exc:
+                st.error(f"Quiz generation failed: {exc}")
+                return
+
+    if not st.session_state.quiz_mcqs or not st.session_state.quiz_short_questions:
+        st.info("Generate a quiz to begin. The quiz will use the currently uploaded document.")
+        return
+
+    st.subheader("Multiple Choice Questions")
+    for index, mcq in enumerate(st.session_state.quiz_mcqs):
+        key = f"mcq_{index}"
+        st.write(f"**{index + 1}. {mcq['question']}**")
+        current_answer = st.session_state.quiz_answers[index] if st.session_state.quiz_answers else ""
+        selected = st.radio(
+            "Choose the best answer:",
+            options=mcq["options"],
+            key=key,
+            index=mcq["options"].index(current_answer) if current_answer in mcq["options"] else 0,
+        )
+        if st.session_state.quiz_answers is None:
+            st.session_state.quiz_answers = []
+        if len(st.session_state.quiz_answers) < len(st.session_state.quiz_mcqs):
+            st.session_state.quiz_answers = ["" for _ in st.session_state.quiz_mcqs]
+        st.session_state.quiz_answers[index] = selected
+
+    st.subheader("Short Answer Questions")
+    for index, short_question in enumerate(st.session_state.quiz_short_questions):
+        prompt = f"{index + 1}. {short_question['question']}"
+        user_text = st.text_area(
+            prompt,
+            value=(st.session_state.quiz_short_answers[index] if st.session_state.quiz_short_answers else ""),
+            key=f"short_{index}",
+            height=120,
+        )
+        if st.session_state.quiz_short_answers is None:
+            st.session_state.quiz_short_answers = []
+        if len(st.session_state.quiz_short_answers) < len(st.session_state.quiz_short_questions):
+            st.session_state.quiz_short_answers = ["" for _ in st.session_state.quiz_short_questions]
+        st.session_state.quiz_short_answers[index] = user_text
+
+    if st.button("Submit Quiz", type="secondary"):
+        with st.spinner("Evaluating your quiz answers..."):
+            try:
+                report = evaluate_mcq(st.session_state.quiz_answers or [], st.session_state.quiz_mcqs or [])
+                short_feedback = []
+                for index, short_question in enumerate(st.session_state.quiz_short_questions or []):
+                    student_response = st.session_state.quiz_short_answers[index] if st.session_state.quiz_short_answers else ""
+                    if student_response.strip():
+                        feedback = evaluate_short_answer(student_response, short_question["answer"])
+                    else:
+                        feedback = {
+                            "score": 0,
+                            "max_score": 5,
+                            "result": "Incorrect",
+                            "feedback": "No answer was provided.",
+                            "improvement_tip": "Try to answer the question using a sentence or two from the document.",
+                        }
+                    short_feedback.append(
+                        {
+                            "question": short_question["question"],
+                            "student_answer": student_response,
+                            "expected_answer": short_question["answer"],
+                            "evaluation": feedback,
+                        }
+                    )
+                st.session_state.quiz_report = report
+                st.session_state.quiz_short_feedback = short_feedback
+            except (GeminiConfigurationError, GeminiAPIError, ValueError) as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Quiz evaluation failed: {exc}")
+
+    if st.session_state.quiz_report:
+        report = st.session_state.quiz_report
+        st.subheader("Quiz Results")
+        st.metric("Score", f"{report['score']}/{report['total']}")
+        st.progress(report["percentage"] / 100 if report["total"] else 0)
+
+        st.markdown("**Topic Analysis**")
+        cols = st.columns(2)
+        with cols[0]:
+            st.markdown("**Strengths**")
+            if report["strengths"]:
+                for item in report["strengths"]:
+                    st.write(f"- {item}")
+            else:
+                st.write("No clear strengths identified yet.")
+        with cols[1]:
+            st.markdown("**Weaknesses**")
+            if report["weaknesses"]:
+                for item in report["weaknesses"]:
+                    st.write(f"- {item}")
+            else:
+                st.write("No clear weaknesses identified yet.")
+
+        st.markdown("**Recommendations**")
+        for recommendation in report["recommendations"]:
+            st.write(f"- {recommendation}")
+
+        st.markdown("**Revision Material**")
+        for revision in report["revision_material"]:
+            st.markdown(f"**{revision.get('topic', 'Topic')}**")
+            st.write(revision.get("simple_explanation", ""))
+            st.write(f"*{revision.get('revision_note', '')}*")
+            st.write(f"Practice: {revision.get('practice_question', '')}")
+
+    if st.session_state.quiz_short_feedback:
+        st.subheader("Short Answer Feedback")
+        for feedback_item in st.session_state.quiz_short_feedback:
+            st.markdown(f"**{feedback_item['question']}**")
+            st.write(f"Your answer: {feedback_item['student_answer']}")
+            evaluation = feedback_item["evaluation"]
+            st.write(f"Result: {evaluation.get('result')}")
+            st.write(f"Feedback: {evaluation.get('feedback')}")
+            st.write(f"Tip: {evaluation.get('improvement_tip')}")
+
+
 def render_simplified_content() -> None:
     """Display Gemini-generated simplified content."""
     st.header("Simplified Content")
@@ -209,6 +361,8 @@ def main() -> None:
     apply_readable_styles()
     render_home()
     render_upload_section()
+    st.divider()
+    render_quiz_section()
     st.divider()
     render_simplified_content()
     st.divider()

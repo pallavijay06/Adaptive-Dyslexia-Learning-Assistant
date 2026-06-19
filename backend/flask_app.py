@@ -9,6 +9,7 @@ from __future__ import annotations
 from flask import Flask, jsonify
 
 from backend.chat_routes import chat_bp
+from backend.quiz_routes import quiz_bp
 from backend.upload_routes import upload_bp
 from services.gemini_service import validate_gemini_startup
 
@@ -19,6 +20,7 @@ def create_app() -> Flask:
     app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
     app.register_blueprint(chat_bp)
     app.register_blueprint(upload_bp)
+    app.register_blueprint(quiz_bp)
 
     @app.get("/health")
     def health() -> tuple[object, int]:
