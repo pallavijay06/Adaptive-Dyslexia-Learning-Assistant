@@ -1,14 +1,53 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Environment Variables
 .env
+.env.example
 
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# Uploads and Extracted Files
 uploads/
 extracted_content/
 
-.vscode/
-
-*.log
-
-data.sqlite
+# Generated Content
+generated_audio/
 generated_diagrams/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+data.sqlite
+
+# OS Files
+.DS_Store
+Thumbs.db
+data.sqlite
+
+# Build Files
+build/
+dist/
+*.egg-info/
+
+# Temporary Files
+temp/
+tmp/
