@@ -1132,15 +1132,12 @@ def main() -> None:
     st.divider()
     render_upload_section()
     st.divider()
-<<<<<<< HEAD
     render_quiz_section()
     st.divider()
     render_simplified_content()
-=======
     render_word_explorer()
     st.divider()
     render_learning_modes()
->>>>>>> main
     st.divider()
     render_chat_section()
 
