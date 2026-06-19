@@ -9,3 +9,6 @@ extracted_content/
 .vscode/
 
 *.log
+
+data.sqlite
+generated_diagrams/
