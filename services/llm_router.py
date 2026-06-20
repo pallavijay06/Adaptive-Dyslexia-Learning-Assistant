@@ -43,18 +43,28 @@ def generate_answer(question: str, context: str) -> str:
     if not context or not context.strip():
         raise ValueError("Context cannot be empty.")
 
+    logger.info("[LLM Router] Trying OpenRouter")
     try:
-        return _clean_model_response(openrouter_generate_answer(question, context))
-    except (OpenRouterAPIError, OpenRouterConfigurationError) as exc:
-        logger.warning("OpenRouter answer generation failed; falling back to Gemini: %s", exc)
+        resp = openrouter_generate_answer(question, context)
+        logger.info("[LLM Router] OpenRouter succeeded")
+        return _clean_model_response(resp)
+    except Exception as open_exc:  # catch any provider-level error and continue
+        logger.error("[LLM Router] OpenRouter failed: %s", str(open_exc))
 
+    logger.info("[LLM Router] Falling back to Gemini")
     try:
-        return _clean_model_response(gemini_generate_answer(question, context))
-    except (GeminiAPIError, GeminiConfigurationError) as exc:
-        logger.warning("Gemini answer generation failed; falling back to Ollama: %s", exc)
+        resp = gemini_generate_answer(question, context)
+        logger.info("[LLM Router] Gemini succeeded")
+        return _clean_model_response(resp)
+    except Exception as gem_exc:
+        logger.error("[LLM Router] Gemini failed: %s", str(gem_exc))
+        logger.info("[LLM Router] Falling back to Ollama")
         try:
-            return _clean_model_response(ollama_generate_answer(question, context))
-        except OllamaServiceError as ollama_exc:
+            resp = ollama_generate_answer(question, context)
+            logger.info("[LLM Router] Ollama succeeded")
+            return _clean_model_response(resp)
+        except Exception as ollama_exc:
+            logger.error("[LLM Router] Ollama failed: %s", str(ollama_exc))
             logger.exception("All LLM providers failed for answer generation.")
             raise LLMRouterError(
                 "I could not reach any AI provider right now. Please check your API keys, quota, or local Ollama setup and try again."
@@ -76,18 +86,28 @@ def generate_content(prompt: str) -> str:
     if not prompt or not prompt.strip():
         raise ValueError("Prompt cannot be empty.")
 
+    logger.info("[LLM Router] Trying OpenRouter")
     try:
-        return _clean_model_response(openrouter_generate_content(prompt))
-    except (OpenRouterAPIError, OpenRouterConfigurationError) as exc:
-        logger.warning("OpenRouter content generation failed; falling back to Gemini: %s", exc)
+        resp = openrouter_generate_content(prompt)
+        logger.info("[LLM Router] OpenRouter succeeded")
+        return _clean_model_response(resp)
+    except Exception as open_exc:
+        logger.error("[LLM Router] OpenRouter failed: %s", str(open_exc))
 
+    logger.info("[LLM Router] Falling back to Gemini")
     try:
-        return _clean_model_response(gemini_generate_content(prompt))
-    except (GeminiAPIError, GeminiConfigurationError) as exc:
-        logger.warning("Gemini content generation failed; falling back to Ollama: %s", exc)
+        resp = gemini_generate_content(prompt)
+        logger.info("[LLM Router] Gemini succeeded")
+        return _clean_model_response(resp)
+    except Exception as gem_exc:
+        logger.error("[LLM Router] Gemini failed: %s", str(gem_exc))
+        logger.info("[LLM Router] Falling back to Ollama")
         try:
-            return _clean_model_response(ollama_generate_content(prompt))
-        except OllamaServiceError as ollama_exc:
+            resp = ollama_generate_content(prompt)
+            logger.info("[LLM Router] Ollama succeeded")
+            return _clean_model_response(resp)
+        except Exception as ollama_exc:
+            logger.error("[LLM Router] Ollama failed: %s", str(ollama_exc))
             logger.exception("All LLM providers failed for content generation.")
             raise LLMRouterError(
                 "I could not reach any AI provider right now. Please check your API keys, quota, or local Ollama setup and try again."

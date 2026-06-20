@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import logging
+
 from flask import Blueprint, jsonify, request
 
 from services.document_context import DocumentError, get_document_text
+from services.llm_router import LLMRouterError
 from services.quiz_service import (
-    GeminiAPIError,
-    GeminiConfigurationError,
     evaluate_mcq,
     evaluate_short_answer,
+    evaluate_short_answer_locally,
     generate_mcq_quiz,
     generate_short_questions,
 )
 
 quiz_bp = Blueprint("quiz", __name__)
+logger = logging.getLogger(__name__)
 
 
 @quiz_bp.get("/quiz/health")
@@ -42,13 +45,13 @@ def generate_quiz() -> tuple[object, int]:
         return jsonify({"success": True, "mcqs": mcqs, "short_questions": short_questions}), 200
     except DocumentError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
-    except GeminiConfigurationError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 500
-    except GeminiAPIError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 502
+    except LLMRouterError:
+        logger.exception("Quiz generation failed through LLM router")
+        return jsonify({"success": False, "error": "Quiz generation is temporarily unavailable."}), 503
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     except Exception:
+        logger.exception("Unexpected quiz generation route error")
         return jsonify({"success": False, "error": "Unexpected server error."}), 500
 
 
@@ -67,14 +70,54 @@ def submit_quiz() -> tuple[object, int]:
     try:
         report = evaluate_mcq(answers, quiz_data)
         return jsonify({"success": True, "report": report}), 200
-    except GeminiConfigurationError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 500
-    except GeminiAPIError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 502
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
+    except (LLMRouterError, ValueError):
+        logger.exception("Quiz submission evaluation failed. Returning local fallback report.")
+        total = len(quiz_data)
+        return jsonify({
+            "success": True,
+            "report": {
+                "score": 0,
+                "total": total,
+                "percentage": 0,
+                "correct_answers": 0,
+                "incorrect_answers": total,
+                "mistakes": [],
+                "strengths": [],
+                "weaknesses": ["Core Concept"] if total else [],
+                "recommendations": ["Review the quiz material and try the questions again."],
+                "revision_material": [
+                    {
+                        "topic": "Core Concept",
+                        "revision_note": "Review the main ideas from the uploaded document.",
+                        "practice_question": "What are the most important ideas in this topic?",
+                    }
+                ] if total else [],
+            },
+        }), 200
     except Exception:
-        return jsonify({"success": False, "error": "Unexpected server error."}), 500
+        logger.exception("Unexpected quiz submission route error. Returning local fallback report.")
+        total = len(quiz_data)
+        return jsonify({
+            "success": True,
+            "report": {
+                "score": 0,
+                "total": total,
+                "percentage": 0,
+                "correct_answers": 0,
+                "incorrect_answers": total,
+                "mistakes": [],
+                "strengths": [],
+                "weaknesses": ["Core Concept"] if total else [],
+                "recommendations": ["Review the quiz material and try the questions again."],
+                "revision_material": [
+                    {
+                        "topic": "Core Concept",
+                        "revision_note": "Review the main ideas from the uploaded document.",
+                        "practice_question": "What are the most important ideas in this topic?",
+                    }
+                ] if total else [],
+            },
+        }), 200
 
 
 @quiz_bp.post("/quiz/evaluate-short")
@@ -87,11 +130,11 @@ def evaluate_short() -> tuple[object, int]:
     try:
         evaluation = evaluate_short_answer(student_answer, expected_answer)
         return jsonify({"success": True, "evaluation": evaluation}), 200
-    except GeminiConfigurationError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 500
-    except GeminiAPIError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 502
-    except ValueError as exc:
-        return jsonify({"success": False, "error": str(exc)}), 400
+    except (LLMRouterError, ValueError):
+        logger.exception("Short answer evaluation failed. Returning local fallback result.")
+        evaluation = evaluate_short_answer_locally(student_answer, expected_answer)
+        return jsonify({"success": True, "evaluation": evaluation}), 200
     except Exception:
-        return jsonify({"success": False, "error": "Unexpected server error."}), 500
+        logger.exception("Unexpected short answer route error. Returning local fallback result.")
+        evaluation = evaluate_short_answer_locally(student_answer, expected_answer)
+        return jsonify({"success": True, "evaluation": evaluation}), 200

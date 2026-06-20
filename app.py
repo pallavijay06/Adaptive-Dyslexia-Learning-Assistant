@@ -17,6 +17,7 @@ import base64
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -44,10 +45,11 @@ from services.gemini_service import (
     GeminiAPIError,
     GeminiConfigurationError,
 )
-from services.llm_router import generate_answer
 from services.quiz_service import (
+    combine_quiz_report_with_short_answers,
     evaluate_mcq,
     evaluate_short_answer,
+    evaluate_short_answer_locally,
     generate_mcq_quiz,
     generate_short_questions,
 )
@@ -78,12 +80,15 @@ def initialize_session_state() -> None:
         "document_chunks": None,
         "document_index": None,
 
+        # Learning mode state
+        "selected_learning_mode": None,  # Tracks which mode is selected (None = no mode selected)
+
         # Generated content
         "simplified_content": None,
         "visual_content": None,
         "audio_file": None,
         "selected_visual": None,
-        "visual_choice": "Select a visual",
+        "visual_choice": "Select a visual type",
 
         # Chat
         "chat_history": [],
@@ -341,22 +346,37 @@ def _process_image_ocr(image_file) -> None:
 
 
 def render_learning_modes() -> None:
-    """Render learning mode selector and content."""
+    """Render learning mode selector with Read, Listen, Visual Learn, and Quiz.
+    
+    No mode is selected by default. Content only renders after explicit user selection.
+    """
     if not st.session_state.document_text:
         st.info("📤 Upload a document or image first to get started!")
         return
 
     st.header("🎯 Choose Your Learning Mode")
-    initialize_learning_mode()
-    selected_mode = render_learning_mode_switcher()
+    
+    # Display learning mode selector with "Select a Mode" as default (no auto-selection)
+    selected_mode = st.radio(
+        "Select a learning mode:",
+        ["Select a Mode", "📖 Read", "🔊 Listen", "🧠 Visual Learn", "📝 Quiz"],
+        horizontal=True,
+        index=0,  # First option is always default
+    )
+    st.session_state.selected_learning_mode = selected_mode
     st.divider()
 
-    if selected_mode == "📖 Read":
+    # Only render content if a real mode is selected (not the placeholder)
+    if selected_mode == "Select a Mode":
+        st.info("👆 Please choose a learning mode to get started.")
+    elif selected_mode == "📖 Read":
         render_read_mode()
     elif selected_mode == "🔊 Listen":
         render_listen_mode()
     elif selected_mode == "🧠 Visual Learn":
         render_visual_mode()
+    elif selected_mode == "📝 Quiz":
+        render_quiz_section()
 
 
 def render_read_mode() -> None:
@@ -684,7 +704,7 @@ def render_listen_mode() -> None:
         )
 
 
-def render_visual_mode() -> None:
+def _render_visual_mode_legacy() -> None:
     """Render Visual Learn mode with a single selected visual type."""
     st.subheader("🖼️ Choose a visual learning style")
 
@@ -705,15 +725,113 @@ def render_visual_mode() -> None:
     }
     visual_theme = theme_mapping.get(theme, "light")
 
-def render_quiz_section() -> None:
-    """Render the intelligent quiz mode UI."""
-    st.header("📚 Quiz Mode")
+def render_visual_mode() -> None:
+    """Render Visual Learn mode with an explicit selected visual type."""
+    st.subheader("Visual Learning")
 
-    if not st.session_state.document_record:
-        st.info("Upload and process a document first to generate a quiz.")
+    selected_visual = st.selectbox(
+        "Choose a visual type",
+        [
+            "Select a visual type",
+            "Flowchart",
+            "Mind Map",
+        ],
+        index=0,
+        key="visual_choice",
+    )
+
+    preferences = get_ui_preferences()
+    theme = preferences.get("theme", "Light").lower().replace(" ", "_")
+    theme_mapping = {
+        "light": "light",
+        "dark": "dark",
+        "cream": "dyslexia_cream",
+        "yellow": "dyslexia_yellow",
+    }
+    visual_theme = theme_mapping.get(theme, "light")
+
+    visual_type_map = {
+        "Flowchart": "flowchart",
+        "Mind Map": "mind_map",
+    }
+
+    if st.button("Generate Visual", type="primary", key="gen_visual_btn"):
+        if selected_visual not in visual_type_map:
+            st.warning("Please choose a visual type before generating.")
+            return
+
+        with st.spinner("Generating your visual..."):
+            try:
+                visual_content = generate_visual_content(
+                    st.session_state.document_text or "",
+                    theme=visual_theme,
+                    visual_type=visual_type_map[selected_visual],
+                )
+                st.session_state.visual_content = visual_content
+                st.session_state.selected_visual = selected_visual
+                st.success("Visual generated.")
+            except (VisualError, LLMRouterError, ValueError):
+                logger.exception("Visual generation failed")
+                st.error("Visual generation is temporarily unavailable.")
+                return
+            except Exception:
+                logger.exception("Unexpected error during visual generation")
+                st.error("Something went wrong. Please try again.")
+                return
+
+    visual_content = st.session_state.get("visual_content")
+    generated_visual = st.session_state.get("selected_visual")
+    if not visual_content:
+        st.info("Choose a visual type and generate it to begin.")
         return
 
-    if st.button("Generate Quiz", type="primary"):
+    if generated_visual != selected_visual:
+        st.info("Generate the selected visual type to view it here.")
+        return
+
+    image_key = "flowchart_path" if visual_type_map.get(generated_visual) == "flowchart" else "mindmap_path"
+    image_path = visual_content.get(image_key)
+    if not image_path:
+        st.info("No visual image was created for the selected type.")
+        return
+
+    st.markdown(f"### {generated_visual}")
+    if visual_content.get("description"):
+        st.write(visual_content["description"])
+
+    st.image(image_path, use_container_width=True)
+    try:
+        with open(image_path, "rb") as visual_file:
+            st.download_button(
+                label="Download Visual",
+                data=visual_file.read(),
+                file_name=Path(image_path).name,
+                mime="image/png",
+                key=f"download_{image_key}",
+            )
+    except OSError:
+        logger.exception("Generated visual file could not be opened")
+
+
+def _shorten_explanation(text: str, max_sentences: int = 3) -> str:
+    """Return the first `max_sentences` sentences from `text` for concise explanations."""
+    if not text:
+        return ""
+    import re
+
+    sentences = re.split(r"(?<=[.!?])\s+", str(text).strip())
+    short = " ".join(s.strip() for s in sentences[:max_sentences] if s.strip())
+    return short
+
+
+def render_quiz_section() -> None:
+    """Render the intelligent quiz mode UI as a learning mode option.
+    
+    MCQ answers start unanswered. Student must explicitly select each answer.
+    Quiz validation ensures all questions are answered before submission.
+    """
+    if st.button("📝 Generate Quiz", type="primary", key="gen_quiz_btn"):
+        logger.info("[Quiz] Starting quiz generation")
         with st.spinner("Generating quiz from your document..."):
             try:
                 document_text = st.session_state.document_text or ""
@@ -721,15 +839,19 @@ def render_quiz_section() -> None:
                 short_questions = generate_short_questions(document_text, num_questions=4)
                 st.session_state.quiz_mcqs = mcqs
                 st.session_state.quiz_short_questions = short_questions
+                # Initialize answers as empty strings (unanswered state)
                 st.session_state.quiz_answers = ["" for _ in mcqs]
                 st.session_state.quiz_short_answers = ["" for _ in short_questions]
                 st.session_state.quiz_report = None
                 st.session_state.quiz_short_feedback = None
-            except (DocumentError, GeminiConfigurationError, GeminiAPIError, ValueError) as exc:
-                st.error(str(exc))
+                st.success("✅ Quiz generated! Answer the questions below.")
+            except (DocumentError, LLMRouterError, ValueError):
+                logger.exception("Quiz generation failed")
+                st.error("Quiz generation is temporarily unavailable.")
                 return
-            except Exception as exc:
-                st.error(f"Quiz generation failed: {exc}")
+            except Exception:
+                logger.exception("Unexpected error during quiz generation")
+                st.error("Quiz generation is temporarily unavailable.")
                 return
 
     if not st.session_state.quiz_mcqs or not st.session_state.quiz_short_questions:
@@ -741,17 +863,30 @@ def render_quiz_section() -> None:
         key = f"mcq_{index}"
         st.write(f"**{index + 1}. {mcq['question']}**")
         current_answer = st.session_state.quiz_answers[index] if st.session_state.quiz_answers else ""
+        
+        # Build options with empty placeholder at the start
+        options_with_placeholder = ["-- Select Answer --"] + mcq["options"]
+        
+        # Determine which option is currently selected
+        if current_answer and current_answer in mcq["options"]:
+            # User has already selected an answer
+            selected_index = options_with_placeholder.index(current_answer)
+        else:
+            # No answer selected yet (start at placeholder)
+            selected_index = 0
+        
         selected = st.radio(
             "Choose the best answer:",
-            options=mcq["options"],
+            options=options_with_placeholder,
             key=key,
-            index=mcq["options"].index(current_answer) if current_answer in mcq["options"] else 0,
+            index=selected_index,
         )
-        if st.session_state.quiz_answers is None:
-            st.session_state.quiz_answers = []
-        if len(st.session_state.quiz_answers) < len(st.session_state.quiz_mcqs):
-            st.session_state.quiz_answers = ["" for _ in st.session_state.quiz_mcqs]
-        st.session_state.quiz_answers[index] = selected
+        
+        # Store only the actual answer, not the placeholder
+        if selected != "-- Select Answer --":
+            st.session_state.quiz_answers[index] = selected
+        else:
+            st.session_state.quiz_answers[index] = ""
 
     st.subheader("Short Answer Questions")
     for index, short_question in enumerate(st.session_state.quiz_short_questions):
@@ -768,203 +903,148 @@ def render_quiz_section() -> None:
             st.session_state.quiz_short_answers = ["" for _ in st.session_state.quiz_short_questions]
         st.session_state.quiz_short_answers[index] = user_text
 
-    if st.button("Submit Quiz", type="secondary"):
+    if st.button("📤 Submit Quiz", type="secondary", key="submit_quiz_btn"):
+        # Validation: ensure all questions are answered
+        unanswered_mcqs = [i for i, ans in enumerate(st.session_state.quiz_answers or []) if not ans]
+        unanswered_short = [i for i, ans in enumerate(st.session_state.quiz_short_answers or []) if not ans or not ans.strip()]
+        
+        if unanswered_mcqs or unanswered_short:
+            st.warning("⚠️ Please answer all questions before submitting.")
+            if unanswered_mcqs:
+                st.info(f"Unanswered MCQs: {', '.join(str(i+1) for i in unanswered_mcqs)}")
+            if unanswered_short:
+                st.info(f"Unanswered short questions: {', '.join(str(i+1) for i in unanswered_short)}")
+            return
+        
         with st.spinner("Evaluating your quiz answers..."):
+            total_start = time.perf_counter()
+            quiz_mcqs = st.session_state.quiz_mcqs if isinstance(st.session_state.quiz_mcqs, list) else []
+            quiz_answers = st.session_state.quiz_answers if isinstance(st.session_state.quiz_answers, list) else []
+            short_questions = (
+                st.session_state.quiz_short_questions
+                if isinstance(st.session_state.quiz_short_questions, list)
+                else []
+            )
+            short_answers = (
+                st.session_state.quiz_short_answers
+                if isinstance(st.session_state.quiz_short_answers, list)
+                else []
+            )
+
+            mcq_start = time.perf_counter()
             try:
-                report = evaluate_mcq(st.session_state.quiz_answers or [], st.session_state.quiz_mcqs or [])
-                short_feedback = []
-                for index, short_question in enumerate(st.session_state.quiz_short_questions or []):
-                    student_response = st.session_state.quiz_short_answers[index] if st.session_state.quiz_short_answers else ""
-                    if student_response.strip():
-                        feedback = evaluate_short_answer(student_response, short_question["answer"])
+                report = evaluate_mcq(quiz_answers, quiz_mcqs)
+            except Exception:
+                logger.exception("[Quiz Evaluation] MCQ evaluation failed. Falling back to local empty report.")
+                total = len(quiz_mcqs)
+                report = {
+                    "score": 0,
+                    "total": total,
+                    "percentage": 0,
+                    "correct_answers": 0,
+                    "incorrect_answers": total,
+                    "strengths": "Complete the quiz to see a summary of your strengths.",
+                    "weaknesses": "The quiz could not be evaluated normally, so review each answer carefully.",
+                    "recommendations": "Review the quiz material and try the questions again.",
+                    "evaluations": [],
+                }
+            logger.info("[Quiz]\nMCQ evaluation completed in %.2f sec", time.perf_counter() - mcq_start)
+
+            short_feedback = []
+            for index, short_question in enumerate(short_questions):
+                short_start = time.perf_counter()
+                short_question_data = short_question if isinstance(short_question, dict) else {}
+                question_text = str(short_question_data.get("question", "")).strip()
+                expected_answer = str(short_question_data.get("answer", "")).strip()
+                student_response = short_answers[index] if index < len(short_answers) else ""
+                student_response = str(student_response or "").strip()
+
+                try:
+                    if student_response:
+                        feedback = evaluate_short_answer(
+                            student_response,
+                            expected_answer,
+                            question_text=question_text,
+                        )
                     else:
-                        feedback = {
-                            "score": 0,
-                            "max_score": 5,
-                            "result": "Incorrect",
-                            "feedback": "No answer was provided.",
-                            "improvement_tip": "Try to answer the question using a sentence or two from the document.",
-                        }
-                    short_feedback.append(
-                        {
-                            "question": short_question["question"],
-                            "student_answer": student_response,
-                            "expected_answer": short_question["answer"],
-                            "evaluation": feedback,
-                        }
+                        feedback = evaluate_short_answer_locally(
+                            student_response,
+                            expected_answer,
+                            question_text=question_text,
+                        )
+                except Exception:
+                    logger.exception(
+                        "[Quiz Evaluation] Short answer %s failed. Falling back to local evaluation.",
+                        index + 1,
                     )
+                    feedback = evaluate_short_answer_locally(
+                        student_response,
+                        expected_answer,
+                        question_text=question_text,
+                    )
+
+                logger.info("[Quiz]\nShort answer %s completed in %.2f sec", index + 1, time.perf_counter() - short_start)
+                short_feedback.append(
+                    {
+                        "question": question_text,
+                        "student_answer": student_response,
+                        "expected_answer": expected_answer,
+                        "evaluation": feedback,
+                    }
+                )
+
+            try:
+                st.session_state.quiz_report = combine_quiz_report_with_short_answers(report, short_feedback)
+            except Exception:
+                logger.exception("[Quiz Evaluation] Report merge failed. Returning MCQ report with short feedback stored.")
                 st.session_state.quiz_report = report
-                st.session_state.quiz_short_feedback = short_feedback
-            except (GeminiConfigurationError, GeminiAPIError, ValueError) as exc:
-                st.error(str(exc))
-            except Exception as exc:
-                st.error(f"Quiz evaluation failed: {exc}")
+            st.session_state.quiz_short_feedback = short_feedback
+            logger.info("[Quiz]\nTotal evaluation completed in %.2f sec", time.perf_counter() - total_start)
+            st.success("✅ Quiz evaluated! See your results below.")
 
     if st.session_state.quiz_report:
         report = st.session_state.quiz_report
         st.subheader("Quiz Results")
         st.metric("Score", f"{report['score']}/{report['total']}")
         st.progress(report["percentage"] / 100 if report["total"] else 0)
+        # Strengths, Weaknesses, Recommendations: concise readable summaries
+        st.markdown("### Strengths")
+        st.write(str(report.get("strengths") or "Complete the quiz to see your strengths."))
 
-        st.markdown("**Topic Analysis**")
-        cols = st.columns(2)
-        with cols[0]:
-            st.markdown("**Strengths**")
-            if report["strengths"]:
-                for item in report["strengths"]:
-                    st.write(f"- {item}")
-            else:
-                st.write("No clear strengths identified yet.")
-        with cols[1]:
-            st.markdown("**Weaknesses**")
-            if report["weaknesses"]:
-                for item in report["weaknesses"]:
-                    st.write(f"- {item}")
-            else:
-                st.write("No clear weaknesses identified yet.")
+        st.markdown("### Weaknesses")
+        st.write(str(report.get("weaknesses") or "No major weaknesses were identified in this attempt."))
 
-        st.markdown("**Recommendations**")
-        for recommendation in report["recommendations"]:
-            st.write(f"- {recommendation}")
+        st.markdown("### Recommendations")
+        st.write(str(report.get("recommendations") or "Review the explanations below and retry the missed questions."))
 
-        st.markdown("**Revision Material**")
-        for revision in report["revision_material"]:
-            st.markdown(f"**{revision.get('topic', 'Topic')}**")
-            st.write(revision.get("simple_explanation", ""))
-            st.write(f"*{revision.get('revision_note', '')}*")
-            st.write(f"Practice: {revision.get('practice_question', '')}")
+        evaluations = report.get("evaluations") or []
+        if evaluations:
+            st.markdown("### Evaluation")
+            for index, evaluation in enumerate(evaluations, start=1):
+                # Use numeric question index as expander title (do not use topic/concept names)
+                with st.expander(f"Question {index} — View Evaluation"):
+                    st.markdown("**Question:**")
+                    st.write(evaluation.get("question", ""))
 
-    if st.session_state.quiz_short_feedback:
-        st.subheader("Short Answer Feedback")
-        for feedback_item in st.session_state.quiz_short_feedback:
-            st.markdown(f"**{feedback_item['question']}**")
-            st.write(f"Your answer: {feedback_item['student_answer']}")
-            evaluation = feedback_item["evaluation"]
-            st.write(f"Result: {evaluation.get('result')}")
-            st.write(f"Feedback: {evaluation.get('feedback')}")
-            st.write(f"Tip: {evaluation.get('improvement_tip')}")
+                    st.markdown("**Your Answer:**")
+                    st.write(evaluation.get("your_answer", ""))
 
+                    st.markdown("**Correct Answer:**")
+                    st.write(evaluation.get("correct_answer", ""))
 
-def render_simplified_content() -> None:
-    """Display Gemini-generated simplified content."""
-    st.header("Simplified Content")
-    content = st.session_state.simplified_content
-    if not content:
-        st.info("Upload and process a document to see simplified content.")
-        return
-    selected_label = st.selectbox(
-        "Choose one visual type",
-        options=["Select a visual", "🔄 Flowchart", "🧠 Mind Map"],
-        key="visual_choice",
-    )
+                    st.markdown("**Result:**")
+                    result = str(evaluation.get("result") or "Incorrect")
+                    if result == "Correct":
+                        st.write("✅ Correct")
+                    elif result in {"Partially Correct", "Partially"}:
+                        st.write("⚠ Partially Correct")
+                    else:
+                        st.write("❌ Incorrect")
 
-    if selected_label == "🔄 Flowchart":
-        st.session_state.selected_visual = "flowchart"
-    elif selected_label == "🧠 Mind Map":
-        st.session_state.selected_visual = "mind_map"
-    else:
-        st.session_state.selected_visual = None
-
-    selected_visual = st.session_state.get("selected_visual")
-    if not selected_visual:
-        st.info("Please select exactly one visual type before generating.")
-
-    if st.button("🎨 Generate Visual", type="primary", key="gen_visual"):
-        if not st.session_state.document_text:
-            st.warning("Upload a document or extract text before generating a visual.")
-        elif selected_visual not in {"flowchart", "mind_map"}:
-            st.warning("Please select exactly one visual type before generating.")
-        else:
-            with st.spinner("Generating visual..."):
-                try:
-                    visual = generate_visual_content(
-                        st.session_state.document_text,
-                        theme=visual_theme,
-                        visual_type=selected_visual,
-                    )
-                    st.session_state.visual_content = visual
-                    st.success(f"✅ { 'Flowchart' if selected_visual == 'flowchart' else 'Mind Map' } created")
-                except (VisualError, LLMRouterError) as exc:
-                    show_user_error("Could not create the selected visual. Please try again.", exc)
-
-    if st.session_state.visual_content:
-        visual = st.session_state.visual_content
-        st.markdown(f"## 🖼️ {visual.get('title', 'Visual Learning')}")
-        st.markdown(f"**Topic:** {visual.get('topic', 'General').title()}")
-        if visual.get("description"):
-            st.markdown(f"*{visual.get('description')}*")
-
-        st.divider()
-
-        if selected_visual == "flowchart":
-            st.markdown("### 🔄 Flowchart")
-            st.markdown("*Step-by-step process — emoji nodes, color-coded boxes, minimal text*")
-            flowchart_path = visual.get("flowchart_path", "")
-            if flowchart_path and os.path.exists(flowchart_path):
-                try:
-                    image = Image.open(flowchart_path)
-                    st.image(image, use_container_width=True, caption="Flowchart")
-                    with open(flowchart_path, "rb") as img_file:
-                        st.download_button(
-                            label="⬇️ Download Flowchart",
-                            data=img_file.read(),
-                            file_name="flowchart.png",
-                            mime="image/png",
-                            key="download_flowchart",
-                        )
-                except Exception as exc:
-                    logger.exception("Could not display flowchart.")
-                    st.warning("Flowchart could not be displayed.")
-            else:
-                st.info("Flowchart not available.")
-
-        elif selected_visual == "mind_map":
-            st.markdown("### 🧠 Mind Map")
-            st.markdown("*Central concept with colorful emoji branches and short labels*")
-            mindmap_path = visual.get("mindmap_path", "")
-            if mindmap_path and os.path.exists(mindmap_path):
-                try:
-                    image = Image.open(mindmap_path)
-                    st.image(image, use_container_width=True, caption="Mind Map")
-                    with open(mindmap_path, "rb") as img_file:
-                        st.download_button(
-                            label="⬇️ Download Mind Map",
-                            data=img_file.read(),
-                            file_name="mind_map.png",
-                            mime="image/png",
-                            key="download_mindmap",
-                        )
-                except Exception as exc:
-                    logger.exception("Could not display mind map.")
-                    st.warning("Mind map could not be displayed.")
-            else:
-                st.info("Mind map not available.")
-
-        st.divider()
-        structure = visual.get("structure", {})
-        if structure:
-            col1, col2 = st.columns(2)
-            with col1:
-                steps = structure.get("steps", [])
-                if steps:
-                    st.markdown("#### 📍 Process Steps")
-                    for i, step in enumerate(steps, 1):
-                        st.markdown(f"{i}. {step}")
-                inputs = structure.get("inputs", [])
-                if inputs:
-                    st.markdown("#### 📥 Inputs/Resources")
-                    for input_item in inputs:
-                        st.markdown(f"• {input_item}")
-            with col2:
-                outputs = structure.get("outputs", [])
-                if outputs:
-                    st.markdown("#### 📤 Outputs/Results")
-                    for output_item in outputs:
-                        st.markdown(f"• {output_item}")
-                key_comp = structure.get("key_component", "")
-                if key_comp:
-                    st.markdown("#### ⚙️ Key Component")
-                    st.info(f"**{key_comp}**")
+                    st.markdown("**Explanation:**")
+                    explanation = str(evaluation.get("explanation") or "").strip()
+                    explanation = _shorten_explanation(explanation, max_sentences=2) or "No explanation available."
+                    st.write(explanation)
 
 
 def render_chat_section() -> None:
@@ -1132,12 +1212,9 @@ def main() -> None:
     st.divider()
     render_upload_section()
     st.divider()
-    render_quiz_section()
-    st.divider()
-    render_simplified_content()
-    render_word_explorer()
-    st.divider()
     render_learning_modes()
+    st.divider()
+    render_word_explorer()
     st.divider()
     render_chat_section()
 
