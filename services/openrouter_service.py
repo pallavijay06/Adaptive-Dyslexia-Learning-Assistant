@@ -26,7 +26,7 @@ DEFAULT_TIMEOUT_SECONDS = 60
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 SYSTEM_INSTRUCTION = """
-You are cHEAL, a friendly dyslexia-focused learning assistant.
+You are a friendly dyslexia-focused learning assistant.
 Explain concepts clearly, use simple language, break answers into small steps,
 and keep responses supportive, beginner-friendly, and easy to read.
 """.strip()

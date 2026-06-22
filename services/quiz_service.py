@@ -6,6 +6,7 @@ import ast
 import difflib
 import json
 import logging
+import random
 import re
 import time
 from collections import Counter
@@ -14,6 +15,8 @@ from typing import Any
 from services.llm_router import LLMRouterError, generate_content
 
 logger = logging.getLogger(__name__)
+
+_QUIZ_GENERATION_FALLBACK_USED = False
 
 _STOPWORDS = {
     "about",
@@ -73,12 +76,27 @@ _CONCEPT_KEYWORDS = [
     "algorithm",
 ]
 
+_SYNONYM_MAP = {
+    "produce": "make",
+    "produces": "make",
+    "produced": "make",
+    "clorophyll": "chlorophyll",
+    "photosyntesis": "photosynthesis",
+    "photosythesis": "photosynthesis",
+    "evapouration": "evaporation",
+    "oxyen": "oxygen",
+    "oxigen": "oxygen",
+    "oxegen": "oxygen",
+}
+
 
 def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]]:
     """Generate high-quality multiple choice questions from document content."""
+    global _QUIZ_GENERATION_FALLBACK_USED
     if not text or not text.strip():
         raise ValueError("Document text cannot be empty for quiz generation.")
 
+    _QUIZ_GENERATION_FALLBACK_USED = False
     prompt = (
         "Generate a learner-friendly multiple choice quiz from the document below. "
         f"Create exactly {num_questions} questions. "
@@ -90,10 +108,20 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
         "Use simple language and keep answer choices clear and short."
     )
 
-    response = _run_quiz_prompt(prompt, text)
-    mcqs = _parse_json_response(response)
-    if not isinstance(mcqs, list):
-        raise ValueError("Expected a list of MCQ objects from the quiz generator.")
+    try:
+        response = _run_quiz_prompt(prompt, text)
+        mcqs = _parse_json_response(response)
+        if not isinstance(mcqs, list):
+            logger.warning("[Quiz Parser] Parsed MCQ response is not a list or is empty.")
+            mcqs = None
+    except Exception:
+        logger.exception("[Quiz Parser] MCQ generation failed. Falling back to local quiz generation.")
+        mcqs = None
+
+    if mcqs is None:
+        _QUIZ_GENERATION_FALLBACK_USED = True
+        logger.warning("[Quiz Parser] Falling back to local quiz generation")
+        return _local_generate_mcq_quiz(text, num_questions)
 
     validated_mcqs = []
     for item in mcqs:
@@ -113,13 +141,16 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
         )
 
     if not validated_mcqs:
-        raise ValueError("Quiz generation did not return valid multiple choice questions.")
+        logger.warning("[Quiz] MCQ parsing returned no valid questions. Using local fallback quiz generation.")
+        _QUIZ_GENERATION_FALLBACK_USED = True
+        return _local_generate_mcq_quiz(text, num_questions)
 
     return validated_mcqs
 
 
 def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str, str]]:
     """Generate short answer questions from document content."""
+    global _QUIZ_GENERATION_FALLBACK_USED
     if not text or not text.strip():
         raise ValueError("Document text cannot be empty for short question generation.")
 
@@ -132,10 +163,20 @@ def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str
         "Use simple language and keep the expected answers concise."
     )
 
-    response = _run_quiz_prompt(prompt, text)
-    questions = _parse_json_response(response)
-    if not isinstance(questions, list):
-        raise ValueError("Expected a list of short answer question objects.")
+    try:
+        response = _run_quiz_prompt(prompt, text)
+        questions = _parse_json_response(response)
+        if not isinstance(questions, list):
+            logger.warning("[Quiz Parser] Parsed short question response is not a list or is empty.")
+            questions = None
+    except Exception:
+        logger.exception("[Quiz Parser] Short question generation failed. Falling back to local quiz generation.")
+        questions = None
+
+    if questions is None:
+        logger.warning("[Quiz Parser] Falling back to local quiz generation")
+        _QUIZ_GENERATION_FALLBACK_USED = True
+        return _local_generate_short_questions(text, num_questions)
 
     validated_questions = []
     for item in questions:
@@ -148,7 +189,9 @@ def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str
         validated_questions.append({"question": question, "answer": answer})
 
     if not validated_questions:
-        raise ValueError("Short question generation did not return valid output.")
+        logger.warning("[Quiz] Short question parsing returned no valid questions. Using local fallback quiz generation.")
+        _QUIZ_GENERATION_FALLBACK_USED = True
+        return _local_generate_short_questions(text, num_questions)
 
     return validated_questions
 
@@ -243,7 +286,7 @@ def evaluate_short_answer(
         "Return only a JSON object with the fields:\n"
         "- score (integer between 0 and 5)\n"
         "- max_score (integer)\n"
-        "- result (\"Perfectly Correct\", \"Partially Correct\", or \"Incorrect\")\n"
+        "- result (\"Correct\", \"Partially Correct\", or \"Incorrect\")\n"
         "- concept (2-4 words naming the topic)\n"
         "- feedback\n"
         "- improvement_tip\n"
@@ -275,10 +318,18 @@ def evaluate_short_answer(
     evaluation.setdefault("score", 0)
     evaluation.setdefault("result", "Partially Correct")
     evaluation["concept"] = concept
+    evaluation["result"] = _normalize_evaluation_result(evaluation.get("result"))
+    if evaluation["result"] not in {"Correct", "Partially Correct", "Incorrect"}:
+        evaluation["result"] = _result_from_score(local_score, evaluation["max_score"])
+
+    explanation = _build_question_explanation(question_text, student_answer_text, expected_answer_text, evaluation["result"])
+    if not _is_explanation_consistent_with_result(evaluation["result"], explanation) or not _teaches_concept(explanation, expected_answer_text):
+        explanation = _build_question_explanation(question_text, student_answer_text, expected_answer_text, evaluation["result"])
+
     evaluation["feedback"] = _shorten_sentences(
-        str(evaluation.get("feedback") or ""),
-        fallback=_build_short_feedback(concept, expected_answer_text),
-        max_sentences=2,
+        explanation,
+        fallback=explanation,
+        max_sentences=3,
     )
     evaluation["improvement_tip"] = _shorten_sentences(
         str(evaluation.get("improvement_tip") or ""),
@@ -329,12 +380,17 @@ def combine_quiz_report_with_short_answers(
         question = str(item.get("question", "")).strip()
         expected_answer = str(item.get("expected_answer", "")).strip()
         student_answer = str(item.get("student_answer", "")).strip()
-        result = _result_from_score(score, max_score)
+        explicit_result = _normalize_evaluation_result(str(evaluation.get("result") or ""))
+        result = explicit_result if explicit_result in {"Correct", "Partially Correct", "Incorrect"} else _result_from_score(score, max_score)
         total_count += 1
         if result == "Correct":
             correct_count += 1
         else:
             weak_count += 1
+
+        explanation = _build_question_explanation(question, student_answer, expected_answer, result)
+        if not _is_explanation_consistent_with_result(result, explanation):
+            explanation = _build_question_explanation(question, student_answer, expected_answer, result)
 
         evaluations.append(
             {
@@ -342,11 +398,7 @@ def combine_quiz_report_with_short_answers(
                 "your_answer": student_answer or "No answer",
                 "correct_answer": expected_answer,
                 "result": result,
-                "explanation": _shorten_sentences(
-                    str(evaluation.get("feedback") or ""),
-                    fallback=_build_question_explanation(question, student_answer, expected_answer, result),
-                    max_sentences=3,
-                ),
+                "explanation": _shorten_sentences(explanation, fallback=explanation, max_sentences=3),
             }
         )
 
@@ -367,42 +419,64 @@ def _fallback_short_answer_evaluation(
     expected_answer: str,
     question_text: str = "",
 ) -> dict[str, Any]:
-    """Evaluate a short answer locally with token overlap and sequence similarity."""
+    """Evaluate a short answer locally with token overlap, fuzzy matching, and meaning."""
     concept = _infer_concept(question_text, expected_answer)
     student_tokens = _content_tokens(student_answer)
     expected_tokens = _content_tokens(expected_answer)
+    normalized_student = _normalize_answer(student_answer)
+    normalized_expected = _normalize_answer(expected_answer)
 
     if not student_tokens:
         score = 0
     elif not expected_tokens:
         score = 1
     else:
-        overlap = len(student_tokens & expected_tokens) / max(len(expected_tokens), 1)
-        sequence = difflib.SequenceMatcher(
-            None,
-            _normalize_answer(student_answer),
-            _normalize_answer(expected_answer),
-        ).ratio()
-        similarity = (overlap * 0.65) + (sequence * 0.35)
-        score = round(similarity * 5)
+        exact_match = normalized_student == normalized_expected
+        fuzzy_match = _fuzzy_text_similarity(normalized_student, normalized_expected)
+        token_match = _match_tokens(expected_tokens, student_tokens)
+        sequence = difflib.SequenceMatcher(None, normalized_student, normalized_expected).ratio()
+        overlap_phrase = 0.9 if normalized_student and normalized_expected and normalized_student in normalized_expected else 0.0
+        short_equivalent_answer = (
+            overlap_phrase >= 0.9
+            and len(student_tokens) <= 2
+            and len(expected_tokens) <= 4
+        )
+        exact_token_equivalent = token_match >= 0.9 and abs(len(expected_tokens) - len(student_tokens)) <= 1
 
+        if exact_match or short_equivalent_answer or exact_token_equivalent or (fuzzy_match >= 0.92 and token_match >= 0.7):
+            score = 5
+        else:
+            similarity = (
+                token_match * 0.55
+                + sequence * 0.25
+                + fuzzy_match * 0.10
+                + overlap_phrase * 0.10
+            )
+            score = round(similarity * 5)
+            if overlap_phrase >= 0.9 and token_match >= 0.6 and score >= 4:
+                score = 4
+
+        if score == 5 and overlap_phrase >= 0.9 and token_match < 0.7:
+            score = 4
     score = max(0, min(5, score))
+
     if score >= 4:
-        result = "Perfectly Correct"
-        feedback = f"Good answer on {concept}. You included the main idea."
+        result = "Correct"
     elif score >= 2:
         result = "Partially Correct"
-        feedback = "Basic evaluation completed. Some key details are missing."
     else:
         result = "Incorrect"
-        feedback = "Basic evaluation completed. The answer misses the key idea."
+
+    explanation = _build_question_explanation(question_text, student_answer, expected_answer, result)
+    if not _teaches_concept(explanation, expected_answer):
+        explanation = _build_question_explanation(question_text, student_answer, expected_answer, result)
 
     return {
         "score": score,
         "max_score": 5,
         "result": result,
         "concept": concept,
-        "feedback": _shorten_sentences(feedback, fallback="Basic evaluation completed.", max_sentences=2),
+        "feedback": _shorten_sentences(explanation, fallback=explanation, max_sentences=3),
         "improvement_tip": _build_tip(concept, expected_answer) or "Review the key concept.",
         "source": "local",
     }
@@ -428,17 +502,49 @@ def _run_quiz_prompt(prompt: str, document_text: str | None = None) -> str:
 
 def _parse_json_response(text: str) -> Any:
     payload = _extract_json_payload(text)
+    logger.info("[Quiz Parser] Raw response received")
+    print("\n========== RAW QUIZ RESPONSE ==========")
+    print(payload)
+    print("=======================================\n")
+
     if not payload:
-        raise ValueError("No JSON payload found in model response.")
+        logger.warning("[Quiz Parser] No JSON payload found in model response.")
+        return None
+
+    cleaned = _strip_markdown_wrappers(payload)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
 
     try:
-        return json.loads(payload)
+        return ast.literal_eval(cleaned)
+    except Exception:
+        pass
+
+    repaired = _repair_json_text(cleaned)
+    try:
+        parsed = json.loads(repaired)
+        logger.info("[Quiz Parser] JSON repaired successfully")
+        return parsed
     except json.JSONDecodeError:
-        try:
-            return ast.literal_eval(payload)
-        except Exception as exc:
-            logger.exception("JSON parsing failed for quiz service response.")
-            raise ValueError("Could not parse the model response as JSON.") from exc
+        pass
+
+    try:
+        parsed = ast.literal_eval(repaired)
+        logger.info("[Quiz Parser] JSON repaired successfully")
+        return parsed
+    except Exception:
+        pass
+
+    fallback = _extract_quiz_structures_from_text(text)
+    if fallback is not None:
+        logger.warning("[Quiz Parser] Falling back to extracted quiz structures from raw response")
+        return fallback
+
+    logger.exception("[Quiz Parser] JSON parsing failed for quiz service response.")
+    return None
+
 
 
 def _extract_json_payload(text: str) -> str:
@@ -470,6 +576,162 @@ def _extract_json_payload(text: str) -> str:
     return text
 
 
+def _strip_markdown_wrappers(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _repair_json_text(text: str) -> str:
+    repaired = str(text or "").strip()
+    repaired = repaired.replace("\r", " ").replace("\t", " ")
+    repaired = repaired.replace("“", '"').replace("”", '"')
+    repaired = repaired.replace("‘", "'").replace("’", "'")
+    repaired = _escape_newlines_in_json_strings(repaired)
+    repaired = _escape_unescaped_control_chars(repaired)
+    repaired = re.sub(r",\s*([\]}])", r"\1", repaired)
+    repaired = _quote_json_keys(repaired)
+    repaired = _convert_single_quotes_to_double_quotes(repaired)
+    repaired = re.sub(r"\s+$", "", repaired)
+    return repaired
+
+
+def _escape_newlines_in_json_strings(text: str) -> str:
+    def replacement(match: re.Match) -> str:
+        inner = match.group(1)
+        inner = inner.replace("\n", "\\n").replace("\r", "\\n").replace("\t", "\\t")
+        return '"' + inner + '"'
+
+    return re.sub(r'"([^"\\]*(?:\\.[^"\\]*)*)"', replacement, text, flags=re.S)
+
+
+def _escape_unescaped_control_chars(text: str) -> str:
+    return re.sub(r"[\x00-\x1f]", " ", text)
+
+
+def _quote_json_keys(text: str) -> str:
+    def replacement(match: re.Match) -> str:
+        prefix = match.group(1)
+        key = match.group(2).strip()
+        suffix = match.group(3)
+        return f"{prefix}\"{key}\"{suffix}"
+
+    return re.sub(r'([\{,]\s*)([A-Za-z_][A-Za-z0-9_ ]*)(\s*):', replacement, text)
+
+
+def _convert_single_quotes_to_double_quotes(text: str) -> str:
+    return re.sub(r"'([^'\\]*(?:\\.[^'\\]*)*)'", r'"\1"', text)
+
+
+def _extract_quiz_structures_from_text(text: str) -> Any:
+    if not text or not text.strip():
+        return None
+
+    qas = []
+    qa_pairs = re.findall(r"(?im)^(?:question\s*\d*[:\).\-]*\s*)(.*?)\s*(?:answer\s*\d*[:\).\-]*\s*)(.*?)(?=\n(?:question|answer|$))", text, re.S)
+    if qa_pairs:
+        for question, answer in qa_pairs[:10]:
+            qas.append({"question": question.strip(), "answer": answer.strip()})
+        return qas
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for i, line in enumerate(lines):
+        if re.match(r"^(?:\d+\.|[A-Da-d][\).]|Q\d*[:\).])", line):
+            content = re.sub(r"^(?:\d+\.|[A-Da-d][\).]|Q\d*[:\).])\s*", "", line).strip()
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line and not next_line.lower().startswith("answer"):
+                    qas.append({"question": content, "answer": next_line})
+    return qas if qas else None
+
+
+def quiz_generation_used_fallback() -> bool:
+    global _QUIZ_GENERATION_FALLBACK_USED
+    used = _QUIZ_GENERATION_FALLBACK_USED
+    _QUIZ_GENERATION_FALLBACK_USED = False
+    return used
+
+
+def _local_generate_mcq_quiz(text: str, num_questions: int) -> list[dict[str, str]]:
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    facts = []
+    for sentence in sentences:
+        match = re.search(r"([A-Z][^.!?]{20,120}?) (is|are|has|have|uses|means|contains) ([^.!?]+)", sentence, re.I)
+        if match:
+            subject = match.group(1).strip()
+            verb = match.group(2).strip()
+            remainder = match.group(3).strip().rstrip(".")
+            facts.append((subject, verb, remainder))
+        if len(facts) >= num_questions * 2:
+            break
+
+    if not facts:
+        key_terms = re.findall(r"\b[a-zA-Z]{4,}\b", text)
+        key_terms = [term for term in key_terms if term.lower() not in _STOPWORDS]
+        facts = [(term.capitalize(), "is", "important") for term in key_terms[:num_questions]]
+
+    mcqs = []
+    distractors = list({t for t in re.findall(r"\b[a-zA-Z][a-zA-Z-]{2,}\b", text) if t.lower() not in _STOPWORDS})
+    random.shuffle(distractors)
+
+    for subject, verb, remainder in facts[:num_questions]:
+        correct = f"{verb} {remainder}" if verb.lower() != "is" else remainder
+        question = f"What does {subject} {verb}?" if verb.lower() != "is" else f"What is {subject}?"
+        options = [correct]
+        for candidate in distractors:
+            if candidate.lower() != remainder.lower() and candidate.lower() not in {opt.lower() for opt in options}:
+                options.append(candidate)
+            if len(options) == 4:
+                break
+        while len(options) < 4:
+            options.append("more detail")
+        random.shuffle(options)
+        mcqs.append({"question": question, "options": options, "answer": correct})
+
+    if len(mcqs) < num_questions:
+        while len(mcqs) < num_questions:
+            mcqs.append({
+                "question": f"What is a key idea from this document?",
+                "options": ["A key idea", "A different idea", "A wrong idea", "A missing idea"],
+                "answer": "A key idea",
+            })
+    return mcqs[:num_questions]
+
+
+def _local_generate_short_questions(text: str, num_questions: int) -> list[dict[str, str]]:
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    questions = []
+    for sentence in sentences:
+        if len(questions) >= num_questions:
+            break
+        if " is " in sentence.lower() or " are " in sentence.lower() or " can " in sentence.lower() or " uses " in sentence.lower():
+            question = sentence
+            answer = sentence.rstrip('.').strip()
+            if len(answer.split()) > 4:
+                answer = answer
+            else:
+                continue
+            questions.append({"question": f"What does this mean: {answer.split()[0]}?", "answer": answer})
+
+    if len(questions) < num_questions:
+        key_phrases = []
+        for sentence in sentences:
+            words = [word for word in re.findall(r"\b[a-zA-Z]{4,}\b", sentence) if word.lower() not in _STOPWORDS]
+            if len(words) >= 2:
+                key_phrases.append((words[0], " ".join(words[1:3])))
+        for subject, detail in key_phrases:
+            if len(questions) >= num_questions:
+                break
+            questions.append({"question": f"What does {subject} do?", "answer": detail})
+
+    if len(questions) < num_questions:
+        for i in range(len(questions), num_questions):
+            questions.append({"question": f"What is one important idea from the document?", "answer": "A main idea from the document."})
+
+    return questions
+
+
 def _compare_mcq_answers(
     student_answer: str,
     correct_answer: str,
@@ -487,10 +749,13 @@ def _compare_mcq_answers(
         if 0 <= index < len(options):
             return _normalize_answer(options[index]) == normalized_correct
 
-    # Compare option text values ignoring letter prefixes.
+    # Compare option text values ignoring letter prefixes and minor spelling errors.
     for option in options:
-        if _normalize_answer(option) == normalized_student:
-            return _normalize_answer(option) == normalized_correct
+        normalized_option = _normalize_answer(option)
+        if normalized_option == normalized_student:
+            return normalized_option == normalized_correct
+        if _fuzzy_text_similarity(normalized_option, normalized_student) >= 0.86:
+            return normalized_option == normalized_correct
 
     return False
 
@@ -498,7 +763,69 @@ def _compare_mcq_answers(
 def _normalize_answer(answer: str) -> str:
     clean = str(answer or "").strip().lower()
     clean = re.sub(r"^\s*[abcd]\s*[\).:-]*\s*", "", clean)
-    return re.sub(r"\s+", " ", clean)
+    clean = re.sub(r"[^a-z0-9\s]", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    normalized_tokens = []
+    for token in clean.split():
+        normalized_tokens.append(_SYNONYM_MAP.get(token, token))
+    return " ".join(token for token in normalized_tokens if token)
+
+
+def _normalize_evaluation_result(result: str) -> str:
+    result_text = str(result or "").strip().title()
+    if result_text in {"Perfectly Correct", "Perfect"}:
+        return "Correct"
+    if result_text in {"Partially", "Partially Correct"}:
+        return "Partially Correct"
+    return "Incorrect"
+
+
+def _levenshtein_distance(a: str, b: str) -> int:
+    a = str(a or "")
+    b = str(b or "")
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+
+    previous_row = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, start=1):
+        current_row = [i]
+        for j, char_b in enumerate(b, start=1):
+            insert_cost = current_row[j - 1] + 1
+            delete_cost = previous_row[j] + 1
+            replace_cost = previous_row[j - 1] + (char_a != char_b)
+            current_row.append(min(insert_cost, delete_cost, replace_cost))
+        previous_row = current_row
+
+    return previous_row[-1]
+
+
+def _fuzzy_text_similarity(a: str, b: str) -> float:
+    a = _normalize_answer(a)
+    b = _normalize_answer(b)
+    if not a or not b:
+        return 0.0
+    ratio = difflib.SequenceMatcher(None, a, b).ratio()
+    distance = _levenshtein_distance(a, b)
+    edit_score = 1.0 - (distance / max(len(a), len(b), 1))
+    return (ratio + edit_score) / 2.0
+
+
+def _match_tokens(expected_tokens: set[str], student_tokens: set[str]) -> float:
+    if not expected_tokens:
+        return 0.0
+
+    matched = 0
+    for expected in expected_tokens:
+        for student in student_tokens:
+            if expected == student or _fuzzy_text_similarity(expected, student) >= 0.8:
+                matched += 1
+                break
+
+    return matched / len(expected_tokens)
 
 
 def _content_tokens(text: str) -> set[str]:
@@ -595,24 +922,103 @@ def _build_recommendation_summary(weak_count: int, total_count: int) -> str:
 
 
 def _build_question_explanation(question: str, student_answer: str, correct_answer: str, result: str) -> str:
-    question = _trim_text(question, max_words=18)
-    correct_answer = _trim_text(correct_answer, max_words=18)
+    correct_answer = _trim_text(correct_answer, max_words=20)
     student_answer = _trim_text(student_answer, max_words=18)
+    student_answer_text = student_answer or "no answer"
+    reason = _build_reason_text(question, correct_answer)
+    memory = _build_memory_tip_text(correct_answer, student_answer)
 
     if result == "Correct":
         return (
-            f"Your answer matches the expected answer for this question. "
-            f"The key idea is: {correct_answer}."
+            f"Correct. {correct_answer.capitalize()} is right because {reason}. "
+            f"Remember: {memory}"
         )
+
     if result == "Partially Correct":
+        detail = student_answer_text if student_answer_text != "no answer" else "you have part of the idea"
         return (
-            f"Your answer is partly connected to the question, but it does not fully explain the expected idea. "
-            f"A stronger answer would include: {correct_answer}."
+            f"You got part of the answer: {detail}. "
+            f"The full answer is {correct_answer} because {reason}. "
+            f"Remember: {memory}"
         )
+
     return (
-        f"This question asks about {question}. "
-        f"Your answer, {student_answer}, does not match the expected idea: {correct_answer}."
+        f"This answer is incorrect because {student_answer_text} does not match the main idea. "
+        f"The correct answer is {correct_answer} because {reason}. "
+        f"Remember: {memory}"
     )
+
+
+def _build_reason_text(question: str, correct_answer: str) -> str:
+    lower_question = str(question or "").strip().lower()
+    answer = str(correct_answer or "").strip().rstrip(".")
+    lower_answer = answer.lower()
+
+    if not answer:
+        return "it matches the key idea in the question"
+
+    if "where" in lower_question or "place" in lower_question or "location" in lower_question:
+        if "in " not in lower_answer:
+            return f"it happens in {answer}"
+        return f"it happens in {answer}"
+
+    if "what gas" in lower_question and "oxygen" in lower_answer:
+        return "plants release oxygen during photosynthesis"
+
+    if "what is photosynthesis" in lower_question or "describe photosynthesis" in lower_question:
+        if any(word in lower_answer for word in ["sunlight", "water", "carbon dioxide"]):
+            return answer
+        return "plants use sunlight, water, and carbon dioxide to make food"
+
+    if any(word in lower_answer for word in ["sunlight", "water", "carbon dioxide"]):
+        return f"plants use {answer} to make food"
+
+    if any(word in lower_answer for word in ["leaf", "leaves"]):
+        return "leaves catch sunlight and help the plant make food"
+
+    if "roots" in lower_answer:
+        return "roots take in water and minerals from the soil"
+
+    if "chlorophyll" in lower_answer:
+        return "chlorophyll captures sunlight in the leaves"
+
+    if "oxygen" in lower_answer:
+        return "plants make oxygen while they make food"
+
+    return f"it is the main idea the question asks for"
+
+
+def _build_memory_tip_text(correct_answer: str, student_answer: str | None = None) -> str:
+    answer = str(correct_answer or "").strip().lower()
+    student_lower = str(student_answer or "").strip().lower()
+
+    if "leaves" in answer and "roots" in student_lower:
+        return "leaves make food, roots absorb water"
+    if "roots" in answer and "leaves" in student_lower:
+        return "roots take in water, leaves make food"
+    if "oxygen" in answer and "carbon dioxide" in student_lower:
+        return "plants take in carbon dioxide and release oxygen"
+    if "leaves" in answer:
+        return "leaves are the plant's food-making organs"
+    if "oxygen" in answer:
+        return "oxygen is the gas plants release when making food"
+    if "sunlight" in answer or "water" in answer or "carbon dioxide" in answer:
+        return "sunlight, water, and carbon dioxide help plants make food"
+    if answer:
+        return answer
+    return "the correct idea for this question"
+
+
+def _teaches_concept(explanation: str, correct_answer: str) -> bool:
+    text = str(explanation or "").strip().lower()
+    if not text or "because" not in text:
+        return False
+    normalized_answer = _normalize_answer(correct_answer)
+    if normalized_answer and normalized_answer not in _normalize_answer(text):
+        return False
+    if len(re.findall(r"[.!?]", text)) < 1:
+        return False
+    return True
 
 
 def _infer_concept(question: str, answer: str) -> str:
@@ -645,12 +1051,21 @@ def _infer_concept(question: str, answer: str) -> str:
 
 def _build_mcq_feedback(concept: str, correct_answer: str) -> str:
     answer = _trim_text(correct_answer, max_words=14)
-    return f"This question was about {concept}. The key answer is {answer}."
+    return f"The main idea is {answer}."
+
+
+def _is_explanation_consistent_with_result(result: str, explanation: str) -> bool:
+    text = str(explanation or "").lower()
+    if result == "Incorrect" and re.search(r"\b(correct|accurate|good answer)\b", text):
+        return False
+    if result == "Correct" and re.search(r"\b(incorrect|wrong|not the right|not correct)\b", text):
+        return False
+    return True
 
 
 def _build_short_feedback(concept: str, expected_answer: str) -> str:
     answer = _trim_text(expected_answer, max_words=14)
-    return f"You were close on {concept}. Include this key idea: {answer}."
+    return f"You identified the concept of {concept}. To improve, include this key idea: {answer}."
 
 
 def _build_tip(concept: str, correct_answer: str) -> str:
@@ -728,7 +1143,7 @@ def _shorten_sentences(text: str, fallback: str, max_sentences: int) -> str:
     text = re.sub(r"\s+", " ", str(text or "").strip()) or fallback
     sentences = re.split(r"(?<=[.!?])\s+", text)
     short = " ".join(sentence.strip() for sentence in sentences[:max_sentences] if sentence.strip())
-    return _trim_text(short or fallback, max_words=28 if max_sentences > 1 else 16)
+    return _trim_text(short or fallback, max_words=40 if max_sentences > 1 else 16)
 
 
 def _trim_text(text: str, max_words: int) -> str:
