@@ -19,6 +19,9 @@ from database.models import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATABASE_PATH = PROJECT_ROOT / "data.sqlite"
 
+# Module-level guard to ensure initialization runs only once per process
+_initialized = False
+
 
 def _get_connection() -> Connection:
     """Return a SQLite connection with foreign key enforcement enabled."""
@@ -30,6 +33,9 @@ def _get_connection() -> Connection:
 
 def init_db() -> None:
     """Create database tables if they do not exist."""
+    global _initialized
+    if _initialized:
+        return
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _get_connection() as connection:
         connection.executescript(
@@ -91,6 +97,8 @@ def init_db() -> None:
             );
             """
         )
+    # Mark as initialized so subsequent calls are no-ops
+    _initialized = True
 
 
 def save_user(name: str, email: str, password_hash: str) -> UserRecord:
@@ -342,3 +350,9 @@ def get_user_preferences(user_id: int) -> UserPreferencesRecord | None:
         preferred_mode=row["preferred_mode"],
         reading_level=row["reading_level"],
     )
+
+
+# Ensure the database is initialized when this module is imported so any
+# consumer that performs queries immediately after importing will not fail
+# if the sqlite file or tables are missing.
+init_db()
