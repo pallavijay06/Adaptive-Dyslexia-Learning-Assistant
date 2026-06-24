@@ -1,0 +1,288 @@
+app.py:123: interactions can persist without a full auth system.
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:1: # ✅ OPENROUTER INTEGRATION - COMPLETE
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:5: The OpenRouter integration has been successfully implemented with **MINIMAL changes** to the codebase. The system now uses OpenRouter as the primary LLM provider with Gemini and Ollama as automatic fallbacks.
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:10: A new service module implementing OpenRouter integration:
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:12: - Uses OpenAI-compatible API via OpenRouter
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:19: - Model: `OPENROUTER_MODEL` (optional, defaults to google/gemini-2.5-flash)
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:21: - Error handling: Clear messages for auth, rate limits, timeouts
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:24: Updated the router to use OpenRouter as primary provider:
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:28: - Updated `generate_answer()` to try OpenRouter first
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:29: - Updated `generate_content()` to try OpenRouter first
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:32: 1. OpenRouter (Primary)
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:33: 2. Gemini (Fallback)
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:39: OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:40: OPENROUTER_MODEL=google/gemini-2.5-flash
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:41: GEMINI_API_KEY=your_gemini_api_key_here
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:56: OpenRouter Service → Gemini Service → Ollama Service
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:62: 1. **OpenRouter** - Fastest, most reliable, configurable models
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:63: 2. **Gemini** - Automatic fallback if OpenRouter unavailable
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:89: ### 1. Get OpenRouter API Key
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:90: - Visit https://openrouter.ai/keys
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:92: - Copy key to `.env`: `OPENROUTER_API_KEY=your_key`
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:97: OPENROUTER_MODEL=google/gemini-2.5-flash
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:101: - `google/gemini-2.5-flash` (default, recommended)
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:108: - Try OpenRouter first for all LLM requests
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:109: - Automatically fallback to Gemini if OpenRouter fails
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:110: - Automatically fallback to Ollama if Gemini fails
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:117: - [x] OpenRouter as primary provider
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:118: - [x] Gemini as fallback 1
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:131: - [x] Invalid OpenRouter API key → Falls back to Gemini
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:132: - [x] Gemini failure → Falls back to Ollama
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:144: - [x] `openai` already in requirements.txt
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:173: 1. **Faster Responses** - OpenRouter is typically faster than Gemini
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:190: print(result)  # Uses OpenRouter first
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:199: print(result)  # Uses OpenRouter first
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:202: If OpenRouter API key is invalid, the system automatically uses Gemini. If both fail, it tries Ollama.
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:206: OpenRouter pricing (varies by model):
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:207: - google/gemini-2.5-flash: ~$0.075/M input tokens
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:215: | "Missing OpenRouter API key" | Add to .env: `OPENROUTER_API_KEY=your_key` |
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:216: | "OpenRouter authentication failed" | Check API key at https://openrouter.ai/keys |
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:218: | "Model not found" | Verify model name at https://openrouter.ai/docs/models |
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:219: | Still slow? | Check if OpenRouter API is down; falls back automatically |
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:238: OPENROUTER_API_KEY=your_key_here
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:251: - OpenRouter: https://openrouter.ai/docs
+OPENROUTER_INTEGRATION.md:1: # OpenRouter Integration - Implementation Summary
+OPENROUTER_INTEGRATION.md:6: New service module implementing OpenRouter integration with minimal code:
+OPENROUTER_INTEGRATION.md:12: - Uses OpenAI-compatible API (OpenRouter endpoint)
+OPENROUTER_INTEGRATION.md:14: - Supports configurable model via `OPENROUTER_MODEL` (default: `google/gemini-2.5-flash`)
+OPENROUTER_INTEGRATION.md:16: - Clear error messages for auth, rate limiting, and timeouts
+OPENROUTER_INTEGRATION.md:21: Modified router to prioritize OpenRouter:
+OPENROUTER_INTEGRATION.md:24: OpenRouter (Primary)
+OPENROUTER_INTEGRATION.md:26: Gemini (Fallback 1)
+OPENROUTER_INTEGRATION.md:33: - `generate_answer()` tries OpenRouter first → Gemini → Ollama
+OPENROUTER_INTEGRATION.md:34: - `generate_content()` tries OpenRouter first → Gemini → Ollama
+OPENROUTER_INTEGRATION.md:45: - `OPENROUTER_API_KEY` - Required for OpenRouter
+OPENROUTER_INTEGRATION.md:46: - `OPENROUTER_MODEL` - Optional (defaults to google/gemini-2.5-flash)
+OPENROUTER_INTEGRATION.md:68: 1. **Get OpenRouter API Key:**
+OPENROUTER_INTEGRATION.md:69: - Go to https://openrouter.ai/keys
+OPENROUTER_INTEGRATION.md:71: - Add to `.env`: `OPENROUTER_API_KEY=your_key_here`
+OPENROUTER_INTEGRATION.md:74: - `openai` package is already in requirements.txt
+OPENROUTER_INTEGRATION.md:79: - Available models: https://openrouter.ai/docs/models
+OPENROUTER_INTEGRATION.md:99: - ✅ If OpenRouter API key invalid → Falls back to Gemini
+OPENROUTER_INTEGRATION.md:100: - ✅ If Gemini fails → Falls back to Ollama
+OPENROUTER_INTEGRATION.md:119: - OpenRouter costs vary by model selection (see https://openrouter.ai/docs/pricing)
+OPENROUTER_INTEGRATION.md:120: - Default model (google/gemini-2.5-flash) offers good balance of cost and performance
+OPENROUTER_QUICK_START.md:1: # OpenRouter Integration - Quick Start
+OPENROUTER_QUICK_START.md:9: 1. **`services/openrouter_service.py`** - New service using OpenRouter API
+OPENROUTER_QUICK_START.md:15: 1. **`services/llm_router.py`** - Updated to use OpenRouter as primary provider
+OPENROUTER_QUICK_START.md:20: ✅ `openai` package already in requirements.txt
+OPENROUTER_QUICK_START.md:26: ### 1. Get OpenRouter API Key
+OPENROUTER_QUICK_START.md:28: Visit: https://openrouter.ai/keys
+OPENROUTER_QUICK_START.md:35: OPENROUTER_API_KEY=your_key_here
+OPENROUTER_QUICK_START.md:36: OPENROUTER_MODEL=google/gemini-2.5-flash
+OPENROUTER_QUICK_START.md:41: GEMINI_API_KEY=your_existing_key
+OPENROUTER_QUICK_START.md:47: 1. **OpenRouter** (Primary)
+OPENROUTER_QUICK_START.md:48: 2. **Gemini** (Fallback if OpenRouter fails)
+OPENROUTER_QUICK_START.md:49: 3. **Ollama** (Fallback if Gemini fails)
+OPENROUTER_QUICK_START.md:51: ### 4. Available OpenRouter Models
+OPENROUTER_QUICK_START.md:54: - `google/gemini-2.5-flash` (default, recommended)
+OPENROUTER_QUICK_START.md:59: See full list: https://openrouter.ai/docs/models
+OPENROUTER_QUICK_START.md:84: │ OpenRouter       │ Primary (NEW)
+OPENROUTER_QUICK_START.md:90: │ Gemini           │ Fallback 1
+OPENROUTER_QUICK_START.md:119: If you see: `"OpenRouter authentication failed"`
+OPENROUTER_QUICK_START.md:121: - Verify key at: https://openrouter.ai/keys
+OPENROUTER_QUICK_START.md:122: - System will automatically fall back to Gemini
+OPENROUTER_QUICK_START.md:125: If you see: `"OpenRouter rate limit exceeded"`
+OPENROUTER_QUICK_START.md:127: - Consider upgrading your plan on openrouter.ai
+OPENROUTER_QUICK_START.md:128: - System will automatically fall back to Gemini
+OPENROUTER_QUICK_START.md:131: If you see: `"OpenRouter model error"`
+OPENROUTER_QUICK_START.md:133: - Check available models at: https://openrouter.ai/docs/models
+OPENROUTER_QUICK_START.md:134: - System will automatically fall back to Gemini
+OPENROUTER_QUICK_START.md:137: If both OpenRouter and Gemini fail:
+OPENROUTER_QUICK_START.md:146: ├── llm_router.py              ← Updated (now uses OpenRouter first)
+OPENROUTER_QUICK_START.md:167: print(result)  # Should work with OpenRouter
+OPENROUTER_QUICK_START.md:174: print(result)  # Should work with OpenRouter
+OPENROUTER_QUICK_START.md:177: If OpenRouter API key is invalid, it will automatically fall back to Gemini.
+OPENROUTER_QUICK_START.md:181: OpenRouter pricing varies by model:
+OPENROUTER_QUICK_START.md:182: - `google/gemini-2.5-flash`: ~$0.075/M input tokens
+OPENROUTER_QUICK_START.md:194: - Just faster and more reliable with OpenRouter as primary
+OPENROUTER_QUICK_START.md:197: - Faster responses (OpenRouter is typically faster than Gemini)
+OPENROUTER_VERIFICATION.md:1: # OpenRouter Integration - Verification Checklist
+OPENROUTER_VERIFICATION.md:15: - [x] Default model: `google/gemini-2.5-flash`
+OPENROUTER_VERIFICATION.md:20: ## STEP 3: OPENROUTER IMPLEMENTATION ✅
+OPENROUTER_VERIFICATION.md:22: - [x] Uses OpenAI-compatible API
+OPENROUTER_VERIFICATION.md:23: - [x] Base URL: `https://openrouter.ai/api/v1`
+OPENROUTER_VERIFICATION.md:24: - [x] Uses existing `openai` package from requirements.txt
+OPENROUTER_VERIFICATION.md:35: - OpenRouter (Primary)
+OPENROUTER_VERIFICATION.md:36: - Gemini (Fallback 1)
+OPENROUTER_VERIFICATION.md:38: - [x] Tries OpenRouter first
+OPENROUTER_VERIFICATION.md:39: - [x] Automatically falls back to Gemini if OpenRouter fails
+OPENROUTER_VERIFICATION.md:40: - [x] Automatically falls back to Ollama if Gemini fails
+OPENROUTER_VERIFICATION.md:50: - generate_answer() → Could route to Gemini
+OPENROUTER_VERIFICATION.md:76: - [x] If OpenRouter API key invalid → Falls back to Gemini automatically
+OPENROUTER_VERIFICATION.md:77: - [x] If Gemini fails → Falls back to Ollama automatically
+OPENROUTER_VERIFICATION.md:89: - [x] `openai` package already in requirements.txt
+OPENROUTER_VERIFICATION.md:128: The OpenRouter integration is complete and ready for use.
+OPENROUTER_VERIFICATION.md:134: OPENROUTER_API_KEY=your_api_key_here
+OPENROUTER_VERIFICATION.md:135: OPENROUTER_MODEL=google/gemini-2.5-flash
+OPENROUTER_VERIFICATION.md:138: 4. That's it! The system will automatically use OpenRouter
+OPENROUTER_VERIFICATION.md:141: - Run simplification: Should use OpenRouter first
+OPENROUTER_VERIFICATION.md:142: - Run vocabulary extraction: Should use OpenRouter first
+OPENROUTER_VERIFICATION.md:143: - Run visual generation: Should use OpenRouter first
+OPENROUTER_VERIFICATION.md:144: - Run RAG Q&A: Should use OpenRouter first
+OPENROUTER_VERIFICATION.md:145: - If OpenRouter fails, Gemini kicks in automatically
+OPENROUTER_VERIFICATION.md:146: - If Gemini fails, Ollama kicks in automatically
+README.md:5: uploaded document using OpenAI first, with Gemini and Ollama fallbacks.
+README.md:26: OPENAI_API_KEY=YOUR_KEY_HERE
+README.md:30: GEMINI_API_KEY=your_gemini_key_here
+README.md:31: GEMINI_MODEL=gemini-2.5-flash
+README.md:41: 6. OpenAI answers first; if OpenAI fails, Gemini is tried, then Ollama.
+README.md:51: - OpenAI primary
+README.md:52: - Gemini fallback
+README.md:78: - `services/openai_service.py`: OpenAI client for primary text generation.
+README.md:79: - `services/llm_router.py`: OpenAI -> Gemini -> Ollama provider routing.
+README.md:80: - `services/gemini_service.py`: Gemini fallback client and legacy helpers.
+sample.png:2097: 2Yp!0ԹkHFD邰
+backend/flask_app.py:49: print("[cHEAL] LLM provider order: OpenAI -> Gemini -> Ollama")
+backend/learning_routes.py:109: return jsonify({"error": f"Both Gemini and Ollama failed: {str(exc)}"}), 503
+backend/learning_routes.py:143: return jsonify({"error": f"Both Gemini and Ollama failed: {str(exc)}"}), 503
+backend/learning_routes.py:217: return jsonify({"error": f"Both Gemini and Ollama failed: {str(exc)}"}), 503
+backend/llm.py:14: """Backward-compatible chat helper routed through OpenAI -> Gemini -> Ollama."""
+backend/llm.py:23: # Plain chat without document uses chat-level token limits
+services/gemini_service.py:1: """Reusable Gemini chat service for the cHEAL learning assistant.
+services/gemini_service.py:3: This module owns all Gemini-specific behavior:
+services/gemini_service.py:5: - creating the Gemini model/client once
+services/gemini_service.py:9: The route layer should call chat_with_gemini(...) instead of importing Gemini
+services/gemini_service.py:24: DEFAULT_MODEL_NAME = "gemini-2.5-flash"
+services/gemini_service.py:36: """Base error for expected Gemini service failures."""
+services/gemini_service.py:40: """Raised when Gemini cannot be configured, usually because the key is missing."""
+services/gemini_service.py:44: """Raised when Gemini fails to generate a response."""
+services/gemini_service.py:54: """Send a user message to Gemini and return the assistant response text.
+services/gemini_service.py:65: Gemini's response text.
+services/gemini_service.py:70: GeminiAPIError: If Gemini or the network request fails.
+services/gemini_service.py:77: """Generate a Gemini answer using retrieved context, not the full document."""
+services/gemini_service.py:113: raise GeminiAPIError(f"Gemini content generation failed: {exc}") from exc
+services/gemini_service.py:130: raise GeminiAPIError(f"Gemini request failed: {exc}") from exc
+services/gemini_service.py:144: """Clear the current conversation and start a fresh Gemini chat session."""
+services/gemini_service.py:208: """Validate API key, SDK import, and Gemini connectivity at backend startup.
+services/gemini_service.py:211: True when Gemini is reachable, otherwise False. The function prints a
+services/gemini_service.py:219: contents="Reply with only: cHEAL Gemini startup check passed.",
+services/gemini_service.py:223: print(f"[cHEAL] Gemini startup validation failed: {exc}")
+services/gemini_service.py:226: print(f"[cHEAL] Gemini startup validation failed: {exc}")
+services/gemini_service.py:230: f"[cHEAL] Gemini ready using model '{model_name}'. "
+services/gemini_service.py:243: api_key = _load_api_key()
+services/gemini_service.py:249: "Gemini SDK is not installed. Run: pip install google-genai"
+services/gemini_service.py:253: _client = genai.Client(api_key=api_key)
+services/gemini_service.py:256: raise GeminiConfigurationError(f"Could not initialize Gemini client: {exc}") from exc
+services/gemini_service.py:260: """Create and cache the Gemini chat object once per backend process."""
+services/gemini_service.py:274: raise GeminiConfigurationError(f"Could not initialize Gemini chat: {exc}") from exc
+services/gemini_service.py:299: raise GeminiAPIError(f"Gemini document task failed: {exc}") from exc
+services/gemini_service.py:306: api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+services/gemini_service.py:307: if not api_key:
+services/gemini_service.py:309: "Missing Gemini API key. Add GEMINI_API_KEY=your_key to .env."
+services/gemini_service.py:312: return api_key
+services/gemini_service.py:316: """Return the configured Gemini model, defaulting to the tested model."""
+services/gemini_service.py:357: """Safely read text from a Gemini response object."""
+services/gemini_service.py:362: raise GeminiAPIError("Gemini returned an empty response.")
+services/llm_router.py:1: """Route LLM calls through OpenRouter, Gemini, then Ollama."""
+services/llm_router.py:38: """Generate an answer with OpenRouter first, then Gemini, then Ollama.
+services/llm_router.py:54: logger.info("[LLM Router] Trying OpenRouter")
+services/llm_router.py:58: logger.info("[LLM Router] OpenRouter succeeded")
+services/llm_router.py:63: logger.error("[LLM Router] OpenRouter failed: %s", str(open_exc))
+services/llm_router.py:65: logger.info("[LLM Router] Falling back to Gemini")
+services/llm_router.py:68: logger.info("[LLM Router] Gemini succeeded")
+services/llm_router.py:73: logger.error("[LLM Router] Gemini failed: %s", str(gem_exc))
+services/llm_router.py:96: """Generate content with OpenRouter first, then Gemini, then Ollama.
+services/llm_router.py:104: logger.info("[LLM Router] Trying OpenRouter")
+services/llm_router.py:107: logger.info("[LLM Router] OpenRouter succeeded")
+services/llm_router.py:110: logger.error("[LLM Router] OpenRouter failed: %s", str(open_exc))
+services/llm_router.py:112: logger.info("[LLM Router] Falling back to Gemini")
+services/llm_router.py:115: logger.info("[LLM Router] Gemini succeeded")
+services/llm_router.py:118: logger.error("[LLM Router] Gemini failed: %s", str(gem_exc))
+services/ocr_service.py:2: """OCR service with image preprocessing and Gemini Vision fallback.
+services/ocr_service.py:8: - Gemini Vision API fallback only when local OCR fails
+services/ocr_service.py:77: logger.info("[OCR] Falling Back To Gemini Vision")
+services/ocr_service.py:83: logger.error("[OCR] Gemini Vision failed: %s", exc)
+services/ocr_service.py:86: logger.info("[OCR] Returning best local OCR result after Gemini fallback failure")
+services/ocr_service.py:391: """Extract text from image using Gemini Vision API as fallback."""
+services/ocr_service.py:458: print("GEMINI OCR OUTPUT:")
+services/ocr_service.py:462: raise GeminiAPIError(f"Gemini Vision extraction failed: {exc}") from exc
+services/openai_service.py:1: """OpenAI LLM service for the cHEAL learning assistant."""
+services/openai_service.py:23: """Raised when OpenAI cannot generate a response."""
+services/openai_service.py:75: api_key = _load_api_key()
+services/openai_service.py:78: from openai import OpenAI
+services/openai_service.py:81: "OpenAI SDK is not installed. Run: pip install openai"
+services/openai_service.py:85: return OpenAI(api_key=api_key, timeout=DEFAULT_TIMEOUT_SECONDS)
+services/openai_service.py:87: raise OpenAIServiceError("Could not initialize OpenAI client.") from exc
+services/openai_service.py:93: api_key = os.getenv("OPENAI_API_KEY", "").strip()
+services/openai_service.py:94: if not api_key:
+services/openai_service.py:95: raise OpenAIServiceError("Missing OpenAI API key. Add OPENAI_API_KEY to .env.")
+services/openai_service.py:97: return api_key
+services/openai_service.py:154: raise OpenAIServiceError("OpenAI returned an empty response.")
+services/openai_service.py:162: return OpenAIServiceError("OpenAI authentication failed. Check OPENAI_API_KEY.")
+services/openai_service.py:165: return OpenAIServiceError("OpenAI quota exceeded.")
+services/openai_service.py:166: return OpenAIServiceError("OpenAI rate limit reached.")
+services/openai_service.py:168: return OpenAIServiceError("Could not connect to OpenAI.")
+services/openai_service.py:170: return OpenAIServiceError("OpenAI request timed out.")
+services/openai_service.py:172: return OpenAIServiceError("OpenAI rejected the request.")
+services/openai_service.py:174: return OpenAIServiceError("OpenAI key does not have permission for this model.")
+services/openai_service.py:176: return OpenAIServiceError("Configured OpenAI model was not found.")
+services/openai_service.py:180: return OpenAIServiceError("OpenAI authentication failed. Check OPENAI_API_KEY.")
+services/openai_service.py:182: return OpenAIServiceError("OpenAI rate limit or quota reached.")
+services/openai_service.py:184: return OpenAIServiceError("OpenAI service is temporarily unavailable.")
+services/openai_service.py:186: return OpenAIServiceError("OpenAI generation failed.")
+services/openrouter_service.py:1: """OpenRouter LLM service for the cHEAL learning assistant.
+services/openrouter_service.py:3: OpenRouter is an OpenAI-compatible API that provides access to multiple LLMs
+services/openrouter_service.py:4: including Google's Gemini, Anthropic's Claude, and others.
+services/openrouter_service.py:6: This module owns all OpenRouter-specific behavior:
+services/openrouter_service.py:8: - creating the OpenAI client configured for OpenRouter
+services/openrouter_service.py:12: of importing OpenRouter SDK objects directly.
+services/openrouter_service.py:24: DEFAULT_MODEL_NAME = "google/gemini-2.5-flash"
+services/openrouter_service.py:26: OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+services/openrouter_service.py:36: """Base error for expected OpenRouter service failures."""
+services/openrouter_service.py:40: """Raised when OpenRouter cannot be configured, usually because the key is missing."""
+services/openrouter_service.py:44: """Raised when OpenRouter fails to generate a response."""
+services/openrouter_service.py:106: """Internal method to generate text via OpenRouter API."""
+services/openrouter_service.py:118: # Only include an explicit output token limit when provided.
+services/openrouter_service.py:131: """Create and return an OpenAI client configured for OpenRouter."""
+services/openrouter_service.py:132: api_key = _load_api_key()
+services/openrouter_service.py:135: from openai import OpenAI
+services/openrouter_service.py:138: "OpenAI SDK is not installed. Run: pip install openai"
+services/openrouter_service.py:142: return OpenAI(
+services/openrouter_service.py:143: api_key=api_key,
+services/openrouter_service.py:149: "Could not initialize OpenRouter client."
+services/openrouter_service.py:154: """Load OpenRouter API key from .env file."""
+services/openrouter_service.py:157: api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+services/openrouter_service.py:158: if not api_key:
+services/openrouter_service.py:160: "Missing OpenRouter API key. Add OPENROUTER_API_KEY to .env."
+services/openrouter_service.py:163: return api_key
+services/openrouter_service.py:167: """Load OpenRouter model name from .env, with fallback to default."""
+services/openrouter_service.py:191: """Extract plain text from OpenRouter API response."""
+services/openrouter_service.py:209: "OpenRouter authentication failed. Check your OPENROUTER_API_KEY."
+services/openrouter_service.py:214: "OpenRouter rate limit exceeded. Please try again in a moment."
+services/openrouter_service.py:219: "OpenRouter request timed out. Please try again."
+services/openrouter_service.py:224: f"OpenRouter model error: {error_message}"
+services/openrouter_service.py:227: return OpenRouterAPIError(f"OpenRouter request failed: {error_message}")
+services/quiz_service.py:441: # handle concept equivalences: if any expected token maps to an equivalent token present in student
+services/quiz_service.py:452: # also require shared object token (like food, oxygen, pigment)
+services/quiz_service.py:523: """Evaluate a short answer locally with token overlap, fuzzy matching, and meaning."""
+services/quiz_service.py:573: # guard small-token false positives
+services/quiz_service.py:889: for token in clean.split():
+services/quiz_service.py:890: normalized_tokens.append(_SYNONYM_MAP.get(token, token))
+services/quiz_service.py:891: return " ".join(token for token in normalized_tokens if token)
+services/quiz_service.py:953: token
+services/quiz_service.py:954: for token in re.findall(r"[a-zA-Z][a-zA-Z-]+", str(text or "").lower())
+services/quiz_service.py:955: if len(token) > 2 and token not in _STOPWORDS
+services/test_ocr_service.py:13: called = {"gemini": False}
+services/test_ocr_service.py:22: called["gemini"] = True
+services/test_ocr_service.py:32: assert called["gemini"] is False
+services/vocabulary_service.py:181: tokens = [token.strip("-'").lower() for token in cleaned.split() if token.strip()]
+services/vocabulary_service.py:185: if any(token in DEFAULT_STOPWORDS or token in GENERIC_VOCABULARY_BLOCKWORDS for token in tokens):
+services/vocabulary_service.py:191: return all(len(token) >= 4 for token in tokens) and any(len(token) >= 6 for token in tokens)
+backend/stem/diagram_explainer.py:73: print("[DIAGRAM DEBUG] Cache miss - proceeding to Gemini")
+backend/stem/diagram_explainer.py:76: # If cache key generation fails, continue to Gemini analysis.
+backend/stem/diagram_explainer.py:91: print("[DIAGRAM DEBUG] Gemini error:", repr(exc))
+backend/stem/diagram_explainer.py:94: print("Reason: Gemini error")
+backend/stem/diagram_explainer.py:106: """Use Gemini Vision to analyze the uploaded diagram image."""
+backend/stem/diagram_explainer.py:121: print("[DIAGRAM DEBUG] Sending image to Gemini")
+backend/stem/diagram_explainer.py:148: print("RAW GEMINI RESPONSE")
+backend/stem/diagram_explainer.py:154: print("[DIAGRAM DEBUG] Gemini request failed:", repr(exc))
+backend/stem/diagram_explainer.py:155: raise GeminiAPIError(f"Gemini Vision analysis failed: {exc}") from exc
+backend/stem/formula_assistant.py:50: # Formula explanations are short — enforce token limit when invoking chat
+backend/stem/README.md:54: 1. Replace placeholder formula token detection with a math-aware parser.
+backend/stem/step_solver/rearrangement_solver.py:29: return {token for token in tokens if token.lower() not in keywords}
+backend/stem/step_solver/substitution_solver.py:106: for token in tokens:
+backend/stem/step_solver/substitution_solver.py:107: if token.isupper() and len(token) > 1:
+backend/stem/step_solver/substitution_solver.py:108: parsed_tokens.extend(list(token))
+backend/stem/step_solver/substitution_solver.py:110: parsed_tokens.append(token)
+backend/stem/step_solver/substitution_solver.py:111: local_dict = {token: Symbol(token) for token in set(parsed_tokens)}

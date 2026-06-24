@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from textwrap import dedent
@@ -20,6 +21,8 @@ from components.ui_constants import (
     READING_VOCABULARY_LIMIT,
     THEMES,
 )
+
+logger = logging.getLogger(__name__)
 
 BUILT_IN_DICTIONARY: dict[str, str] = {
     "adaptation": "A change that helps a living thing survive.",
@@ -72,6 +75,29 @@ _STOP_WORDS: set[str] = {
     "while",
     "with",
     "would",
+}
+
+_GENERIC_VOCABULARY_WORDS: set[str] = {
+    "understand",
+    "understanding",
+    "understood",
+    "learn",
+    "learns",
+    "learned",
+    "learning",
+    "basic",
+    "rule",
+    "rules",
+    "together",
+    "topic",
+    "important",
+    "use",
+    "using",
+    "need",
+    "needs",
+    "help",
+    "helps",
+    "helping",
 }
 
 _WORD_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z'-]*\b")
@@ -194,20 +220,30 @@ def render_vocabulary_panel(content: str | None = None) -> None:
         cache = st.session_state.setdefault("vocab_explain_cache", {})
         key = str(sel_word).strip().lower()
         if key in cache:
-            explanation = cache[key]
+            explanation = _normalize_vocabulary_explanation(cache[key], key)
         else:
-            with st.spinner("Looking up the word..."):
-                try:
-                    explanation = explain_word(sel_word)
-                except Exception:
-                    explanation = {
-                        "word": _display_word(sel_word),
-                        "meaning": _get_definition(sel_word),
-                        "explanation": "",
-                        "example": "",
-                    }
+            if key in BUILT_IN_DICTIONARY:
+                explanation = {
+                    "word": _display_word(key),
+                    "meaning": BUILT_IN_DICTIONARY[key],
+                    "explanation": "",
+                    "example": "",
+                }
+            else:
+                with st.spinner("Looking up the word..."):
+                    try:
+                        explanation = explain_word(sel_word)
+                    except Exception:
+                        explanation = {
+                            "word": _display_word(sel_word),
+                            "meaning": "Definition unavailable.",
+                            "explanation": "No explanation is available at this time.",
+                            "example": "",
+                        }
             cache[key] = explanation
             st.session_state["vocab_explain_cache"] = cache
+
+        explanation = _normalize_vocabulary_explanation(explanation, key)
 
         html = dedent(
             f"""
@@ -263,9 +299,10 @@ def _is_difficult_word(word: str) -> bool:
     """Return whether a word should be included in vocabulary support."""
 
     return (
-        len(word) >= 9
-        or word in BUILT_IN_DICTIONARY
-    ) and word not in _STOP_WORDS
+        (len(word) >= 9 or word in BUILT_IN_DICTIONARY)
+        and word not in _STOP_WORDS
+        and word not in _GENERIC_VOCABULARY_WORDS
+    )
 
 
 def _get_stored_words() -> list[str]:
@@ -283,7 +320,37 @@ def _get_stored_words() -> list[str]:
 def _get_definition(word: str) -> str:
     """Return a simple definition for a vocabulary word."""
 
-    return BUILT_IN_DICTIONARY.get(word, "An important topic word from the reading.")
+    if word in BUILT_IN_DICTIONARY:
+        return BUILT_IN_DICTIONARY[word]
+
+    try:
+        from services.vocabulary_service import explain_word
+
+        explanation = explain_word(word)
+        meaning = explanation.get("meaning", "")
+        if meaning and meaning.strip():
+            return meaning.strip()
+    except Exception:
+        pass
+
+    return "Definition unavailable."
+
+
+def _normalize_vocabulary_explanation(explanation: dict[str, str] | None, word: str) -> dict[str, str]:
+    if not isinstance(explanation, dict):
+        explanation = {}
+
+    normalized = {
+        "word": str(explanation.get("word") or _display_word(word)).strip(),
+        "meaning": str(explanation.get("meaning") or "").strip(),
+        "explanation": str(explanation.get("explanation") or "").strip(),
+        "example": str(explanation.get("example") or "").strip(),
+    }
+    if not normalized["meaning"]:
+        normalized["meaning"] = "Definition unavailable."
+    if not normalized["word"]:
+        normalized["word"] = _display_word(word)
+    return normalized
 
 
 def _display_word(word: str) -> str:

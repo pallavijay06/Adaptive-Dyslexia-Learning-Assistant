@@ -9,10 +9,10 @@ from backend.stem.detector import detect_stem_content
 from backend.stem.models import STEMDetectionResult
 
 
-def analyze_document_for_stem(text: str | None) -> STEMDetectionResult:
+def analyze_document_for_stem(text: str | None, diagram_images: list[str] | None = None) -> STEMDetectionResult:
     """Analyze extracted document text and return STEM detection statistics."""
 
-    return detect_stem_content(text)
+    return detect_stem_content(text, diagram_images=diagram_images)
 
 
 def get_available_stem_features(result: STEMDetectionResult) -> list[str]:

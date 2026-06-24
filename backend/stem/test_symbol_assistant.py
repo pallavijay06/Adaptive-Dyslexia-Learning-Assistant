@@ -49,22 +49,56 @@ def test_explain_symbol_uses_library_response():
     }
 
 
-def test_unknown_symbol_returns_safe_fallback():
-    assert explain_symbol("\u2234") == {
-        "symbol": "\u2234",
-        "meaning": "Unknown Symbol",
-        "simple_explanation": "This symbol is not currently available in the STEM library.",
+def test_summation_operator_normalizes_to_sigma_and_uses_library(monkeypatch):
+    called = False
+
+    def fail_if_called(prompt):
+        nonlocal called
+        called = True
+        raise AssertionError("AI fallback must not run for normalized library symbols")
+
+    monkeypatch.setattr(symbol_assistant, "chat_with_gemini", fail_if_called)
+
+    sigma_explanation = explain_symbol("Σ")
+    summation_explanation = explain_symbol("∑")
+
+    assert sigma_explanation == summation_explanation
+    assert sigma_explanation["meaning"] == "Summation"
+    assert called is False
+
+
+def test_symbol_unavailable_falls_back_to_safe_response(monkeypatch):
+    monkeypatch.setattr(
+        symbol_assistant,
+        "chat_with_gemini",
+        lambda prompt: (_ for _ in ()).throw(RuntimeError("LLM unavailable")),
+    )
+
+    assert explain_symbol("#") == {
+        "symbol": "#",
+        "meaning": "Symbol explanation unavailable.",
+        "simple_explanation": "No example available for this symbol.",
         "example": "No example available.",
     }
 
 
-def test_unknown_symbol_does_not_call_ai_fallback(monkeypatch):
-    def fail_if_called(symbol):
-        raise AssertionError("AI fallback must not run in this version.")
+def test_unknown_symbol_uses_ai_fallback_when_available(monkeypatch):
+    def fake_ai_response(prompt):
+        return (
+            '{"symbol": "\u2603", '
+            '"meaning": "A snowman symbol.", '
+            '"simple_explanation": "A picture-like symbol used in text.", '
+            '"example": "The symbol looks like a snowman."}'
+        )
 
-    monkeypatch.setattr(symbol_assistant, "_get_ai_symbol_explanation", fail_if_called)
+    monkeypatch.setattr(symbol_assistant, "chat_with_gemini", fake_ai_response)
 
-    assert explain_symbol("\u2234")["meaning"] == "Unknown Symbol"
+    assert explain_symbol("☃") == {
+        "symbol": "☃",
+        "meaning": "A snowman symbol.",
+        "simple_explanation": "A picture-like symbol used in text.",
+        "example": "The symbol looks like a snowman.",
+    }
 
 
 def test_symbol_explanations_output_structure():
@@ -78,9 +112,6 @@ def test_symbol_explanations_output_structure():
             "simple_explanation",
             "example",
         }
-    assert explanations[1]["meaning"] == "Unknown Symbol"
+    assert explanations[1]["meaning"] == "Therefore"
 
 
-def test_future_ai_placeholder_is_not_implemented():
-    with pytest.raises(NotImplementedError):
-        symbol_assistant._get_ai_symbol_explanation("\u2234")

@@ -10,12 +10,12 @@ from __future__ import annotations
 import re
 
 
-FORMULA_OPERATOR_PATTERN = re.compile(r"(=|\+|-|\*|/|\^|\u221a)")
+FORMULA_OPERATOR_PATTERN = re.compile(r"(=|\+|-|\*|/|\^|\u221a|\u00d7|\u22c5|\u00f7|\u2212)")
 FORMULA_CANDIDATE_PATTERN = re.compile(
-    r"(?m)^\s*(?:[-*]\s*)?"
-    r"([A-Za-z0-9_\u0370-\u03ff\u221a][A-Za-z0-9_\u0370-\u03ff \t().,\u221a+\-*/^=]{0,120}"
-    r"(?:=|\+|-|\*|/|\^|\u221a)"
-    r"[A-Za-z0-9_\u0370-\u03ff \t().,\u221a+\-*/^=]{0,120})\s*$"
+    r"(?m)(?:^|:\s*)(?:[-*]\s*)?"
+    r"([A-Za-z0-9_\u0370-\u03ff\u221a\u00d7\u22c5\u00f7\u2212][A-Za-z0-9_\u0370-\u03ff \t().,\u221a\u00d7\u22c5\u00f7\u2212+\-*/^=]{0,120}"
+    r"(?:=|\+|-|\*|/|\^|\u221a|\u00d7|\u22c5|\u00f7|\u2212)"
+    r"[A-Za-z0-9_\u0370-\u03ff \t().,\u221a\u00d7\u22c5\u00f7\u2212+\-*/^=]{0,120})\s*$"
 )
 
 
@@ -61,6 +61,9 @@ def _is_formula_candidate(formula: str) -> bool:
     if not formula or not FORMULA_OPERATOR_PATTERN.search(formula):
         return False
 
+    if _is_variable_assignment(formula):
+        return False
+
     if len(formula) > 120:
         return False
 
@@ -72,3 +75,19 @@ def _is_formula_candidate(formula: str) -> bool:
         return False
 
     return True
+
+
+def _is_variable_assignment(expression: str) -> bool:
+    """Return True when the expression is a single variable assigned a number."""
+
+    expression = expression.strip()
+    if not expression:
+        return False
+
+    match = re.fullmatch(
+        r"([A-Za-z_\u0370-\u03ff][A-Za-z0-9_\u0370-\u03ff]*)"
+        r"\s*=\s*"
+        r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?",
+        expression,
+    )
+    return match is not None

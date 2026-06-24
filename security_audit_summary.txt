@@ -1,0 +1,71 @@
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:18:- API Key: `OPENROUTER_API_KEY` (required)
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:39:OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:41:GEMINI_API_KEY=your_gemini_api_key_here
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:92:- Copy key to `.env`: `OPENROUTER_API_KEY=your_key`
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:215:| "Missing OpenRouter API key" | Add to .env: `OPENROUTER_API_KEY=your_key` |
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:226:- Just add `OPENROUTER_API_KEY` to enable
+OPENROUTER_IMPLEMENTATION_COMPLETE.md:238:   OPENROUTER_API_KEY=your_key_here
+OPENROUTER_INTEGRATION.md:13:  - Loads `OPENROUTER_API_KEY` from `.env`
+OPENROUTER_INTEGRATION.md:45:- `OPENROUTER_API_KEY` - Required for OpenRouter
+OPENROUTER_INTEGRATION.md:47:- `GEMINI_API_KEY` - Still required as fallback
+OPENROUTER_INTEGRATION.md:71:   - Add to `.env`: `OPENROUTER_API_KEY=your_key_here`
+OPENROUTER_INTEGRATION.md:82:   - Keep `GEMINI_API_KEY` in `.env` for automatic fallback
+OPENROUTER_QUICK_START.md:35:OPENROUTER_API_KEY=your_key_here
+OPENROUTER_QUICK_START.md:41:GEMINI_API_KEY=your_existing_key
+OPENROUTER_QUICK_START.md:120:- Check your OPENROUTER_API_KEY in .env
+OPENROUTER_QUICK_START.md:153:.env                           ← Add OPENROUTER_API_KEY here
+OPENROUTER_VERIFICATION.md:13:- [x] Support for `OPENROUTER_API_KEY` environment variable
+OPENROUTER_VERIFICATION.md:134:   OPENROUTER_API_KEY=your_api_key_here
+OPENROUTER_VERIFICATION.md:137:3. Keep your existing `GEMINI_API_KEY` for fallback
+README.md:26:OPENAI_API_KEY=YOUR_KEY_HERE
+README.md:30:GEMINI_API_KEY=your_gemini_key_here
+security_audit_results.txt:13:OPENROUTER_IMPLEMENTATION_COMPLETE.md:39: OPENROUTER_API_KEY=your_openrouter_api_key_here
+security_audit_results.txt:15:OPENROUTER_IMPLEMENTATION_COMPLETE.md:41: GEMINI_API_KEY=your_gemini_api_key_here
+security_audit_results.txt:21:OPENROUTER_IMPLEMENTATION_COMPLETE.md:92: - Copy key to `.env`: `OPENROUTER_API_KEY=your_key`
+security_audit_results.txt:38:OPENROUTER_IMPLEMENTATION_COMPLETE.md:215: | "Missing OpenRouter API key" | Add to .env: `OPENROUTER_API_KEY=your_key` |
+security_audit_results.txt:42:OPENROUTER_IMPLEMENTATION_COMPLETE.md:238: OPENROUTER_API_KEY=your_key_here
+security_audit_results.txt:54:OPENROUTER_INTEGRATION.md:45: - `OPENROUTER_API_KEY` - Required for OpenRouter
+security_audit_results.txt:58:OPENROUTER_INTEGRATION.md:71: - Add to `.env`: `OPENROUTER_API_KEY=your_key_here`
+security_audit_results.txt:71:OPENROUTER_QUICK_START.md:35: OPENROUTER_API_KEY=your_key_here
+security_audit_results.txt:73:OPENROUTER_QUICK_START.md:41: GEMINI_API_KEY=your_existing_key
+security_audit_results.txt:116:OPENROUTER_VERIFICATION.md:134: OPENROUTER_API_KEY=your_api_key_here
+security_audit_results.txt:126:README.md:26: OPENAI_API_KEY=YOUR_KEY_HERE
+security_audit_results.txt:127:README.md:30: GEMINI_API_KEY=your_gemini_key_here
+security_audit_results.txt:163:services/gemini_service.py:243: api_key = _load_api_key()
+security_audit_results.txt:165:services/gemini_service.py:253: _client = genai.Client(api_key=api_key)
+security_audit_results.txt:170:services/gemini_service.py:306: api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+security_audit_results.txt:171:services/gemini_service.py:307: if not api_key:
+security_audit_results.txt:172:services/gemini_service.py:309: "Missing Gemini API key. Add GEMINI_API_KEY=your_key to .env."
+security_audit_results.txt:202:services/openai_service.py:75: api_key = _load_api_key()
+security_audit_results.txt:205:services/openai_service.py:85: return OpenAI(api_key=api_key, timeout=DEFAULT_TIMEOUT_SECONDS)
+security_audit_results.txt:207:services/openai_service.py:93: api_key = os.getenv("OPENAI_API_KEY", "").strip()
+security_audit_results.txt:208:services/openai_service.py:94: if not api_key:
+security_audit_results.txt:209:services/openai_service.py:95: raise OpenAIServiceError("Missing OpenAI API key. Add OPENAI_API_KEY to .env.")
+security_audit_results.txt:212:services/openai_service.py:162: return OpenAIServiceError("OpenAI authentication failed. Check OPENAI_API_KEY.")
+security_audit_results.txt:220:services/openai_service.py:180: return OpenAIServiceError("OpenAI authentication failed. Check OPENAI_API_KEY.")
+security_audit_results.txt:238:services/openrouter_service.py:132: api_key = _load_api_key()
+security_audit_results.txt:242:services/openrouter_service.py:143: api_key=api_key,
+security_audit_results.txt:245:services/openrouter_service.py:157: api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+security_audit_results.txt:246:services/openrouter_service.py:158: if not api_key:
+security_audit_results.txt:247:services/openrouter_service.py:160: "Missing OpenRouter API key. Add OPENROUTER_API_KEY to .env."
+security_audit_results.txt:251:services/openrouter_service.py:209: "OpenRouter authentication failed. Check your OPENROUTER_API_KEY."
+services\gemini_service.py:243:    api_key = _load_api_key()
+services\gemini_service.py:253:        _client = genai.Client(api_key=api_key)
+services\gemini_service.py:303:    """Load GEMINI_API_KEY from environment variables or .env files."""
+services\gemini_service.py:306:    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+services\gemini_service.py:307:    if not api_key:
+services\gemini_service.py:309:            "Missing Gemini API key. Add GEMINI_API_KEY=your_key to .env."
+services\openai_service.py:75:    api_key = _load_api_key()
+services\openai_service.py:85:        return OpenAI(api_key=api_key, timeout=DEFAULT_TIMEOUT_SECONDS)
+services\openai_service.py:93:    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+services\openai_service.py:94:    if not api_key:
+services\openai_service.py:95:        raise OpenAIServiceError("Missing OpenAI API key. Add OPENAI_API_KEY to .env.")
+services\openai_service.py:162:        return OpenAIServiceError("OpenAI authentication failed. Check OPENAI_API_KEY.")
+services\openai_service.py:180:            return OpenAIServiceError("OpenAI authentication failed. Check OPENAI_API_KEY.")
+services\openrouter_service.py:132:    api_key = _load_api_key()
+services\openrouter_service.py:143:            api_key=api_key,
+services\openrouter_service.py:157:    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+services\openrouter_service.py:158:    if not api_key:
+services\openrouter_service.py:160:            "Missing OpenRouter API key. Add OPENROUTER_API_KEY to .env."
+services\openrouter_service.py:209:            "OpenRouter authentication failed. Check your OPENROUTER_API_KEY."
+TOTAL 70

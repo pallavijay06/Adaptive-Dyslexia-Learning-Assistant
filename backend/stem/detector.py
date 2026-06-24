@@ -7,8 +7,17 @@ without implementing Formula Assistant, Symbol Explanation, Diagram
 Explanation, or Step-by-Step Solutions.
 """
 
-from backend.stem.constants import DIAGRAM_KEYWORDS, FORMULA_TOKENS, STEM_SYMBOLS
+from backend.stem.formula_extractor import extract_formulas
 from backend.stem.models import STEMDetectionResult
+from backend.stem.symbol_extractor import extract_symbols
+
+import re
+
+
+MATH_PLACEHOLDER_OPERATOR_PATTERN = re.compile(r"[=+*/]")
+MATH_PLACEHOLDER_UNICODE_OPERATOR_PATTERN = re.compile(r"[×÷−]")
+MATH_FUNCTION_PATTERN = re.compile(r"\b(?:sqrt|sin|cos|tan|log|ln|exp|abs|pow|root)\s*\(", re.IGNORECASE)
+MATH_EXPONENT_PATTERN = re.compile(r"\b\w+\^[\w\d]+\b|[⁰¹²³⁴⁵⁶⁷⁸⁹]")
 
 
 def _normalize_text(text: str | None) -> str:
@@ -18,46 +27,49 @@ def _normalize_text(text: str | None) -> str:
 
 
 def detect_formulas(text: str | None) -> int:
-    """Count placeholder formula tokens in extracted document text.
+    """Detect STEM formula-like content without extracting exact formulas."""
 
-    Future Formula Assistant and Step-by-Step Solutions logic can replace this
-    token counter with a math-aware parser while preserving the public detector
-    contract.
-    """
+    normalized_text = _normalize_text(text)
+    if not normalized_text.strip():
+        return 0
 
-    content = _normalize_text(text)
-    searchable_content = content.lower()
-    return sum(searchable_content.count(token.lower()) for token in FORMULA_TOKENS)
+    actual_formulas = len(extract_formulas(normalized_text))
+    placeholder_tokens = _count_placeholder_formula_tokens(normalized_text)
+
+    return max(actual_formulas, placeholder_tokens)
+
+
+def _count_placeholder_formula_tokens(text: str) -> int:
+    """Count lightweight STEM math tokens and function patterns in prose."""
+
+    operator_matches = len(MATH_PLACEHOLDER_OPERATOR_PATTERN.findall(text))
+    unicode_operator_matches = len(MATH_PLACEHOLDER_UNICODE_OPERATOR_PATTERN.findall(text))
+    function_matches = len(MATH_FUNCTION_PATTERN.findall(text))
+    exponent_matches = len(MATH_EXPONENT_PATTERN.findall(text))
+
+    return operator_matches + unicode_operator_matches + function_matches + exponent_matches
 
 
 def detect_symbols(text: str | None) -> int:
-    """Count placeholder STEM symbols in extracted document text.
+    """Detect STEM symbols using the shared symbol extraction pipeline."""
 
-    Future Symbol Explanation logic can connect after this stage to explain
-    detected symbols in context.
-    """
-
-    content = _normalize_text(text)
-    return sum(content.count(symbol) for symbol in STEM_SYMBOLS)
+    return len(extract_symbols(_normalize_text(text)))
 
 
-def detect_diagrams(text: str | None) -> int:
-    """Count diagram-related keywords in extracted document text.
+def detect_diagrams(text: str | None, diagram_images: list[str] | None = None) -> int:
+    """Detect diagrams based only on extracted image paths."""
 
-    Future Diagram Explanation logic can connect after this stage to interpret
-    referenced or extracted visual content.
-    """
-
-    searchable_content = _normalize_text(text).lower()
-    return sum(searchable_content.count(keyword) for keyword in DIAGRAM_KEYWORDS)
+    if not diagram_images:
+        return 0
+    return len([image for image in diagram_images if image])
 
 
-def detect_stem_content(text: str | None) -> STEMDetectionResult:
+def detect_stem_content(text: str | None, diagram_images: list[str] | None = None) -> STEMDetectionResult:
     """Analyze extracted document text and return STEM detection statistics."""
 
     formula_count = detect_formulas(text)
     symbol_count = detect_symbols(text)
-    diagram_count = detect_diagrams(text)
+    diagram_count = detect_diagrams(text, diagram_images)
 
     return STEMDetectionResult(
         has_formula=formula_count > 0,

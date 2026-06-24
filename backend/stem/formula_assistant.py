@@ -13,10 +13,15 @@ from typing import Any
 
 from backend.llm import chat_with_gemini
 from backend.stem.formula_extractor import extract_formulas
+from backend.stem.formula_library import (
+    get_formula_library_explanation,
+    normalize_formula_key,
+)
 
 
 MAX_LLM_ATTEMPTS = 2
 REQUIRED_RESPONSE_KEYS = {"formula", "terms", "meaning", "example"}
+FORMULA_EXPLANATION_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def explain_formula(formula: str) -> dict[str, Any]:
@@ -31,17 +36,30 @@ def explain_formula(formula: str) -> dict[str, Any]:
             "example": "",
         }
 
-    last_error: ValueError | None = None
-    for attempt in range(MAX_LLM_ATTEMPTS):
-        response = chat_with_gemini(
-            _build_formula_prompt(cleaned_formula, retry=attempt > 0)
-        )
-        try:
-            return _parse_formula_response(response, cleaned_formula)
-        except ValueError as exc:
-            last_error = exc
+    library_explanation = get_formula_library_explanation(cleaned_formula)
+    if library_explanation is not None:
+        return library_explanation
 
-    raise ValueError("Formula explanation did not match the required JSON format.") from last_error
+    normalized_key = normalize_formula_key(cleaned_formula)
+    cached_response = FORMULA_EXPLANATION_CACHE.get(normalized_key)
+    if cached_response is not None:
+        return cached_response
+
+    for attempt in range(MAX_LLM_ATTEMPTS):
+        try:
+            # Formula explanations are short — enforce token limit when invoking chat
+            response = chat_with_gemini(
+                    _build_formula_prompt(cleaned_formula, retry=attempt > 0),
+                )
+            explanation = _parse_formula_response(response, cleaned_formula)
+            FORMULA_EXPLANATION_CACHE[normalized_key] = explanation
+            return explanation
+        except Exception:
+            continue
+
+    fallback_explanation = _fallback_formula_explanation(cleaned_formula)
+    FORMULA_EXPLANATION_CACHE[normalized_key] = fallback_explanation
+    return fallback_explanation
 
 
 def get_formula_explanations(text: str) -> list[dict[str, Any]]:
@@ -125,6 +143,16 @@ def _parse_formula_response(response: str, expected_formula: str) -> dict[str, A
         "terms": {key.strip(): value.strip() for key, value in terms.items()},
         "meaning": meaning.strip(),
         "example": example.strip(),
+    }
+
+
+def _fallback_formula_explanation(formula: str) -> dict[str, Any]:
+    """Return a safe fallback explanation when AI output cannot be parsed."""
+    return {
+        "formula": formula,
+        "terms": {},
+        "meaning": "Formula explanation unavailable.",
+        "example": "No example available.",
     }
 
 

@@ -121,7 +121,8 @@ def _extract_visual_structure(text: str) -> dict[str, Any]:
     )
     
     try:
-        response = generate_content(prompt)
+        # Visual extraction is moderately sized; limit response tokens to avoid huge outputs
+        response = generate_content(prompt, max_tokens=600)
         structure = _parse_json_response(response)
         
         # Validate structure

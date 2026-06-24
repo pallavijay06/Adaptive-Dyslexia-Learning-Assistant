@@ -49,6 +49,7 @@ def simplify_text(text: str) -> str:
     )
     
     try:
-        return generate_content(prompt)
+        # Simplification can be longer — allow up to 1200 tokens
+        return generate_content(prompt, max_tokens=1200)
     except Exception as exc:
         raise SimplificationError(f"Simplification failed: {exc}") from exc

@@ -45,6 +45,10 @@ def generate_visual_content(text: str) -> dict[str, Any]:
     """
     if not text or not text.strip():
         raise VisualError("Text cannot be empty.")
+
+    # DEPRECATED: This legacy visual service remains for backward compatibility.
+    # Not referenced by active application flows; prefer `services.visual_service`.
+    # Do not call this in new code paths.
     
     # First, get structured content from AI
     prompt = (

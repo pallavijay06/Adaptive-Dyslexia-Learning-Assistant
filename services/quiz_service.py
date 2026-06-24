@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import difflib
 import json
 import logging
@@ -12,6 +13,12 @@ import time
 from collections import Counter
 from typing import Any
 
+from services.cache_service import (
+    QUIZ_CACHE_TTL_HOURS,
+    get_cache_value,
+    make_quiz_cache_key,
+    set_cache_value,
+)
 from services.llm_router import LLMRouterError, generate_content
 
 logger = logging.getLogger(__name__)
@@ -89,6 +96,14 @@ _SYNONYM_MAP = {
     "oxegen": "oxygen",
 }
 
+# Concept equivalences for semantic matching and richer explanations
+_CONCEPT_EQUIVALENCE = {
+    "chlorophyll": {"green", "green pigment"},
+    "oxygen": {"oxygen", "o2", "release oxygen", "give out oxygen"},
+    "carbon dioxide": {"carbon dioxide", "co2"},
+    "photosynthesis": {"photosynthesis", "making food", "make food", "produce food", "create food"},
+}
+
 
 def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]]:
     """Generate high-quality multiple choice questions from document content."""
@@ -97,6 +112,14 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
         raise ValueError("Document text cannot be empty for quiz generation.")
 
     _QUIZ_GENERATION_FALLBACK_USED = False
+
+    cache_key = make_quiz_cache_key(text, "mcq", num_questions)
+    cached_mcqs = get_cache_value(cache_key)
+    if cached_mcqs is not None:
+        logger.info("[CACHE HIT] Quiz MCQ")
+        return copy.deepcopy(cached_mcqs)
+    logger.info("[CACHE MISS] Quiz MCQ")
+
     prompt = (
         "Generate a learner-friendly multiple choice quiz from the document below. "
         f"Create exactly {num_questions} questions. "
@@ -143,9 +166,10 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
     if not validated_mcqs:
         logger.warning("[Quiz] MCQ parsing returned no valid questions. Using local fallback quiz generation.")
         _QUIZ_GENERATION_FALLBACK_USED = True
-        return _local_generate_mcq_quiz(text, num_questions)
+        validated_mcqs = _local_generate_mcq_quiz(text, num_questions)
 
-    return validated_mcqs
+    set_cache_value(cache_key, validated_mcqs, ttl_hours=QUIZ_CACHE_TTL_HOURS)
+    return copy.deepcopy(validated_mcqs)
 
 
 def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str, str]]:
@@ -153,6 +177,13 @@ def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str
     global _QUIZ_GENERATION_FALLBACK_USED
     if not text or not text.strip():
         raise ValueError("Document text cannot be empty for short question generation.")
+
+    # Ensure cache key exists and support cache lookups for short questions
+    cache_key = make_quiz_cache_key(text, "short", num_questions)
+    cached_questions = get_cache_value(cache_key)
+    if cached_questions is not None:
+        logger.info("[CACHE HIT] Quiz Short")
+        return copy.deepcopy(cached_questions)
 
     prompt = (
         "Create a list of learner-friendly short answer questions from the document below. "
@@ -191,9 +222,10 @@ def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str
     if not validated_questions:
         logger.warning("[Quiz] Short question parsing returned no valid questions. Using local fallback quiz generation.")
         _QUIZ_GENERATION_FALLBACK_USED = True
-        return _local_generate_short_questions(text, num_questions)
+        validated_questions = _local_generate_short_questions(text, num_questions)
 
-    return validated_questions
+    set_cache_value(cache_key, validated_questions, ttl_hours=QUIZ_CACHE_TTL_HOURS)
+    return copy.deepcopy(validated_questions)
 
 
 def evaluate_mcq(user_answers: list[str], quiz_data: list[dict[str, Any]]) -> dict[str, Any]:
@@ -344,6 +376,10 @@ def evaluate_short_answer(
             evaluation["score"] = local_score
 
     evaluation["score"] = max(0, min(5, evaluation["score"]))
+    # Add spelling note when LLM result seems correct but student had a minor typo
+    spelling_note = _detect_spelling_note(student_answer_text, expected_answer_text)
+    if spelling_note:
+        evaluation["spelling_note"] = f'The correct spelling is "{spelling_note}".'
     evaluation["source"] = "llm"
     logger.info("[Quiz] Short answer LLM evaluation completed in %.2fs", time.perf_counter() - start_time)
     return evaluation
@@ -360,6 +396,71 @@ def evaluate_short_answer_locally(
         str(expected_answer or "").strip(),
         str(question_text or "").strip(),
     )
+
+
+def _detect_spelling_note(student_answer: str, expected_answer: str) -> str | None:
+    """Detect minor single-word spelling mistakes and return the corrected spelling note.
+
+    Returns the correct expected spelling (as a string) when a small typo is detected,
+    otherwise None.
+    """
+    s = str(student_answer or "").strip()
+    e = str(expected_answer or "").strip()
+    if not s or not e:
+        return None
+    if " " in e or " " in s:
+        # focus on short answers or single-word corrections
+        # allow 1-2 word expected answers
+        pass
+    sim = _fuzzy_text_similarity(s, e)
+    if sim >= 0.80 and _normalize_answer(s) != _normalize_answer(e):
+        return e
+    return None
+
+
+def _semantic_match(student_answer: str, expected_answer: str) -> bool:
+    """Return True when student answer preserves the core concept of expected answer.
+
+    Uses normalized tokens, concept equivalences, and simple verb/object heuristics.
+    """
+    s_norm = _normalize_answer(student_answer)
+    e_norm = _normalize_answer(expected_answer)
+    if not s_norm or not e_norm:
+        return False
+
+    s_tokens = _content_tokens(s_norm)
+    e_tokens = _content_tokens(e_norm)
+
+    # direct strong overlap
+    if not e_tokens:
+        return False
+    overlap = len(s_tokens & e_tokens) / max(1, len(e_tokens))
+    if overlap >= 0.66:
+        return True
+
+    # handle concept equivalences: if any expected token maps to an equivalent token present in student
+    for et in e_tokens:
+        for canon, equivalents in _CONCEPT_EQUIVALENCE.items():
+            if et == canon or et in equivalents:
+                # check if student mentions any equivalent
+                if any(eq in s_norm for eq in equivalents) or canon in s_norm:
+                    return True
+
+    # verb/object heuristic: look for 'make/produce/create' + 'food' style matches
+    verbs = {"make", "produce", "create", "give", "release", "absorb", "capture"}
+    if any(v in s_tokens for v in verbs) and any(v in e_tokens for v in verbs):
+        # also require shared object token (like food, oxygen, pigment)
+        shared = s_tokens & e_tokens
+        if shared:
+            return True
+
+    return False
+
+
+def _keyword_overlap_score(student_answer: str, expected_answer: str) -> float:
+    s_tokens = _content_tokens(_normalize_answer(student_answer))
+    e_tokens = _content_tokens(_normalize_answer(expected_answer))
+    return _match_tokens(e_tokens, s_tokens)
 
 
 def combine_quiz_report_with_short_answers(
@@ -420,66 +521,84 @@ def _fallback_short_answer_evaluation(
     question_text: str = "",
 ) -> dict[str, Any]:
     """Evaluate a short answer locally with token overlap, fuzzy matching, and meaning."""
+    # PRIMARY evaluation pipeline
     concept = _infer_concept(question_text, expected_answer)
-    student_tokens = _content_tokens(student_answer)
-    expected_tokens = _content_tokens(expected_answer)
-    normalized_student = _normalize_answer(student_answer)
-    normalized_expected = _normalize_answer(expected_answer)
+    s = str(student_answer or "").strip()
+    e = str(expected_answer or "").strip()
 
-    if not student_tokens:
-        score = 0
-    elif not expected_tokens:
-        score = 1
-    else:
-        exact_match = normalized_student == normalized_expected
-        fuzzy_match = _fuzzy_text_similarity(normalized_student, normalized_expected)
-        token_match = _match_tokens(expected_tokens, student_tokens)
-        sequence = difflib.SequenceMatcher(None, normalized_student, normalized_expected).ratio()
-        overlap_phrase = 0.9 if normalized_student and normalized_expected and normalized_student in normalized_expected else 0.0
-        short_equivalent_answer = (
-            overlap_phrase >= 0.9
-            and len(student_tokens) <= 2
-            and len(expected_tokens) <= 4
-        )
-        exact_token_equivalent = token_match >= 0.9 and abs(len(expected_tokens) - len(student_tokens)) <= 1
+    # Step 1: normalize
+    s_norm = _normalize_answer(s)
+    e_norm = _normalize_answer(e)
 
-        if exact_match or short_equivalent_answer or exact_token_equivalent or (fuzzy_match >= 0.92 and token_match >= 0.7):
-            score = 5
-        else:
-            similarity = (
-                token_match * 0.55
-                + sequence * 0.25
-                + fuzzy_match * 0.10
-                + overlap_phrase * 0.10
-            )
-            score = round(similarity * 5)
-            if overlap_phrase >= 0.9 and token_match >= 0.6 and score >= 4:
-                score = 4
-
-        if score == 5 and overlap_phrase >= 0.9 and token_match < 0.7:
-            score = 4
-    score = max(0, min(5, score))
-
-    if score >= 4:
+    # Step 2: exact match
+    if s_norm and s_norm == e_norm:
+        score = 5
         result = "Correct"
-    elif score >= 2:
-        result = "Partially Correct"
+        spelling_note = None
     else:
-        result = "Incorrect"
+        # Step 3: spelling similarity (single/short answers)
+        spelling_note = _detect_spelling_note(s, e)
+        if spelling_note is not None:
+            score = 5
+            result = "Correct"
+        else:
+            # Step 4: keyword overlap
+            token_overlap = _keyword_overlap_score(s, e)
+            # Step 5: semantic equivalence
+            semantic_ok = _semantic_match(s, e)
 
-    explanation = _build_question_explanation(question_text, student_answer, expected_answer, result)
-    if not _teaches_concept(explanation, expected_answer):
-        explanation = _build_question_explanation(question_text, student_answer, expected_answer, result)
+            if semantic_ok:
+                # preserve core concept
+                score = 5
+                result = "Correct"
+            else:
+                # partially correct if some core tokens present
+                if token_overlap >= 0.5:
+                    score = 3
+                    result = "Partially Correct"
+                else:
+                    # fall back to blended similarity scoring
+                    normalized_student = s_norm
+                    normalized_expected = e_norm
+                    fuzzy_match = _fuzzy_text_similarity(normalized_student, normalized_expected)
+                    sequence = difflib.SequenceMatcher(None, normalized_student, normalized_expected).ratio()
+                    token_match = _match_tokens(_content_tokens(e_norm), _content_tokens(s_norm))
+                    similarity = (
+                        token_match * 0.55
+                        + sequence * 0.25
+                        + fuzzy_match * 0.20
+                    )
+                    score = max(0, min(5, round(similarity * 5)))
+                    if score >= 4 and token_match < 0.6:
+                        # guard small-token false positives
+                        score = 4
+                    if score >= 4 and token_overlap >= 0.5:
+                        result = "Partially Correct" if token_overlap < 0.66 else "Correct"
+                    else:
+                        result = _result_from_score(score, 5)
 
-    return {
+    score = max(0, min(5, int(score)))
+
+    # Build explanation and feedback
+    explanation = _build_question_explanation(question_text, s, e, result)
+    if not _teaches_concept(explanation, e):
+        explanation = _build_question_explanation(question_text, s, e, result)
+
+    feedback = _shorten_sentences(explanation, fallback=explanation, max_sentences=3)
+    improvement = _build_tip(concept, e) or "Review the key concept."
+
+    out: dict[str, Any] = {
         "score": score,
         "max_score": 5,
         "result": result,
         "concept": concept,
-        "feedback": _shorten_sentences(explanation, fallback=explanation, max_sentences=3),
-        "improvement_tip": _build_tip(concept, expected_answer) or "Review the key concept.",
+        "feedback": feedback,
+        "improvement_tip": improvement,
         "source": "local",
     }
+    if spelling_note:
+        out["spelling_note"] = f'The correct spelling is "{spelling_note}".'
+    return out
 
 
 def _run_quiz_prompt(prompt: str, document_text: str | None = None) -> str:
@@ -492,7 +611,8 @@ def _run_quiz_prompt(prompt: str, document_text: str | None = None) -> str:
         )
 
     try:
-        return generate_content(full_prompt)
+        # Quiz generation may be large—limit completion size to 800 tokens
+        return generate_content(full_prompt, max_tokens=800)
     except LLMRouterError:
         raise
     except Exception as exc:
@@ -922,30 +1042,30 @@ def _build_recommendation_summary(weak_count: int, total_count: int) -> str:
 
 
 def _build_question_explanation(question: str, student_answer: str, correct_answer: str, result: str) -> str:
-    correct_answer = _trim_text(correct_answer, max_words=20)
-    student_answer = _trim_text(student_answer, max_words=18)
-    student_answer_text = student_answer or "no answer"
+    correct_trim = _trim_text(correct_answer, max_words=20)
+    student_trim = _trim_text(student_answer, max_words=18)
+    student_answer_text = student_trim or "no answer"
     reason = _build_reason_text(question, correct_answer)
-    memory = _build_memory_tip_text(correct_answer, student_answer)
 
+    # Educational, dyslexia-friendly phrasing
     if result == "Correct":
-        return (
-            f"Correct. {correct_answer.capitalize()} is right because {reason}. "
-            f"Remember: {memory}"
-        )
+        # Two short sentences: confirmation + simple teaching
+        teach = reason.capitalize()
+        return f"Correct. {correct_trim.capitalize()} is right. {teach}."
 
     if result == "Partially Correct":
         detail = student_answer_text if student_answer_text != "no answer" else "you have part of the idea"
+        teach = reason.capitalize()
         return (
-            f"You got part of the answer: {detail}. "
-            f"The full answer is {correct_answer} because {reason}. "
-            f"Remember: {memory}"
+            f"You have some of the idea: {detail}. "
+            f"The fuller answer is {correct_trim}. {teach}."
         )
 
+    # Incorrect
+    teach = reason.capitalize()
     return (
-        f"This answer is incorrect because {student_answer_text} does not match the main idea. "
-        f"The correct answer is {correct_answer} because {reason}. "
-        f"Remember: {memory}"
+        f"Your answer was {student_answer_text}. "
+        f"The correct answer is {correct_trim}. {teach}."
     )
 
 
@@ -957,35 +1077,34 @@ def _build_reason_text(question: str, correct_answer: str) -> str:
     if not answer:
         return "it matches the key idea in the question"
 
+    # Concept explanation map (educational and short)
+    concept_map = {
+        "chlorophyll": "Chlorophyll is the green pigment in leaves that absorbs sunlight for photosynthesis",
+        "oxygen": "Plants release oxygen as a by-product of photosynthesis",
+        "carbon dioxide": "Plants absorb carbon dioxide from the air to make food",
+        "leaves": "Photosynthesis mainly occurs in leaves because they contain chlorophyll",
+        "water": "Water is one of the raw materials plants use to make food",
+        "sunlight": "Sunlight provides the energy needed for photosynthesis",
+        "photosynthesis": "Photosynthesis is the process plants use to make food from sunlight, water, and carbon dioxide",
+    }
+
+    # Use direct mapping when a known concept is present
+    for key, explanation in concept_map.items():
+        if re.search(rf"\b{re.escape(key)}\b", lower_answer) or re.search(rf"\b{re.escape(key)}\b", lower_question):
+            return explanation
+
+    # Question-specific heuristics
     if "where" in lower_question or "place" in lower_question or "location" in lower_question:
-        if "in " not in lower_answer:
-            return f"it happens in {answer}"
         return f"it happens in {answer}"
 
     if "what gas" in lower_question and "oxygen" in lower_answer:
-        return "plants release oxygen during photosynthesis"
+        return concept_map.get("oxygen")
 
     if "what is photosynthesis" in lower_question or "describe photosynthesis" in lower_question:
-        if any(word in lower_answer for word in ["sunlight", "water", "carbon dioxide"]):
-            return answer
-        return "plants use sunlight, water, and carbon dioxide to make food"
+        return concept_map.get("photosynthesis")
 
-    if any(word in lower_answer for word in ["sunlight", "water", "carbon dioxide"]):
-        return f"plants use {answer} to make food"
-
-    if any(word in lower_answer for word in ["leaf", "leaves"]):
-        return "leaves catch sunlight and help the plant make food"
-
-    if "roots" in lower_answer:
-        return "roots take in water and minerals from the soil"
-
-    if "chlorophyll" in lower_answer:
-        return "chlorophyll captures sunlight in the leaves"
-
-    if "oxygen" in lower_answer:
-        return "plants make oxygen while they make food"
-
-    return f"it is the main idea the question asks for"
+    # fallback to simpler teaching sentence
+    return f"{answer} is important because it helps explain the idea in the question"
 
 
 def _build_memory_tip_text(correct_answer: str, student_answer: str | None = None) -> str:

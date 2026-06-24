@@ -25,16 +25,16 @@ def test_detect_symbols_counts_supported_symbols():
     assert detect_symbols(text) == 4
 
 
-def test_detect_diagrams_counts_keywords_case_insensitively():
-    text = "Figure 1 shows a circuit diagram and a Graph."
+def test_detect_diagrams_counts_image_paths_only():
+    diagram_images = ["/tmp/diagram1.png", "/tmp/diagram2.jpg"]
 
-    assert detect_diagrams(text) == 4
+    assert detect_diagrams(None, diagram_images=diagram_images) == len(diagram_images)
 
 
 def test_detect_stem_content_returns_detection_result():
-    text = "Figure: ∑ values where x = sqrt(9)."
+    text = "∑ values where x = sqrt(9)."
 
-    result = detect_stem_content(text)
+    result = detect_stem_content(text, diagram_images=["/tmp/diagram1.png"])
 
     assert result == STEMDetectionResult(
         has_formula=True,

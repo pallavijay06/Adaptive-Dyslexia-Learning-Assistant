@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from services.cache_service import get_cache_value, make_chat_cache_key, set_cache_value
 from services.openrouter_service import (
     OpenRouterAPIError,
     OpenRouterConfigurationError,
@@ -43,11 +44,21 @@ def generate_answer(question: str, context: str) -> str:
     if not context or not context.strip():
         raise ValueError("Context cannot be empty.")
 
+    cache_key = make_chat_cache_key(question, context)
+    cached_answer = get_cache_value(cache_key)
+    if cached_answer is not None:
+        logger.info("[CACHE HIT] Chat")
+        return cached_answer
+
+    logger.info("[CACHE MISS] Chat")
     logger.info("[LLM Router] Trying OpenRouter")
     try:
-        resp = openrouter_generate_answer(question, context)
+        # Chat responses should be limited to avoid huge output budgets
+        resp = openrouter_generate_answer(question, context, max_tokens=1000)
         logger.info("[LLM Router] OpenRouter succeeded")
-        return _clean_model_response(resp)
+        answer = _clean_model_response(resp)
+        set_cache_value(cache_key, answer)
+        return answer
     except Exception as open_exc:  # catch any provider-level error and continue
         logger.error("[LLM Router] OpenRouter failed: %s", str(open_exc))
 
@@ -55,14 +66,18 @@ def generate_answer(question: str, context: str) -> str:
     try:
         resp = gemini_generate_answer(question, context)
         logger.info("[LLM Router] Gemini succeeded")
-        return _clean_model_response(resp)
+        answer = _clean_model_response(resp)
+        set_cache_value(cache_key, answer)
+        return answer
     except Exception as gem_exc:
         logger.error("[LLM Router] Gemini failed: %s", str(gem_exc))
         logger.info("[LLM Router] Falling back to Ollama")
         try:
             resp = ollama_generate_answer(question, context)
             logger.info("[LLM Router] Ollama succeeded")
-            return _clean_model_response(resp)
+            answer = _clean_model_response(resp)
+            set_cache_value(cache_key, answer)
+            return answer
         except Exception as ollama_exc:
             logger.error("[LLM Router] Ollama failed: %s", str(ollama_exc))
             logger.exception("All LLM providers failed for answer generation.")
@@ -77,7 +92,7 @@ def _clean_model_response(text: str) -> str:
     return remove_markdown_and_html(cleaned)
 
 
-def generate_content(prompt: str) -> str:
+def generate_content(prompt: str, max_tokens: int | None = None) -> str:
     """Generate content with OpenRouter first, then Gemini, then Ollama.
     
     Used for content generation tasks like simplification, vocabulary extraction,
@@ -88,7 +103,7 @@ def generate_content(prompt: str) -> str:
 
     logger.info("[LLM Router] Trying OpenRouter")
     try:
-        resp = openrouter_generate_content(prompt)
+        resp = openrouter_generate_content(prompt, max_tokens=max_tokens)
         logger.info("[LLM Router] OpenRouter succeeded")
         return _clean_model_response(resp)
     except Exception as open_exc:
@@ -116,11 +131,13 @@ def generate_content(prompt: str) -> str:
 
 def summarize_document(document_text: str) -> str:
     """Summarize uploaded content through the configured provider chain."""
+    # Treat summarization as a text simplification task (longer output allowed)
     return generate_content(
         _document_prompt(
             document_text,
             "Summarize this document in simple language with short sections.",
-        )
+        ),
+        max_tokens=1200,
     )
 
 
@@ -130,7 +147,8 @@ def simplify_document(document_text: str) -> str:
         _document_prompt(
             document_text,
             "Simplify this document for a dyslexic learner. Use short sentences and clear bullets.",
-        )
+        ),
+        max_tokens=1200,
     )
 
 
@@ -140,7 +158,8 @@ def generate_quiz(document_text: str) -> str:
         _document_prompt(
             document_text,
             "Create a 5-question quiz from this document. Include answers after the questions.",
-        )
+        ),
+        max_tokens=800,
     )
 
 
@@ -150,7 +169,8 @@ def extract_vocabulary(document_text: str) -> str:
         _document_prompt(
             document_text,
             "Extract important vocabulary from this document and define each term simply.",
-        )
+        ),
+        max_tokens=500,
     )
 
 

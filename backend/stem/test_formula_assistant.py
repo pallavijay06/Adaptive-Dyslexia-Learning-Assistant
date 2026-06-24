@@ -10,39 +10,39 @@ def test_explain_formula_returns_structured_json(monkeypatch):
     def fake_chat(prompt):
         assert "Return JSON only." in prompt
         return (
-            '{"formula": "F = ma", '
+            '{"formula": "v = at", '
             '"terms": {'
-            '"F": "Force (Push or Pull)", '
-            '"m": "Mass (How heavy something is)", '
-            '"a": "Acceleration (How quickly speed changes)"'
+            '"v": "Velocity", '
+            '"a": "Acceleration", '
+            '"t": "Time"'
             '}, '
-            '"meaning": "Heavier objects need more force to speed up.", '
-            '"example": "A full shopping cart needs more pushing force than an empty one."}'
+            '"meaning": "Velocity is acceleration times time.", '
+            '"example": "A car speeds up as it travels over time."}'
         )
 
     monkeypatch.setattr(formula_assistant, "chat_with_gemini", fake_chat)
 
-    assert explain_formula("F = ma") == {
-        "formula": "F = ma",
+    assert explain_formula("v = at") == {
+        "formula": "v = at",
         "terms": {
-            "F": "Force (Push or Pull)",
-            "m": "Mass (How heavy something is)",
-            "a": "Acceleration (How quickly speed changes)",
+            "v": "Velocity",
+            "a": "Acceleration",
+            "t": "Time",
         },
-        "meaning": "Heavier objects need more force to speed up.",
-        "example": "A full shopping cart needs more pushing force than an empty one.",
+        "meaning": "Velocity is acceleration times time.",
+        "example": "A car speeds up as it travels over time.",
     }
 
 
 def test_explain_formula_retries_after_invalid_text(monkeypatch):
     responses = iter(
         [
-            "Here is a long explanation: F means force.",
+            "Here is a long explanation: v means speed.",
             (
-                '{"formula": "F = ma", '
-                '"terms": {"F": "Force (Push or Pull)"}, '
-                '"meaning": "Force makes things speed up.", '
-                '"example": "A cart moves faster when you push it."}'
+                '{"formula": "v = at", '
+                '"terms": {"v": "Velocity"}, '
+                '"meaning": "Velocity is acceleration times time.", '
+                '"example": "A car speeds up as it travels over time."}'
             ),
         ]
     )
@@ -53,22 +53,52 @@ def test_explain_formula_retries_after_invalid_text(monkeypatch):
         lambda prompt: next(responses),
     )
 
-    result = explain_formula("F = ma")
+    result = explain_formula("v = at")
 
-    assert result["meaning"] == "Force makes things speed up."
+    assert result["meaning"] == "Velocity is acceleration times time."
 
 
-def test_explain_formula_rejects_long_meaning(monkeypatch):
+def test_explain_formula_uses_library_without_llm(monkeypatch):
     monkeypatch.setattr(
         formula_assistant,
         "chat_with_gemini",
-            lambda prompt: (
-                '{"formula": "F = ma", '
-                '"terms": {"F": "Force (Push or Pull)"}, '
-                '"meaning": "This explanation has too many words because it keeps adding more and more ideas until it is hard to read for many learners.", '
-                '"example": "A cart moves faster when pushed."}'
-            ),
-        )
+        lambda prompt: (_ for _ in ()).throw(AssertionError("LLM should not be called for library formulas")),
+    )
 
-    with pytest.raises(ValueError):
-        explain_formula("F = ma")
+    result = explain_formula("F = ma")
+
+    assert result == {
+        "formula": "F = ma",
+        "terms": {
+            "F": "Force (push or pull)",
+            "m": "Mass (how heavy something is)",
+            "a": "Acceleration (how quickly speed changes)",
+        },
+        "meaning": "More force makes an object speed up faster.",
+        "example": "A shopping cart needs more force when it is heavy.",
+    }
+
+
+def test_explain_formula_returns_fallback_when_response_is_invalid(monkeypatch):
+    formula_assistant.FORMULA_EXPLANATION_CACHE.clear()
+
+    responses = iter([
+        'Not a JSON response at all.',
+        '{"formula": "v = at", '
+        '"terms": {"v": "Velocity"}, '
+        '"meaning": "This response has wrong keys and must not be accepted.", '
+        '"sentence": "Wrong JSON shape."}'
+    ])
+
+    monkeypatch.setattr(
+        formula_assistant,
+        "chat_with_gemini",
+        lambda prompt: next(responses),
+    )
+
+    assert explain_formula("v = at") == {
+        "formula": "v = at",
+        "terms": {},
+        "meaning": "Formula explanation unavailable.",
+        "example": "No example available.",
+    }

@@ -12,20 +12,27 @@ from backend.stem.stem_service import (
     analyze_document_for_stem,
     get_available_stem_features,
 )
+from backend.stem.formula_extractor import extract_formulas
+from backend.stem.symbol_extractor import extract_symbols
 
 
-def process_stem_support(text: str) -> dict[str, Any]:
+def process_stem_support(text: str, diagram_images: list[str] | None = None) -> dict[str, Any]:
     """Process extracted document text for STEM support.
 
     The controller performs no rendering and contains no Streamlit code. It
-    only coordinates existing STEM service functions so future UI integration
-    can call one stable entry point.
+    coordinates existing STEM service functions and returns shared formula,
+    symbol, and diagram image results.
     """
 
-    result = analyze_document_for_stem(text)
+    result = analyze_document_for_stem(text, diagram_images=diagram_images)
     features = get_available_stem_features(result)
+    formulas = extract_formulas(text)
+    symbols = extract_symbols(text)
 
     return {
         "result": result,
         "features": features,
+        "formulas": formulas,
+        "symbols": symbols,
+        "diagram_images": diagram_images or [],
     }

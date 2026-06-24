@@ -44,7 +44,7 @@ class OpenRouterAPIError(OpenRouterServiceError):
     """Raised when OpenRouter fails to generate a response."""
 
 
-def generate_answer(question: str, context: str) -> str:
+def generate_answer(question: str, context: str, max_tokens: int | None = None) -> str:
     """Generate a dyslexia-friendly answer using retrieved document context.
     
     Args:
@@ -78,10 +78,10 @@ def generate_answer(question: str, context: str) -> str:
         "Use simple vocabulary.\n"
         "Use short bullets when helpful."
     )
-    return _generate_text(prompt)
+    return _generate_text(prompt, max_tokens=max_tokens)
 
 
-def generate_content(prompt: str) -> str:
+def generate_content(prompt: str, max_tokens: int | None = None) -> str:
     """Generate one-off content for simplification, vocabulary, visuals, etc.
     
     Args:
@@ -99,14 +99,14 @@ def generate_content(prompt: str) -> str:
     if not prompt:
         raise ValueError("Prompt cannot be empty.")
 
-    return _generate_text(prompt)
+    return _generate_text(prompt, max_tokens=max_tokens)
 
 
-def _generate_text(prompt: str) -> str:
+def _generate_text(prompt: str, max_tokens: int | None = None) -> str:
     """Internal method to generate text via OpenRouter API."""
     try:
         client = _get_client()
-        response = client.chat.completions.create(
+        create_kwargs = dict(
             model=_get_model_name(),
             messages=[
                 {"role": "system", "content": SYSTEM_INSTRUCTION},
@@ -115,6 +115,11 @@ def _generate_text(prompt: str) -> str:
             temperature=0.7,
             timeout=DEFAULT_TIMEOUT_SECONDS,
         )
+        # Only include an explicit output token limit when provided.
+        if isinstance(max_tokens, int):
+            create_kwargs["max_tokens"] = int(max_tokens)
+
+        response = client.chat.completions.create(**create_kwargs)
         return remove_ansi_escape_codes(_extract_response_text(response))
     except OpenRouterServiceError:
         raise

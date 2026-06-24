@@ -29,6 +29,33 @@ DEFAULT_STOPWORDS = {
     "why", "with", "you", "your", "yours", "yourself", "yourselves"
 }
 
+GENERIC_VOCABULARY_BLOCKWORDS = {
+    "basic",
+    "learn",
+    "learns",
+    "learned",
+    "learning",
+    "understand",
+    "understanding",
+    "understood",
+    "together",
+    "rule",
+    "rules",
+    "important",
+    "topic",
+    "use",
+    "using",
+    "makes",
+    "make",
+    "need",
+    "needs",
+    "help",
+    "helps",
+    "helping",
+}
+
+MAX_VOCABULARY_PHRASE_WORDS = 2
+
 
 class VocabularyError(RuntimeError):
     """Raised when vocabulary extraction fails."""
@@ -68,7 +95,8 @@ def generate_vocabulary(text: str, word_count: int = 10) -> list[dict[str, str]]
     last_exc: Exception | None = None
     for attempt in range(1, 3):
         try:
-            response = generate_content(prompt)
+            # Vocabulary extraction limited to 500 tokens
+            response = generate_content(prompt, max_tokens=500)
             return _parse_vocabulary_json(response)
         except VocabularyError as exc:
             logger.warning("Vocabulary parse failed on attempt %s: %s", attempt, exc)
@@ -129,7 +157,7 @@ def _parse_vocabulary_json(response: str) -> list[dict[str, str]]:
         word = str(item.get("word", "")).strip()
         meaning = str(item.get("meaning", "")).strip()
 
-        if word and meaning:
+        if word and meaning and _is_valid_vocabulary_term(word):
             vocabulary.append({"word": word, "meaning": meaning})
 
     if vocabulary:
@@ -140,6 +168,28 @@ def _parse_vocabulary_json(response: str) -> list[dict[str, str]]:
         return vocabulary
 
     raise VocabularyError("Vocabulary extraction encountered a formatting issue. Retrying...")
+
+
+def _is_valid_vocabulary_term(text: str) -> bool:
+    if not text or not text.strip():
+        return False
+
+    cleaned = text.strip()
+    if re.search(r"[^A-Za-z \-']", cleaned):
+        return False
+
+    tokens = [token.strip("-'").lower() for token in cleaned.split() if token.strip()]
+    if not tokens or len(tokens) > MAX_VOCABULARY_PHRASE_WORDS:
+        return False
+
+    if any(token in DEFAULT_STOPWORDS or token in GENERIC_VOCABULARY_BLOCKWORDS for token in tokens):
+        return False
+
+    if len(tokens) == 1:
+        return len(tokens[0]) >= 3
+
+    return all(len(token) >= 4 for token in tokens) and any(len(token) >= 6 for token in tokens)
+
 def _sanitize_response_text(text: str) -> str:
     text = clean_ollama_response(text)
     text = re.sub(r'```(?:json)?\s*([\s\S]*?)```', r'\1', text)
@@ -208,7 +258,7 @@ def _regex_vocabulary_fallback(text: str) -> list[dict[str, str]]:
     for word, meaning in zip(words, meanings):
         cleaned_word = word.strip()
         cleaned_meaning = meaning.strip()
-        if cleaned_word and cleaned_meaning:
+        if cleaned_word and cleaned_meaning and _is_valid_vocabulary_term(cleaned_word):
             vocabulary.append({"word": cleaned_word, "meaning": cleaned_meaning})
 
     if vocabulary:
@@ -220,7 +270,7 @@ def _regex_vocabulary_fallback(text: str) -> list[dict[str, str]]:
             break
         cleaned_word = word.strip().strip('"\'')
         cleaned_meaning = meaning.strip().strip('"\'')
-        if cleaned_word and cleaned_meaning:
+        if cleaned_word and cleaned_meaning and _is_valid_vocabulary_term(cleaned_word):
             vocabulary.append({"word": cleaned_word, "meaning": cleaned_meaning})
     return vocabulary
 
@@ -237,10 +287,12 @@ def _fallback_vocabulary_from_text(text: str, word_count: int) -> list[dict[str,
     vocabulary = []
     for word, _ in counts.most_common(word_count):
         display_word = word.capitalize()
+        if not _is_valid_vocabulary_term(display_word):
+            continue
         vocabulary.append(
             {
                 "word": display_word,
-                "meaning": f"An important word from the text: {display_word}.",
+                "meaning": "Definition unavailable.",
             }
         )
     return vocabulary
@@ -285,9 +337,14 @@ def explain_word(word: str) -> dict[str, str]:
     )
     
     try:
-        response = generate_content(prompt)
+        logger.info("[VOCAB] Explaining word: %s", word)
+        logger.info("[VOCAB] Using max_tokens=%s", 300)
+        response = generate_content(prompt, max_tokens=300)
         return _parse_word_explanation_json(response, fallback_word=word)
     except Exception as exc:
+        error_text = str(exc).lower()
+        if "402" in error_text or "quota exceeded" in error_text or "credits exhausted" in error_text:
+            logger.error("[VOCAB] OpenRouter quota exceeded while explaining word: %s", word)
         logger.exception("Word explanation failed. Using local fallback for '%s'.", word)
         return _fallback_word_explanation(word)
 
@@ -397,10 +454,7 @@ def _fallback_word_explanation(word: str) -> dict[str, str]:
     clean_word = re.sub(r"[^A-Za-z0-9 \-']", "", word).strip() or "this word"
     return {
         "word": clean_word,
-        "meaning": f"A word to learn: {clean_word}.",
-        "explanation": (
-            f"{clean_word} may have a special meaning. Try reading the sentence around it "
-            "or asking your teacher for the exact meaning."
-        ),
-        "example": f"I can use {clean_word} in a sentence.",
+        "meaning": "Definition unavailable.",
+        "explanation": "No explanation is available at this time.",
+        "example": "",
     }

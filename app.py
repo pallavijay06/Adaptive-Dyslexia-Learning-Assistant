@@ -54,11 +54,17 @@ from services.quiz_service import (
     generate_short_questions,
 )
 from services.llm_router import generate_answer, LLMRouterError
-from services.ocr_service import extract_text_from_image, OCRError
+from services.ocr_service import (
+    extract_images_from_pdf,
+    extract_text_from_image,
+    extract_text_from_pdf_images,
+    OCRError,
+)
 from services.simplification_service import simplify_text, SimplificationError
 from services.vocabulary_service import generate_vocabulary, VocabularyError, explain_word
 from services.tts_service import cleanup_audio_file, generate_audio, split_text_into_sentences, TTSError
 from services.visual_service import generate_visual_content, VisualError
+from backend.stem.stem_page import render_stem_mode
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +104,9 @@ def initialize_session_state() -> None:
         "quiz_short_answers": None,
         "quiz_report": None,
         "quiz_short_feedback": None,
+
+        # STEM PDF image extraction
+        "document_diagram_images": [],
 
         # Caching
         "vocab_explain_cache": {},
@@ -282,6 +291,12 @@ def _process_document(uploaded_file) -> None:
             st.session_state.vocabulary = None
             st.session_state.visual_content = None
             st.session_state.chat_history = []
+            st.session_state.document_diagram_images = []
+            if record.file_type == "pdf":
+                try:
+                    st.session_state.document_diagram_images = extract_images_from_pdf(record.uploaded_path)
+                except Exception:
+                    st.session_state.document_diagram_images = []
             
             st.success(f"✅ Document processed: {Path(record.original_filename).name}")
             st.info(f"📊 {record.characters_extracted:,} characters extracted")
@@ -305,8 +320,11 @@ def _process_image_ocr(image_file) -> None:
             try:
                 # Extract text
                 if image_file.name.lower().endswith(".pdf"):
-                    from services.ocr_service import extract_text_from_pdf_images
                     text = extract_text_from_pdf_images(temp_path)
+                    try:
+                        st.session_state.document_diagram_images = extract_images_from_pdf(temp_path)
+                    except Exception:
+                        st.session_state.document_diagram_images = []
                 else:
                     text = extract_text_from_image(temp_path)
                 
@@ -359,7 +377,7 @@ def render_learning_modes() -> None:
     # Display learning mode selector with "Select a Mode" as default (no auto-selection)
     selected_mode = st.radio(
         "Select a learning mode:",
-        ["Select a Mode", "📖 Read", "🔊 Listen", "🧠 Visual Learn", "📝 Quiz"],
+        ["Select a Mode", "📖 Read", "🔊 Listen", "🧠 Visual Learn", "📝 Quiz", "🧮 STEM Support"],
         horizontal=True,
         index=0,  # First option is always default
     )
@@ -377,6 +395,14 @@ def render_learning_modes() -> None:
         render_visual_mode()
     elif selected_mode == "📝 Quiz":
         render_quiz_section()
+    elif selected_mode == "🧮 STEM Support":
+        # Use the uploaded document text as STEM input; do not prompt for uploads here.
+        document_text = st.session_state.document_text or ""
+        if not document_text:
+            st.info("Upload a document first to use STEM Support.")
+        else:
+            diagram_images: list[str] = st.session_state.document_diagram_images or []
+            render_stem_mode(document_text=document_text, diagram_images=diagram_images)
 
 
 def render_read_mode() -> None:
