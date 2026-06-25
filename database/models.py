@@ -13,6 +13,18 @@ class UserRecord:
     email: str
     password_hash: str
     created_at: datetime
+    age: int | None = None
+    grade: str | None = None
+    institution: str | None = None
+    field_of_study: str | None = None
+    preferred_language: str | None = None
+    learning_goal: str | None = None
+    dyslexia_status: str | None = None
+    registration_date: datetime | None = None
+    last_login: datetime | None = None
+    last_logout: datetime | None = None
+    total_sessions: int = 0
+    total_learning_minutes: int = 0
 
 
 @dataclass(frozen=True)
@@ -52,6 +64,9 @@ class LearningSessionRecord:
     mode_used: str
     duration: int
     timestamp: datetime
+    login_time: datetime | None = None
+    logout_time: datetime | None = None
+    session_duration_minutes: int = 0
 
 
 @dataclass(frozen=True)
@@ -60,3 +75,86 @@ class UserPreferencesRecord:
     user_id: int
     preferred_mode: str
     reading_level: str
+
+
+@dataclass(frozen=True)
+class LearnerProfileRecord:
+    """Stores comprehensive learner profile for adaptive tutoring."""
+    id: int | None
+    user_id: int
+    total_study_time_minutes: int = 0
+    documents_uploaded: int = 0
+    unique_topics_studied: int = 0
+    total_questions_asked: int = 0
+    average_quiz_score: float = 0.0
+    preferred_learning_mode: str = "Simplified Notes"
+    learning_frequency: str = "occasional"  # daily, weekly, occasional
+    confidence_level: float = 0.5  # 0-1 scale
+    explanation_complexity: str = "medium"  # simple, medium, advanced
+    prefers_examples: bool = True
+    prefers_analogies: bool = True
+    prefers_bullet_points: bool = True
+    avg_response_length_preference: int = 200  # words
+    last_updated: datetime | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class LearningHistoryRecord:
+    """Tracks individual learning activities and interactions."""
+    id: int | None
+    user_id: int
+    session_id: int | None
+    activity_type: str  # 'question', 'quiz', 'upload', 'read', 'listen', 'visual'
+    topic: str | None
+    duration_seconds: int = 0
+    timestamp: datetime | None = None
+
+
+@dataclass(frozen=True)
+class TopicProgressRecord:
+    """Tracks progress on specific topics."""
+    id: int | None
+    user_id: int
+    topic: str
+    questions_asked: int = 0
+    quiz_attempts: int = 0
+    best_score: float = 0.0
+    last_studied: datetime | None = None
+    times_studied: int = 0
+    mastery_level: float = 0.0  # 0-1 scale
+    is_weak_area: bool = False
+    is_strong_area: bool = False
+
+
+@dataclass(frozen=True)
+class ConceptMasteryRecord:
+    """Tracks mastery level of individual concepts."""
+    id: int | None
+    user_id: int
+    topic: str
+    concept: str
+    times_asked: int = 0
+    times_answered_correctly: int = 0
+    mastery_percentage: float = 0.0
+    last_asked: datetime | None = None
+    is_frequently_asked: bool = False
+    is_frequently_missed: bool = False
+
+
+@dataclass(frozen=True)
+class AdaptivePreferencesRecord:
+    """Stores adaptive conversation preferences learned from user behavior."""
+    id: int | None
+    user_id: int
+    preferred_explanation_complexity: str = "medium"  # simple, medium, advanced
+    prefers_visual_aids: bool = True
+    prefers_audio: bool = False
+    prefers_bullet_points: bool = True
+    prefers_short_sentences: bool = False
+    prefers_analogies: bool = True
+    prefers_real_world_examples: bool = True
+    avg_successful_response_length: int = 200
+    response_time_patience: int = 60  # seconds
+    quiz_difficulty_preference: str = "adaptive"  # easy, medium, hard, adaptive
+    last_updated: datetime | None = None

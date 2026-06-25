@@ -14,6 +14,11 @@ from database.models import (
     QuizAttemptRecord,
     UserPreferencesRecord,
     UserRecord,
+    LearnerProfileRecord,
+    LearningHistoryRecord,
+    TopicProgressRecord,
+    ConceptMasteryRecord,
+    AdaptivePreferencesRecord,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -42,10 +47,22 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
+                full_name TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
-                created_at TIMESTAMP NOT NULL
+                age INTEGER NOT NULL,
+                grade TEXT NOT NULL,
+                institution TEXT NOT NULL,
+                field_of_study TEXT NOT NULL,
+                preferred_language TEXT,
+                learning_goal TEXT,
+                dyslexia_status TEXT,
+                registration_date TIMESTAMP NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP,
+                last_logout TIMESTAMP,
+                total_sessions INTEGER NOT NULL DEFAULT 0,
+                total_learning_minutes INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS documents (
@@ -84,6 +101,9 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL,
                 mode_used TEXT NOT NULL,
                 duration INTEGER NOT NULL,
+                login_time TIMESTAMP,
+                logout_time TIMESTAMP,
+                session_duration_minutes INTEGER NOT NULL DEFAULT 0,
                 timestamp TIMESTAMP NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
@@ -95,27 +115,229 @@ def init_db() -> None:
                 reading_level TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS learner_profile (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL UNIQUE,
+                total_study_time_minutes INTEGER NOT NULL DEFAULT 0,
+                documents_uploaded INTEGER NOT NULL DEFAULT 0,
+                unique_topics_studied INTEGER NOT NULL DEFAULT 0,
+                total_questions_asked INTEGER NOT NULL DEFAULT 0,
+                average_quiz_score REAL NOT NULL DEFAULT 0.0,
+                preferred_learning_mode TEXT NOT NULL DEFAULT 'Simplified Notes',
+                learning_frequency TEXT NOT NULL DEFAULT 'occasional',
+                confidence_level REAL NOT NULL DEFAULT 0.5,
+                explanation_complexity TEXT NOT NULL DEFAULT 'medium',
+                prefers_examples BOOLEAN NOT NULL DEFAULT 1,
+                prefers_analogies BOOLEAN NOT NULL DEFAULT 1,
+                prefers_bullet_points BOOLEAN NOT NULL DEFAULT 1,
+                avg_response_length_preference INTEGER NOT NULL DEFAULT 200,
+                last_updated TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS learning_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                session_id INTEGER,
+                activity_type TEXT NOT NULL,
+                topic TEXT,
+                duration_seconds INTEGER NOT NULL DEFAULT 0,
+                timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(session_id) REFERENCES learning_sessions(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS topic_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                topic TEXT NOT NULL,
+                questions_asked INTEGER NOT NULL DEFAULT 0,
+                quiz_attempts INTEGER NOT NULL DEFAULT 0,
+                best_score REAL NOT NULL DEFAULT 0.0,
+                last_studied TIMESTAMP,
+                times_studied INTEGER NOT NULL DEFAULT 0,
+                mastery_level REAL NOT NULL DEFAULT 0.0,
+                is_weak_area BOOLEAN NOT NULL DEFAULT 0,
+                is_strong_area BOOLEAN NOT NULL DEFAULT 0,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, topic)
+            );
+
+            CREATE TABLE IF NOT EXISTS concept_mastery (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                topic TEXT NOT NULL,
+                concept TEXT NOT NULL,
+                times_asked INTEGER NOT NULL DEFAULT 0,
+                times_answered_correctly INTEGER NOT NULL DEFAULT 0,
+                mastery_percentage REAL NOT NULL DEFAULT 0.0,
+                last_asked TIMESTAMP,
+                is_frequently_asked BOOLEAN NOT NULL DEFAULT 0,
+                is_frequently_missed BOOLEAN NOT NULL DEFAULT 0,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, topic, concept)
+            );
+
+            CREATE TABLE IF NOT EXISTS adaptive_preferences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL UNIQUE,
+                preferred_explanation_complexity TEXT NOT NULL DEFAULT 'medium',
+                prefers_visual_aids BOOLEAN NOT NULL DEFAULT 1,
+                prefers_audio BOOLEAN NOT NULL DEFAULT 0,
+                prefers_bullet_points BOOLEAN NOT NULL DEFAULT 1,
+                prefers_short_sentences BOOLEAN NOT NULL DEFAULT 0,
+                prefers_analogies BOOLEAN NOT NULL DEFAULT 1,
+                prefers_real_world_examples BOOLEAN NOT NULL DEFAULT 1,
+                avg_successful_response_length INTEGER NOT NULL DEFAULT 200,
+                response_time_patience INTEGER NOT NULL DEFAULT 60,
+                quiz_difficulty_preference TEXT NOT NULL DEFAULT 'adaptive',
+                last_updated TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
             """
         )
     # Mark as initialized so subsequent calls are no-ops
     _initialized = True
 
 
-def save_user(name: str, email: str, password_hash: str) -> UserRecord:
+def _get_table_columns(connection: Connection, table_name: str) -> set[str]:
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row[1] for row in rows}
+
+
+def _migrate_database_schema(connection: Connection) -> None:
+    users_columns = _get_table_columns(connection, "users")
+
+    if "full_name" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
+        if "name" in users_columns:
+            connection.execute("UPDATE users SET full_name = name")
+
+    if "age" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN age INTEGER NOT NULL DEFAULT 0")
+
+    if "grade" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN grade TEXT NOT NULL DEFAULT ''")
+
+    if "institution" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN institution TEXT NOT NULL DEFAULT ''")
+
+    if "field_of_study" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN field_of_study TEXT NOT NULL DEFAULT ''")
+
+    if "preferred_language" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN preferred_language TEXT")
+
+    if "learning_goal" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN learning_goal TEXT")
+
+    if "dyslexia_status" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN dyslexia_status TEXT")
+
+    if "registration_date" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN registration_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP")
+        if "created_at" in users_columns:
+            connection.execute("UPDATE users SET registration_date = created_at")
+
+    if "created_at" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP")
+
+    if "last_login" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN last_login TIMESTAMP")
+
+    if "last_logout" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN last_logout TIMESTAMP")
+
+    if "total_sessions" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN total_sessions INTEGER NOT NULL DEFAULT 0")
+
+    if "total_learning_minutes" not in users_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN total_learning_minutes INTEGER NOT NULL DEFAULT 0")
+
+    learning_columns = _get_table_columns(connection, "learning_sessions")
+    if "login_time" not in learning_columns:
+        connection.execute("ALTER TABLE learning_sessions ADD COLUMN login_time TIMESTAMP")
+    if "logout_time" not in learning_columns:
+        connection.execute("ALTER TABLE learning_sessions ADD COLUMN logout_time TIMESTAMP")
+    if "session_duration_minutes" not in learning_columns:
+        connection.execute("ALTER TABLE learning_sessions ADD COLUMN session_duration_minutes INTEGER NOT NULL DEFAULT 0")
+
+
+def save_user(
+    name: str,
+    email: str,
+    password_hash: str,
+    age: int = 0,
+    grade: str = "",
+    institution: str = "",
+    field_of_study: str = "",
+    preferred_language: str | None = None,
+    learning_goal: str | None = None,
+    dyslexia_status: str | None = None,
+    registration_date: datetime | None = None,
+    created_at: datetime | None = None,
+    total_sessions: int = 0,
+    total_learning_minutes: int = 0,
+) -> UserRecord:
     """Insert a new user and return the saved user record."""
+    now = registration_date or datetime.utcnow()
+    created_at = created_at or now
+    dyslexia_status = dyslexia_status or "Prefer not to say"
     query = """
-        INSERT INTO users (name, email, password_hash, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO users (
+            full_name, email, password_hash, age, grade, institution, field_of_study,
+            preferred_language, learning_goal, dyslexia_status,
+            registration_date, created_at, total_sessions, total_learning_minutes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
-    now = datetime.utcnow()
     try:
         with _get_connection() as connection:
-            cursor = connection.execute(query, (name, email, password_hash, now))
+            cursor = connection.execute(
+                query,
+                (
+                    name,
+                    email,
+                    password_hash,
+                    age,
+                    grade,
+                    institution,
+                    field_of_study,
+                    preferred_language,
+                    learning_goal,
+                    dyslexia_status,
+                    now,
+                    created_at,
+                    total_sessions,
+                    total_learning_minutes,
+                ),
+            )
             user_id = cursor.lastrowid
     except IntegrityError as exc:
         raise ValueError("A user with that email already exists.") from exc
 
-    return UserRecord(id=user_id, name=name, email=email, password_hash=password_hash, created_at=now)
+    return UserRecord(
+        id=user_id,
+        name=name,
+        email=email,
+        password_hash=password_hash,
+        created_at=created_at,
+        age=age,
+        grade=grade,
+        institution=institution,
+        field_of_study=field_of_study,
+        preferred_language=preferred_language,
+        learning_goal=learning_goal,
+        dyslexia_status=dyslexia_status,
+        registration_date=now,
+        last_login=None,
+        last_logout=None,
+        total_sessions=total_sessions,
+        total_learning_minutes=total_learning_minutes,
+    )
 
 
 def get_user(email: str) -> UserRecord | None:
@@ -127,11 +349,66 @@ def get_user(email: str) -> UserRecord | None:
         return None
     return UserRecord(
         id=row["id"],
-        name=row["name"],
+        name=row["full_name"],
         email=row["email"],
         password_hash=row["password_hash"],
         created_at=row["created_at"],
+        age=row["age"],
+        grade=row["grade"],
+        institution=row["institution"],
+        field_of_study=row["field_of_study"],
+        preferred_language=row["preferred_language"],
+        learning_goal=row["learning_goal"],
+        dyslexia_status=row["dyslexia_status"],
+        registration_date=row["registration_date"],
+        last_login=row["last_login"],
+        last_logout=row["last_logout"],
+        total_sessions=row["total_sessions"],
+        total_learning_minutes=row["total_learning_minutes"],
     )
+
+
+def get_user_by_id(user_id: int) -> UserRecord | None:
+    """Return a user record by user id."""
+    query = "SELECT * FROM users WHERE id = ?"
+    with _get_connection() as connection:
+        row = connection.execute(query, (user_id,)).fetchone()
+    if row is None:
+        return None
+    return UserRecord(
+        id=row["id"],
+        name=row["full_name"],
+        email=row["email"],
+        password_hash=row["password_hash"],
+        created_at=row["created_at"],
+        age=row["age"],
+        grade=row["grade"],
+        institution=row["institution"],
+        field_of_study=row["field_of_study"],
+        preferred_language=row["preferred_language"],
+        learning_goal=row["learning_goal"],
+        dyslexia_status=row["dyslexia_status"],
+        registration_date=row["registration_date"],
+        last_login=row["last_login"],
+        last_logout=row["last_logout"],
+        total_sessions=row["total_sessions"],
+        total_learning_minutes=row["total_learning_minutes"],
+    )
+
+
+def update_user_last_login(user_id: int, last_login: datetime) -> None:
+    """Update the last login timestamp for a user."""
+    query = "UPDATE users SET last_login = ? WHERE id = ?"
+    with _get_connection() as connection:
+        connection.execute(query, (last_login, user_id))
+
+
+def update_user_logout(user_id: int, last_logout: int | datetime) -> None:
+    """Update the last logout timestamp or duration for a user."""
+    logout_time = last_logout if isinstance(last_logout, datetime) else datetime.utcnow()
+    query = "UPDATE users SET last_logout = ? WHERE id = ?"
+    with _get_connection() as connection:
+        connection.execute(query, (logout_time, user_id))
 
 
 def save_document(
@@ -272,21 +549,48 @@ def get_quiz_history(user_id: int, limit: int = 100) -> list[QuizAttemptRecord]:
     ]
 
 
-def save_learning_session(user_id: int, mode_used: str, duration: int) -> LearningSessionRecord:
+def save_learning_session(
+    user_id: int,
+    mode_used: str,
+    duration: int,
+    login_time: datetime | None = None,
+    logout_time: datetime | None = None,
+    session_duration_minutes: int | None = None,
+) -> LearningSessionRecord:
     """Save a learning session event for analytics and prototype tracking."""
+    login_time = login_time or datetime.utcnow()
+    logout_time = logout_time
+    session_duration_minutes = session_duration_minutes if session_duration_minutes is not None else duration
     query = """
-        INSERT INTO learning_sessions (user_id, mode_used, duration, timestamp)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO learning_sessions (
+            user_id, mode_used, duration, login_time, logout_time,
+            session_duration_minutes, timestamp
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """
     now = datetime.utcnow()
     with _get_connection() as connection:
-        cursor = connection.execute(query, (user_id, mode_used, duration, now))
+        cursor = connection.execute(
+            query,
+            (
+                user_id,
+                mode_used,
+                duration,
+                login_time,
+                logout_time,
+                session_duration_minutes,
+                now,
+            ),
+        )
         session_id = cursor.lastrowid
     return LearningSessionRecord(
         id=session_id,
         user_id=user_id,
         mode_used=mode_used,
         duration=duration,
+        login_time=login_time,
+        logout_time=logout_time,
+        session_duration_minutes=session_duration_minutes,
         timestamp=now,
     )
 
@@ -307,6 +611,9 @@ def get_learning_sessions(user_id: int, limit: int = 100) -> list[LearningSessio
             user_id=row["user_id"],
             mode_used=row["mode_used"],
             duration=row["duration"],
+            login_time=row["login_time"],
+            logout_time=row["logout_time"],
+            session_duration_minutes=row["session_duration_minutes"],
             timestamp=row["timestamp"],
         )
         for row in rows
@@ -349,6 +656,442 @@ def get_user_preferences(user_id: int) -> UserPreferencesRecord | None:
         user_id=row["user_id"],
         preferred_mode=row["preferred_mode"],
         reading_level=row["reading_level"],
+    )
+
+
+# ==================== Adaptive Tutor Database Functions ====================
+
+
+def save_learner_profile(
+    user_id: int,
+    total_study_time_minutes: int = 0,
+    documents_uploaded: int = 0,
+    unique_topics_studied: int = 0,
+    total_questions_asked: int = 0,
+    average_quiz_score: float = 0.0,
+    preferred_learning_mode: str = "Simplified Notes",
+    learning_frequency: str = "occasional",
+    confidence_level: float = 0.5,
+    explanation_complexity: str = "medium",
+    prefers_examples: bool = True,
+    prefers_analogies: bool = True,
+    prefers_bullet_points: bool = True,
+    avg_response_length_preference: int = 200,
+) -> LearnerProfileRecord:
+    """Save or update a learner profile."""
+    query = """
+        INSERT INTO learner_profile (
+            user_id, total_study_time_minutes, documents_uploaded, unique_topics_studied,
+            total_questions_asked, average_quiz_score, preferred_learning_mode,
+            learning_frequency, confidence_level, explanation_complexity,
+            prefers_examples, prefers_analogies, prefers_bullet_points,
+            avg_response_length_preference, last_updated
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            total_study_time_minutes = excluded.total_study_time_minutes,
+            documents_uploaded = excluded.documents_uploaded,
+            unique_topics_studied = excluded.unique_topics_studied,
+            total_questions_asked = excluded.total_questions_asked,
+            average_quiz_score = excluded.average_quiz_score,
+            preferred_learning_mode = excluded.preferred_learning_mode,
+            learning_frequency = excluded.learning_frequency,
+            confidence_level = excluded.confidence_level,
+            explanation_complexity = excluded.explanation_complexity,
+            prefers_examples = excluded.prefers_examples,
+            prefers_analogies = excluded.prefers_analogies,
+            prefers_bullet_points = excluded.prefers_bullet_points,
+            avg_response_length_preference = excluded.avg_response_length_preference,
+            last_updated = excluded.last_updated
+    """
+    now = datetime.utcnow()
+    with _get_connection() as connection:
+        cursor = connection.execute(
+            query,
+            (
+                user_id,
+                total_study_time_minutes,
+                documents_uploaded,
+                unique_topics_studied,
+                total_questions_asked,
+                average_quiz_score,
+                preferred_learning_mode,
+                learning_frequency,
+                confidence_level,
+                explanation_complexity,
+                prefers_examples,
+                prefers_analogies,
+                prefers_bullet_points,
+                avg_response_length_preference,
+                now,
+            ),
+        )
+        profile_id = cursor.lastrowid
+    return LearnerProfileRecord(
+        id=profile_id,
+        user_id=user_id,
+        total_study_time_minutes=total_study_time_minutes,
+        documents_uploaded=documents_uploaded,
+        unique_topics_studied=unique_topics_studied,
+        total_questions_asked=total_questions_asked,
+        average_quiz_score=average_quiz_score,
+        preferred_learning_mode=preferred_learning_mode,
+        learning_frequency=learning_frequency,
+        confidence_level=confidence_level,
+        explanation_complexity=explanation_complexity,
+        prefers_examples=prefers_examples,
+        prefers_analogies=prefers_analogies,
+        prefers_bullet_points=prefers_bullet_points,
+        avg_response_length_preference=avg_response_length_preference,
+        last_updated=now,
+        created_at=now,
+    )
+
+
+def get_learner_profile(user_id: int) -> LearnerProfileRecord | None:
+    """Get learner profile for a user."""
+    query = "SELECT * FROM learner_profile WHERE user_id = ?"
+    with _get_connection() as connection:
+        row = connection.execute(query, (user_id,)).fetchone()
+    if row is None:
+        return None
+    return LearnerProfileRecord(
+        id=row["id"],
+        user_id=row["user_id"],
+        total_study_time_minutes=row["total_study_time_minutes"],
+        documents_uploaded=row["documents_uploaded"],
+        unique_topics_studied=row["unique_topics_studied"],
+        total_questions_asked=row["total_questions_asked"],
+        average_quiz_score=row["average_quiz_score"],
+        preferred_learning_mode=row["preferred_learning_mode"],
+        learning_frequency=row["learning_frequency"],
+        confidence_level=row["confidence_level"],
+        explanation_complexity=row["explanation_complexity"],
+        prefers_examples=bool(row["prefers_examples"]),
+        prefers_analogies=bool(row["prefers_analogies"]),
+        prefers_bullet_points=bool(row["prefers_bullet_points"]),
+        avg_response_length_preference=row["avg_response_length_preference"],
+        last_updated=row["last_updated"],
+        created_at=row["created_at"],
+    )
+
+
+def save_learning_history(
+    user_id: int,
+    activity_type: str,
+    topic: str | None = None,
+    session_id: int | None = None,
+    duration_seconds: int = 0,
+) -> LearningHistoryRecord:
+    """Save a learning history event."""
+    query = """
+        INSERT INTO learning_history (user_id, session_id, activity_type, topic, duration_seconds)
+        VALUES (?, ?, ?, ?, ?)
+    """
+    now = datetime.utcnow()
+    with _get_connection() as connection:
+        cursor = connection.execute(query, (user_id, session_id, activity_type, topic, duration_seconds))
+        history_id = cursor.lastrowid
+    return LearningHistoryRecord(
+        id=history_id,
+        user_id=user_id,
+        session_id=session_id,
+        activity_type=activity_type,
+        topic=topic,
+        duration_seconds=duration_seconds,
+        timestamp=now,
+    )
+
+
+def get_learning_history(user_id: int, limit: int = 500) -> list[LearningHistoryRecord]:
+    """Get learning history for a user."""
+    query = """
+        SELECT * FROM learning_history
+        WHERE user_id = ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """
+    with _get_connection() as connection:
+        rows = connection.execute(query, (user_id, limit)).fetchall()
+    return [
+        LearningHistoryRecord(
+            id=row["id"],
+            user_id=row["user_id"],
+            session_id=row["session_id"],
+            activity_type=row["activity_type"],
+            topic=row["topic"],
+            duration_seconds=row["duration_seconds"],
+            timestamp=row["timestamp"],
+        )
+        for row in rows
+    ]
+
+
+def save_topic_progress(
+    user_id: int,
+    topic: str,
+    questions_asked: int = 0,
+    quiz_attempts: int = 0,
+    best_score: float = 0.0,
+    times_studied: int = 0,
+    mastery_level: float = 0.0,
+    is_weak_area: bool = False,
+    is_strong_area: bool = False,
+) -> TopicProgressRecord:
+    """Save or update topic progress."""
+    query = """
+        INSERT INTO topic_progress (
+            user_id, topic, questions_asked, quiz_attempts, best_score,
+            last_studied, times_studied, mastery_level, is_weak_area, is_strong_area
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, topic) DO UPDATE SET
+            questions_asked = excluded.questions_asked,
+            quiz_attempts = excluded.quiz_attempts,
+            best_score = excluded.best_score,
+            last_studied = excluded.last_studied,
+            times_studied = excluded.times_studied,
+            mastery_level = excluded.mastery_level,
+            is_weak_area = excluded.is_weak_area,
+            is_strong_area = excluded.is_strong_area
+    """
+    now = datetime.utcnow()
+    with _get_connection() as connection:
+        cursor = connection.execute(
+            query,
+            (
+                user_id,
+                topic,
+                questions_asked,
+                quiz_attempts,
+                best_score,
+                now,
+                times_studied,
+                mastery_level,
+                is_weak_area,
+                is_strong_area,
+            ),
+        )
+        progress_id = cursor.lastrowid
+    return TopicProgressRecord(
+        id=progress_id,
+        user_id=user_id,
+        topic=topic,
+        questions_asked=questions_asked,
+        quiz_attempts=quiz_attempts,
+        best_score=best_score,
+        last_studied=now,
+        times_studied=times_studied,
+        mastery_level=mastery_level,
+        is_weak_area=is_weak_area,
+        is_strong_area=is_strong_area,
+    )
+
+
+def get_topic_progress(user_id: int, topic: str | None = None) -> list[TopicProgressRecord]:
+    """Get topic progress for a user."""
+    if topic:
+        query = "SELECT * FROM topic_progress WHERE user_id = ? AND topic = ?"
+        with _get_connection() as connection:
+            rows = connection.execute(query, (user_id, topic)).fetchall()
+    else:
+        query = "SELECT * FROM topic_progress WHERE user_id = ? ORDER BY mastery_level DESC"
+        with _get_connection() as connection:
+            rows = connection.execute(query, (user_id,)).fetchall()
+    return [
+        TopicProgressRecord(
+            id=row["id"],
+            user_id=row["user_id"],
+            topic=row["topic"],
+            questions_asked=row["questions_asked"],
+            quiz_attempts=row["quiz_attempts"],
+            best_score=row["best_score"],
+            last_studied=row["last_studied"],
+            times_studied=row["times_studied"],
+            mastery_level=row["mastery_level"],
+            is_weak_area=bool(row["is_weak_area"]),
+            is_strong_area=bool(row["is_strong_area"]),
+        )
+        for row in rows
+    ]
+
+
+def save_concept_mastery(
+    user_id: int,
+    topic: str,
+    concept: str,
+    times_asked: int = 0,
+    times_answered_correctly: int = 0,
+    mastery_percentage: float = 0.0,
+    is_frequently_asked: bool = False,
+    is_frequently_missed: bool = False,
+) -> ConceptMasteryRecord:
+    """Save or update concept mastery."""
+    query = """
+        INSERT INTO concept_mastery (
+            user_id, topic, concept, times_asked, times_answered_correctly,
+            mastery_percentage, last_asked, is_frequently_asked, is_frequently_missed
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, topic, concept) DO UPDATE SET
+            times_asked = excluded.times_asked,
+            times_answered_correctly = excluded.times_answered_correctly,
+            mastery_percentage = excluded.mastery_percentage,
+            last_asked = excluded.last_asked,
+            is_frequently_asked = excluded.is_frequently_asked,
+            is_frequently_missed = excluded.is_frequently_missed
+    """
+    now = datetime.utcnow()
+    with _get_connection() as connection:
+        cursor = connection.execute(
+            query,
+            (
+                user_id,
+                topic,
+                concept,
+                times_asked,
+                times_answered_correctly,
+                mastery_percentage,
+                now,
+                is_frequently_asked,
+                is_frequently_missed,
+            ),
+        )
+        mastery_id = cursor.lastrowid
+    return ConceptMasteryRecord(
+        id=mastery_id,
+        user_id=user_id,
+        topic=topic,
+        concept=concept,
+        times_asked=times_asked,
+        times_answered_correctly=times_answered_correctly,
+        mastery_percentage=mastery_percentage,
+        last_asked=now,
+        is_frequently_asked=is_frequently_asked,
+        is_frequently_missed=is_frequently_missed,
+    )
+
+
+def get_concept_mastery(user_id: int, topic: str | None = None) -> list[ConceptMasteryRecord]:
+    """Get concept mastery for a user."""
+    if topic:
+        query = "SELECT * FROM concept_mastery WHERE user_id = ? AND topic = ? ORDER BY times_asked DESC"
+        with _get_connection() as connection:
+            rows = connection.execute(query, (user_id, topic)).fetchall()
+    else:
+        query = "SELECT * FROM concept_mastery WHERE user_id = ? ORDER BY times_asked DESC"
+        with _get_connection() as connection:
+            rows = connection.execute(query, (user_id,)).fetchall()
+    return [
+        ConceptMasteryRecord(
+            id=row["id"],
+            user_id=row["user_id"],
+            topic=row["topic"],
+            concept=row["concept"],
+            times_asked=row["times_asked"],
+            times_answered_correctly=row["times_answered_correctly"],
+            mastery_percentage=row["mastery_percentage"],
+            last_asked=row["last_asked"],
+            is_frequently_asked=bool(row["is_frequently_asked"]),
+            is_frequently_missed=bool(row["is_frequently_missed"]),
+        )
+        for row in rows
+    ]
+
+
+def save_adaptive_preferences(
+    user_id: int,
+    preferred_explanation_complexity: str = "medium",
+    prefers_visual_aids: bool = True,
+    prefers_audio: bool = False,
+    prefers_bullet_points: bool = True,
+    prefers_short_sentences: bool = False,
+    prefers_analogies: bool = True,
+    prefers_real_world_examples: bool = True,
+    avg_successful_response_length: int = 200,
+    response_time_patience: int = 60,
+    quiz_difficulty_preference: str = "adaptive",
+) -> AdaptivePreferencesRecord:
+    """Save or update adaptive preferences for a user."""
+    query = """
+        INSERT INTO adaptive_preferences (
+            user_id, preferred_explanation_complexity, prefers_visual_aids, prefers_audio,
+            prefers_bullet_points, prefers_short_sentences, prefers_analogies,
+            prefers_real_world_examples, avg_successful_response_length,
+            response_time_patience, quiz_difficulty_preference, last_updated
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            preferred_explanation_complexity = excluded.preferred_explanation_complexity,
+            prefers_visual_aids = excluded.prefers_visual_aids,
+            prefers_audio = excluded.prefers_audio,
+            prefers_bullet_points = excluded.prefers_bullet_points,
+            prefers_short_sentences = excluded.prefers_short_sentences,
+            prefers_analogies = excluded.prefers_analogies,
+            prefers_real_world_examples = excluded.prefers_real_world_examples,
+            avg_successful_response_length = excluded.avg_successful_response_length,
+            response_time_patience = excluded.response_time_patience,
+            quiz_difficulty_preference = excluded.quiz_difficulty_preference,
+            last_updated = excluded.last_updated
+    """
+    now = datetime.utcnow()
+    with _get_connection() as connection:
+        cursor = connection.execute(
+            query,
+            (
+                user_id,
+                preferred_explanation_complexity,
+                prefers_visual_aids,
+                prefers_audio,
+                prefers_bullet_points,
+                prefers_short_sentences,
+                prefers_analogies,
+                prefers_real_world_examples,
+                avg_successful_response_length,
+                response_time_patience,
+                quiz_difficulty_preference,
+                now,
+            ),
+        )
+        prefs_id = cursor.lastrowid
+    return AdaptivePreferencesRecord(
+        id=prefs_id,
+        user_id=user_id,
+        preferred_explanation_complexity=preferred_explanation_complexity,
+        prefers_visual_aids=prefers_visual_aids,
+        prefers_audio=prefers_audio,
+        prefers_bullet_points=prefers_bullet_points,
+        prefers_short_sentences=prefers_short_sentences,
+        prefers_analogies=prefers_analogies,
+        prefers_real_world_examples=prefers_real_world_examples,
+        avg_successful_response_length=avg_successful_response_length,
+        response_time_patience=response_time_patience,
+        quiz_difficulty_preference=quiz_difficulty_preference,
+        last_updated=now,
+    )
+
+
+def get_adaptive_preferences(user_id: int) -> AdaptivePreferencesRecord | None:
+    """Get adaptive preferences for a user."""
+    query = "SELECT * FROM adaptive_preferences WHERE user_id = ?"
+    with _get_connection() as connection:
+        row = connection.execute(query, (user_id,)).fetchone()
+    if row is None:
+        return None
+    return AdaptivePreferencesRecord(
+        id=row["id"],
+        user_id=row["user_id"],
+        preferred_explanation_complexity=row["preferred_explanation_complexity"],
+        prefers_visual_aids=bool(row["prefers_visual_aids"]),
+        prefers_audio=bool(row["prefers_audio"]),
+        prefers_bullet_points=bool(row["prefers_bullet_points"]),
+        prefers_short_sentences=bool(row["prefers_short_sentences"]),
+        prefers_analogies=bool(row["prefers_analogies"]),
+        prefers_real_world_examples=bool(row["prefers_real_world_examples"]),
+        avg_successful_response_length=row["avg_successful_response_length"],
+        response_time_patience=row["response_time_patience"],
+        quiz_difficulty_preference=row["quiz_difficulty_preference"],
+        last_updated=row["last_updated"],
     )
 
 

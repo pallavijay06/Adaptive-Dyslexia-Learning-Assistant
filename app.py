@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -28,7 +29,15 @@ from backend.chunker import chunk_text
 from backend.parser import process_uploaded_file
 from backend.retriever import retrieve_relevant_chunks_for_question
 from backend.vector_store import build_index
-from database.db import save_document, save_user, get_user, save_chat
+from database.db import (
+    save_document,
+    save_learning_session,
+    save_user,
+    save_chat,
+    get_user,
+    update_user_last_login,
+    update_user_logout,
+)
 from components.accessibility.read_mode_accessibility import render_read_mode_accessibility_panel
 from components.reading.reading_view import (
     render_key_takeaways,
@@ -39,6 +48,13 @@ from components.session_state import (
     get_ui_preferences,
     initialize_learning_mode,
     initialize_ui_preferences,
+)
+from services.auth_service import (
+    hash_password,
+    normalize_email,
+    verify_password,
+    validate_email,
+    validate_registration_fields,
 )
 from services.document_context import DocumentError, get_document_text
 from services.gemini_service import (
@@ -53,6 +69,7 @@ from services.quiz_service import (
     generate_mcq_quiz,
     generate_short_questions,
 )
+from services.adaptive_tutor import AdaptiveAITutor
 from services.llm_router import generate_answer, LLMRouterError
 from services.ocr_service import (
     extract_images_from_pdf,
@@ -67,6 +84,8 @@ from services.visual_service import generate_visual_content, VisualError
 from backend.stem.stem_page import render_stem_mode
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+logger.debug("app module loaded as %s", __name__)
 
 
 st.set_page_config(
@@ -110,26 +129,204 @@ def initialize_session_state() -> None:
 
         # Caching
         "vocab_explain_cache": {},
+        # Authentication state
+        "current_user_id": None,
+        "current_user_name": None,
+        "login_timestamp": None,
+        "authenticated": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
-
-def _resolve_anonymous_user_id() -> int:
-    """Return an existing anonymous user id or create one for local storage.
-
-    This helper mirrors the backend fallback used by Flask routes so Streamlit
-    interactions can persist without a full auth system.
-    """
-    user = get_user("anonymous@cheal.local")
-    if user is not None:
-        return user.id  # type: ignore[index]
-
-    anonymous = save_user(name="Anonymous Learner", email="anonymous@cheal.local", password_hash="")
-    return anonymous.id  # type: ignore[index]
+    # Ensure authentication flag and current_user_id remain consistent.
+    if st.session_state.get("authenticated") and st.session_state.get("current_user_id") is None:
+        st.session_state.authenticated = False
 
 
+def _handle_login(email: str, password: str) -> bool:
+    """Authenticate the user and initialize session state."""
+    normalized_email = normalize_email(email)
+    is_valid, error_message = validate_email(normalized_email)
+    if not is_valid:
+        st.error(error_message)
+        return False
+
+    user = get_user(normalized_email)
+    if user is None or not verify_password(password, user.password_hash):
+        st.error("Invalid email or password.")
+        return False
+
+    st.session_state.current_user_id = user.id
+    st.session_state.current_user_name = user.name
+    st.session_state.login_timestamp = datetime.utcnow()
+    st.session_state.authenticated = True
+    st.success(f"Welcome back, {user.name}!")
+    st.rerun()
+    return True
+
+
+def _handle_registration(
+    full_name: str,
+    email: str,
+    password: str,
+    confirm_password: str,
+    age: str,
+    grade: str,
+    institution: str,
+    field_of_study: str,
+    preferred_language: str,
+    learning_goal: str,
+    dyslexia_status: str,
+) -> bool:
+    """Validate and register a new user."""
+    valid, error_message = validate_registration_fields(
+        full_name,
+        email,
+        password,
+        confirm_password,
+        age,
+        grade,
+        institution,
+        field_of_study,
+    )
+    if not valid:
+        st.error(error_message)
+        return False
+
+    normalized_email = normalize_email(email)
+    if get_user(normalized_email) is not None:
+        st.error("A user with that email already exists.")
+        return False
+
+    try:
+        user = save_user(
+            name=full_name.strip(),
+            email=normalized_email,
+            password_hash=hash_password(password),
+            age=int(age.strip()),
+            grade=grade.strip(),
+            institution=institution.strip(),
+            field_of_study=field_of_study.strip(),
+            preferred_language=preferred_language.strip() or None,
+            learning_goal=learning_goal.strip() or None,
+            dyslexia_status=dyslexia_status.strip() or None,
+            registration_date=datetime.utcnow(),
+            created_at=datetime.utcnow(),
+        )
+    except ValueError as exc:
+        st.error(str(exc))
+        return False
+
+    st.session_state.current_user_id = user.id
+    st.session_state.current_user_name = user.name
+    st.session_state.login_timestamp = datetime.utcnow()
+    st.session_state.authenticated = True
+    st.success(f"Account created. Welcome, {user.name}!")
+    st.rerun()
+    return True
+
+
+def render_login_page() -> None:
+    with st.form("login_form"):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+
+        submit = st.form_submit_button("Login")
+
+        if submit:
+            _handle_login(email, password)
+
+
+def render_registration_page() -> None:
+    with st.form("register_form"):
+        full_name = st.text_input("Full Name")
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        confirm_password = st.text_input("Confirm Password", type="password")
+        age = st.text_input("Age")
+        grade = st.text_input("Grade / College Year")
+        institution = st.text_input("Institution")
+        field_of_study = st.text_input("Field of Study")
+        preferred_language = st.text_input("Preferred Language (Optional)")
+        learning_goal = st.text_input("Learning Goal (Optional)")
+        dyslexia_status = st.text_input("Dyslexia Status (Optional)")
+
+        submit = st.form_submit_button("Register")
+
+        if submit:
+            _handle_registration(
+                full_name,
+                email,
+                password,
+                confirm_password,
+                age,
+                grade,
+                institution,
+                field_of_study,
+                preferred_language,
+                learning_goal,
+                dyslexia_status,
+            )
+            
+def render_authentication() -> None:
+    """Render the authentication screen."""
+
+    st.title("🎓 Dyslexic Learning Assistant")
+    st.markdown("### Welcome!")
+    st.write(
+        "Please log in or create an account to continue using the Adaptive Dyslexic Learning Assistant."
+    )
+
+    auth_page = st.radio(
+        "Choose an option",
+        ("Login", "Register"),
+        horizontal=True,
+        key="auth_page_selection",
+    )
+
+    st.markdown("---")
+
+    if auth_page == "Login":
+        render_login_page()
+    else:
+        render_registration_page()
+
+def logout_user() -> None:
+    """Log the current user out, persist auth timestamps, and clear session state."""
+    if not st.session_state.authenticated or st.session_state.current_user_id is None:
+        return
+
+    login_time = st.session_state.login_timestamp or datetime.utcnow()
+    logout_time = datetime.utcnow()
+    duration_minutes = max(
+        1,
+        int((logout_time - login_time).total_seconds() / 60),
+    )
+
+    update_user_last_login(st.session_state.current_user_id, login_time)
+    update_user_logout(st.session_state.current_user_id, logout_time)
+    save_learning_session(
+        user_id=st.session_state.current_user_id,
+        mode_used="authentication",
+        duration=duration_minutes,
+        login_time=login_time,
+        logout_time=logout_time,
+        session_duration_minutes=duration_minutes,
+    )
+
+    st.session_state.clear()
+    initialize_session_state()
+    st.rerun()
+
+
+def render_sidebar_user_panel() -> None:
+    """Render the authenticated user panel and logout button in the sidebar."""
+    with st.sidebar:
+        st.markdown("### Account")
+        st.write(f"**{st.session_state.current_user_name or 'Learner'}**")
+        if st.button("Logout"):
+            logout_user()
 
 
 
@@ -271,7 +468,7 @@ def _process_document(uploaded_file) -> None:
 
             # Persist the uploaded document and extracted text to SQLite so the
             # Streamlit client and Flask backend share the same store of records.
-            user_id = _resolve_anonymous_user_id()
+            user_id = st.session_state.current_user_id
             saved_document = save_document(
                 user_id=user_id,
                 file_name=record.original_filename,
@@ -1074,25 +1271,32 @@ def render_quiz_section() -> None:
 
 
 def render_chat_section() -> None:
-    """Render RAG-based chat with document."""
+    """Render the adaptive AI Tutor chat with document context."""
     if not st.session_state.document_text:
         return
-    
-    st.header("💬 Ask Questions")
-    st.markdown("Ask anything about your document and get smart answers!")
-    
+
+    document_id_for_db = st.session_state.get("saved_document_id")
+    tutor = AdaptiveAITutor(
+        user_id=st.session_state.current_user_id,
+        document_id=document_id_for_db,
+    )
+
+    st.header("🧠 AI Tutor")
+    st.markdown("Get personalized explanations, examples, and recommendations based on your document and learning history.")
+    st.info(tutor.get_session_greeting())
+
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-    
-    user_question = st.chat_input("Ask a question about the content...")
+
+    user_question = st.chat_input("Ask your tutor a question about the content...")
     if not user_question:
         return
-    
+
     st.session_state.chat_history.append({"role": "user", "content": user_question})
     with st.chat_message("user"):
         st.markdown(user_question)
-    
+
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
@@ -1101,38 +1305,62 @@ def render_chat_section() -> None:
                     st.session_state.document_chunks = chunk_text(st.session_state.document_text)
                     vector_store = build_index(st.session_state.document_chunks)
                     st.session_state.document_index = vector_store
-                
+
                 relevant_chunks = retrieve_relevant_chunks_for_question(
                     user_question,
                     vector_store,
                     top_k=3,
                 )
                 context = "\n\n".join(chunk["text"] for chunk in relevant_chunks)
-                answer = generate_answer(user_question, context)
-                
+                adaptive_prompt = tutor.generate_adaptive_system_prompt()
+                full_context = f"{adaptive_prompt}\n\nDOCUMENT CONTEXT:\n{context}"
+                answer = generate_answer(user_question, full_context)
+                tutor.track_interaction(
+                    interaction_type="question",
+                    topic=None,
+                    duration_seconds=0,
+                    session_id=None,
+                )
             except (DocumentError, GeminiConfigurationError, GeminiAPIError, LLMRouterError, ValueError) as exc:
                 logger.exception("Chat answer generation failed.")
                 answer = "I could not answer that right now. Please try rephrasing your question."
             except Exception as exc:
                 logger.exception("Unexpected chat failure.")
                 answer = "Something went wrong while answering. Please try again."
-        
+
         st.markdown(answer)
-        # Persist chat turn to SQLite so chat_history appears immediately
-        try:
-            user_id = _resolve_anonymous_user_id()
-            document_id_for_db = st.session_state.get("saved_document_id")
-            save_chat(
-                user_id=user_id,
-                document_id=document_id_for_db,
-                user_message=user_question,
-                ai_response=answer,
-            )
-            print("Chat saved to database")
-        except Exception as exc:
-            logger.exception("Failed to save chat to database: %s", exc)
-    
+
+    try:
+        user_id = st.session_state.current_user_id
+        if user_id is None:
+            raise ValueError("No authenticated user available.")
+        saved_chat = save_chat(
+            user_id=user_id,
+            document_id=document_id_for_db,
+            user_message=user_question,
+            ai_response=answer,
+        )
+        print("Chat saved to database")
+    except Exception as exc:
+        logger.exception("Failed to save chat to database: %s", exc)
+
     st.session_state.chat_history.append({"role": "assistant", "content": answer})
+
+    adaptive_recommendations = tutor.get_adaptive_recommendations()
+    if adaptive_recommendations:
+        with st.expander("💡 AI Tutor Suggestions"):
+            for recommendation in adaptive_recommendations:
+                title = recommendation.get("title") or recommendation.get("type", "Suggestion").replace("_", " ").title()
+                message = recommendation.get("text") or recommendation.get("message") or ""
+                if title:
+                    st.markdown(f"**{title}**")
+                if message:
+                    st.write(message)
+                if recommendation.get("topic"):
+                    st.write(f"**Topic:** {recommendation['topic']}")
+                if recommendation.get("suggested"):
+                    st.write(f"**Suggested:** {recommendation['suggested']}")
+                st.divider()
 
 
 def render_word_explorer() -> None:
@@ -1233,7 +1461,18 @@ def main() -> None:
     """Run the Streamlit app."""
     initialize_session_state()
     initialize_ui_preferences()
+    auth_state = st.session_state.get("authenticated", None)
+    current_user_id = st.session_state.get("current_user_id", None)
+    logger.debug("Initialize session state complete: authenticated=%s current_user_id=%s", auth_state, current_user_id)
 
+    
+    if not st.session_state.authenticated or st.session_state.current_user_id is None:
+        logger.debug("Authentication required; calling render_authentication()")
+        render_authentication()
+        return
+
+    logger.debug("Authenticated, calling render_home()")
+    render_sidebar_user_panel()
     render_home()
     st.divider()
     render_upload_section()
