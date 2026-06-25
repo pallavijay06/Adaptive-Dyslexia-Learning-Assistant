@@ -104,6 +104,16 @@ _CONCEPT_EQUIVALENCE = {
     "photosynthesis": {"photosynthesis", "making food", "make food", "produce food", "create food"},
 }
 
+_ALLOWED_DIFFICULTIES = ("Easy", "Medium", "Hard")
+_ALLOWED_SKILLS = (
+    "Concept Understanding",
+    "Definition Recall",
+    "Formula Application",
+    "Numerical Problem Solving",
+    "Diagram Interpretation",
+    "Real-world Application",
+)
+
 
 def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]]:
     """Generate high-quality multiple choice questions from document content."""
@@ -117,19 +127,10 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
     cached_mcqs = get_cache_value(cache_key)
     if cached_mcqs is not None:
         logger.info("[CACHE HIT] Quiz MCQ")
-        return copy.deepcopy(cached_mcqs)
+        return _ensure_quiz_metadata(copy.deepcopy(cached_mcqs), "MCQ")
     logger.info("[CACHE MISS] Quiz MCQ")
 
-    prompt = (
-        "Generate a learner-friendly multiple choice quiz from the document below. "
-        f"Create exactly {num_questions} questions. "
-        "For each question, return a JSON object with the keys:\n"
-        "- question\n"
-        "- options (a list of exactly 4 answer choices)\n"
-        "- answer (the correct answer exactly as one of the options)\n"
-        "Do not add any additional text outside the JSON array. "
-        "Use simple language and keep answer choices clear and short."
-    )
+    prompt = _build_mcq_generation_prompt(num_questions)
 
     try:
         response = _run_quiz_prompt(prompt, text)
@@ -157,6 +158,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
             continue
         validated_mcqs.append(
             {
+                **_extract_question_metadata(item, "MCQ", question, answer),
                 "question": question,
                 "options": [str(opt).strip() for opt in options],
                 "answer": answer,
@@ -168,6 +170,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
         _QUIZ_GENERATION_FALLBACK_USED = True
         validated_mcqs = _local_generate_mcq_quiz(text, num_questions)
 
+    validated_mcqs = _ensure_quiz_metadata(validated_mcqs, "MCQ")
     set_cache_value(cache_key, validated_mcqs, ttl_hours=QUIZ_CACHE_TTL_HOURS)
     return copy.deepcopy(validated_mcqs)
 
@@ -183,16 +186,9 @@ def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str
     cached_questions = get_cache_value(cache_key)
     if cached_questions is not None:
         logger.info("[CACHE HIT] Quiz Short")
-        return copy.deepcopy(cached_questions)
+        return _ensure_quiz_metadata(copy.deepcopy(cached_questions), "Short Answer")
 
-    prompt = (
-        "Create a list of learner-friendly short answer questions from the document below. "
-        f"Generate exactly {num_questions} questions. "
-        "Return only a JSON array where each element has the keys:\n"
-        "- question\n"
-        "- answer\n"
-        "Use simple language and keep the expected answers concise."
-    )
+    prompt = _build_short_answer_generation_prompt(num_questions)
 
     try:
         response = _run_quiz_prompt(prompt, text)
@@ -217,13 +213,21 @@ def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str
         answer = str(item.get("answer", "")).strip()
         if not question or not answer:
             continue
-        validated_questions.append({"question": question, "answer": answer})
+        validated_questions.append(
+            {
+                **_extract_question_metadata(item, "Short Answer", question, answer),
+                "question": question,
+                "options": [],
+                "answer": answer,
+            }
+        )
 
     if not validated_questions:
         logger.warning("[Quiz] Short question parsing returned no valid questions. Using local fallback quiz generation.")
         _QUIZ_GENERATION_FALLBACK_USED = True
         validated_questions = _local_generate_short_questions(text, num_questions)
 
+    validated_questions = _ensure_quiz_metadata(validated_questions, "Short Answer")
     set_cache_value(cache_key, validated_questions, ttl_hours=QUIZ_CACHE_TTL_HOURS)
     return copy.deepcopy(validated_questions)
 
@@ -773,7 +777,169 @@ def quiz_generation_used_fallback() -> bool:
     return used
 
 
-def _local_generate_mcq_quiz(text: str, num_questions: int) -> list[dict[str, str]]:
+def _build_mcq_generation_prompt(num_questions: int) -> str:
+    return (
+        "Generate a learner-friendly multiple choice quiz from the document below. "
+        f"Create exactly {num_questions} questions. "
+        "Return only a valid JSON array. Do not add any additional text outside the JSON array.\n"
+        "For each question, return exactly these keys:\n"
+        "- question_id (Q001, Q002, Q003, unique within this quiz)\n"
+        "- question_type (must be exactly \"MCQ\")\n"
+        "- concept (2-5 words naming the main topic from the document)\n"
+        "- subcategory (one natural label such as Formula, Definition, Diagram, Theory, Application, or Calculation)\n"
+        "- difficulty (must be exactly one of: Easy, Medium, Hard)\n"
+        "- skill (must be exactly one of: Concept Understanding, Definition Recall, Formula Application, "
+        "Numerical Problem Solving, Diagram Interpretation, Real-world Application)\n"
+        "- learning_objective (one concise measurable sentence describing what the learner demonstrates)\n"
+        "- question\n"
+        "- options (a list of exactly 4 answer choices)\n"
+        "- answer (the correct answer exactly as one of the options)\n"
+        "Balance the quiz as well as possible across Easy, Medium, and Hard difficulty. "
+        "Also vary the learning skills where the document supports them. "
+        "Do not invent unsupported facts or extra fields. "
+        "Use simple language and keep answer choices clear and short."
+    )
+
+
+def _build_short_answer_generation_prompt(num_questions: int) -> str:
+    return (
+        "Create a list of learner-friendly short answer questions from the document below. "
+        f"Generate exactly {num_questions} questions. "
+        "Return only a valid JSON array. Do not add any additional text outside the JSON array.\n"
+        "For each question, return exactly these keys:\n"
+        "- question_id (Q001, Q002, Q003, unique within this quiz)\n"
+        "- question_type (must be exactly \"Short Answer\")\n"
+        "- concept (2-5 words naming the main topic from the document)\n"
+        "- subcategory (one natural label such as Formula, Definition, Diagram, Theory, Application, or Calculation)\n"
+        "- difficulty (must be exactly one of: Easy, Medium, Hard)\n"
+        "- skill (must be exactly one of: Concept Understanding, Definition Recall, Formula Application, "
+        "Numerical Problem Solving, Diagram Interpretation, Real-world Application)\n"
+        "- learning_objective (one concise measurable sentence describing what the learner demonstrates)\n"
+        "- question\n"
+        "- options (an empty list)\n"
+        "- answer\n"
+        "Balance the quiz as well as possible across Easy, Medium, and Hard difficulty. "
+        "Also vary the learning skills where the document supports them. "
+        "Do not invent unsupported facts or extra fields. "
+        "Use simple language and keep expected answers concise."
+    )
+
+
+def _ensure_quiz_metadata(questions: list[dict[str, Any]], question_type: str) -> list[dict[str, Any]]:
+    enriched = []
+    for index, item in enumerate(questions, start=1):
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question", "")).strip()
+        answer = str(item.get("answer", "")).strip()
+        metadata = _extract_question_metadata(item, question_type, question, answer)
+        metadata["question_id"] = _format_question_id(index)
+        metadata["question_type"] = question_type
+
+        normalized_item = {**item, **metadata}
+        if question_type == "MCQ":
+            normalized_item["options"] = [str(opt).strip() for opt in item.get("options", [])]
+        else:
+            normalized_item["options"] = item.get("options") if isinstance(item.get("options"), list) else []
+        enriched.append(normalized_item)
+    return enriched
+
+
+def _extract_question_metadata(
+    item: dict[str, Any],
+    question_type: str,
+    question: str,
+    answer: str,
+) -> dict[str, str]:
+    concept = str(item.get("concept") or "").strip() or _infer_concept(question, answer)
+    difficulty = _normalize_difficulty(item.get("difficulty"), question, answer)
+    skill = _normalize_skill(item.get("skill"), question, answer)
+    subcategory = str(item.get("subcategory") or "").strip() or _infer_subcategory(question, answer, skill)
+    objective = str(item.get("learning_objective") or "").strip()
+    if not objective:
+        objective = _build_learning_objective(skill, concept, question_type)
+
+    return {
+        "question_id": str(item.get("question_id") or "").strip(),
+        "question_type": question_type,
+        "concept": concept,
+        "subcategory": subcategory,
+        "difficulty": difficulty,
+        "skill": skill,
+        "learning_objective": objective,
+    }
+
+
+def _format_question_id(index: int) -> str:
+    return f"Q{index:03d}"
+
+
+def _normalize_difficulty(value: Any, question: str, answer: str) -> str:
+    difficulty = str(value or "").strip().title()
+    if difficulty in _ALLOWED_DIFFICULTIES:
+        return difficulty
+
+    word_count = len(f"{question} {answer}".split())
+    if word_count <= 14:
+        return "Easy"
+    if word_count >= 28:
+        return "Hard"
+    return "Medium"
+
+
+def _normalize_skill(value: Any, question: str, answer: str) -> str:
+    skill = str(value or "").strip()
+    for allowed in _ALLOWED_SKILLS:
+        if skill.lower() == allowed.lower():
+            return allowed
+
+    text = f"{question} {answer}".lower()
+    if re.search(r"\b(calculate|solve|number|total|amount|value|current|voltage|force)\b", text):
+        return "Numerical Problem Solving"
+    if re.search(r"\b(formula|equation|law|rule)\b", text):
+        return "Formula Application"
+    if re.search(r"\b(diagram|figure|chart|graph|label)\b", text):
+        return "Diagram Interpretation"
+    if re.search(r"\b(example|real|daily|application|use)\b", text):
+        return "Real-world Application"
+    if re.search(r"\b(define|definition|meaning|what is)\b", text):
+        return "Definition Recall"
+    return "Concept Understanding"
+
+
+def _infer_subcategory(question: str, answer: str, skill: str) -> str:
+    text = f"{question} {answer}".lower()
+    if skill == "Formula Application" or re.search(r"\b(formula|equation|law)\b", text):
+        return "Formula"
+    if skill == "Numerical Problem Solving" or re.search(r"\b(calculate|solve|number|amount|value)\b", text):
+        return "Calculation"
+    if skill == "Diagram Interpretation" or re.search(r"\b(diagram|figure|chart|graph)\b", text):
+        return "Diagram"
+    if skill == "Real-world Application" or re.search(r"\b(example|real|use|application)\b", text):
+        return "Application"
+    if skill == "Definition Recall" or re.search(r"\b(define|meaning|what is)\b", text):
+        return "Definition"
+    return "Theory"
+
+
+def _build_learning_objective(skill: str, concept: str, question_type: str) -> str:
+    concept = concept or "the concept"
+    if skill == "Definition Recall":
+        return f"Recall the definition or meaning of {concept}."
+    if skill == "Formula Application":
+        return f"Apply the relevant formula to answer a question about {concept}."
+    if skill == "Numerical Problem Solving":
+        return f"Solve a numerical problem related to {concept}."
+    if skill == "Diagram Interpretation":
+        return f"Interpret a diagram or visual representation of {concept}."
+    if skill == "Real-world Application":
+        return f"Connect {concept} to a real-world use or example."
+    if question_type == "MCQ":
+        return f"Identify the correct idea related to {concept}."
+    return f"Explain the key idea related to {concept}."
+
+
+def _local_generate_mcq_quiz(text: str, num_questions: int) -> list[dict[str, Any]]:
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
     facts = []
     for sentence in sentences:
@@ -816,10 +982,10 @@ def _local_generate_mcq_quiz(text: str, num_questions: int) -> list[dict[str, st
                 "options": ["A key idea", "A different idea", "A wrong idea", "A missing idea"],
                 "answer": "A key idea",
             })
-    return mcqs[:num_questions]
+    return _ensure_quiz_metadata(mcqs[:num_questions], "MCQ")
 
 
-def _local_generate_short_questions(text: str, num_questions: int) -> list[dict[str, str]]:
+def _local_generate_short_questions(text: str, num_questions: int) -> list[dict[str, Any]]:
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
     questions = []
     for sentence in sentences:
@@ -849,7 +1015,7 @@ def _local_generate_short_questions(text: str, num_questions: int) -> list[dict[
         for i in range(len(questions), num_questions):
             questions.append({"question": f"What is one important idea from the document?", "answer": "A main idea from the document."})
 
-    return questions
+    return _ensure_quiz_metadata(questions, "Short Answer")
 
 
 def _compare_mcq_answers(
