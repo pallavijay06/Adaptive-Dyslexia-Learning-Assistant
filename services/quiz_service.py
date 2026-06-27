@@ -20,10 +20,13 @@ from services.cache_service import (
     set_cache_value,
 )
 from services.llm_router import LLMRouterError, generate_content
+import traceback
+import inspect
 
 logger = logging.getLogger(__name__)
 
 _QUIZ_GENERATION_FALLBACK_USED = False
+_QUIZ_RESPONSE_TRUNCATED = False
 
 _STOPWORDS = {
     "about",
@@ -132,9 +135,39 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
 
     prompt = _build_mcq_generation_prompt(num_questions)
 
+    requested_questions = num_questions
+    retry_attempted = False
     try:
         response = _run_quiz_prompt(prompt, text)
+        # Log raw response from LLM for instrumentation
+        try:
+            logger.info("[Quiz Gen] Raw LLM response (len=%s)", len(response) if response is not None else 0)
+            logger.debug("[Quiz Gen] Raw LLM response head: %s", (response or "")[:300])
+            logger.debug("[Quiz Gen] Raw LLM response tail: %s", (response or "")[-150:])
+        except Exception:
+            logger.exception("[Quiz Gen] Failed to log raw LLM response")
+
         mcqs = _parse_json_response(response)
+        # If parser detected truncation, perform one retry with half the requested questions
+        global _QUIZ_RESPONSE_TRUNCATED
+        if mcqs is None and _QUIZ_RESPONSE_TRUNCATED and not retry_attempted:
+            logger.info("Requested MCQs: %d", requested_questions)
+            logger.warning("Attempt 1: Parser failed (truncated response). Retrying with half the questions.")
+            retry_attempted = True
+            _QUIZ_RESPONSE_TRUNCATED = False
+            retry_num = max(1, requested_questions // 2)
+            logger.info("Retry: Requested MCQs: %d", retry_num)
+            # build new prompt for retry
+            retry_prompt = _build_mcq_generation_prompt(retry_num)
+            try:
+                retry_response = _run_quiz_prompt(retry_prompt, text)
+                logger.info("[Quiz Gen] Raw LLM response (retry len=%s)", len(retry_response) if retry_response is not None else 0)
+                mcqs = _parse_json_response(retry_response)
+                if mcqs is not None:
+                    logger.info("Retry succeeded. Returning %d questions.", len(mcqs) if isinstance(mcqs, list) else 0)
+            except Exception:
+                logger.exception("[Quiz Parser] Retry generation failed.")
+
         if not isinstance(mcqs, list):
             logger.warning("[Quiz Parser] Parsed MCQ response is not a list or is empty.")
             mcqs = None
@@ -145,6 +178,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
     if mcqs is None:
         _QUIZ_GENERATION_FALLBACK_USED = True
         logger.warning("[Quiz Parser] Falling back to local quiz generation")
+        logger.info("Requested MCQs: %d; Retry attempted: %s", requested_questions, retry_attempted)
         return _local_generate_mcq_quiz(text, num_questions)
 
     validated_mcqs = []
@@ -172,7 +206,20 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
 
     validated_mcqs = _ensure_quiz_metadata(validated_mcqs, "MCQ")
     set_cache_value(cache_key, validated_mcqs, ttl_hours=QUIZ_CACHE_TTL_HOURS)
-    return copy.deepcopy(validated_mcqs)
+
+    # Final instrumentation: log validated_mcqs and final return value
+    try:
+        logger.info("[Quiz Gen] validated_mcqs (count=%d)", len(validated_mcqs))
+        logger.debug("[Quiz Gen] first validated question head: %s", (validated_mcqs[0].get('question') if validated_mcqs else '')[:300])
+    except Exception:
+        logger.exception("[Quiz Gen] Failed to log validated_mcqs")
+
+    final_return = copy.deepcopy(validated_mcqs)
+    try:
+        logger.info("[Quiz Gen] Returning final mcqs (count=%d)", len(final_return))
+    except Exception:
+        logger.exception("[Quiz Gen] Failed to log final return")
+    return final_return
 
 
 def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str, str]]:
@@ -257,20 +304,28 @@ def evaluate_mcq(user_answers: list[str], quiz_data: list[dict[str, Any]]) -> di
         if is_correct:
             correct_count += 1
 
+        score = 1 if is_correct else 0
+        feedback = _build_mcq_feedback(concept, correct_answer)
         question_feedback.append(
-            {
-                "question": question,
-                "student_answer": student_answer,
-                "correct_answer": correct_answer,
-                "options": options,
-                "is_correct": is_correct,
-                "concept": concept,
-            }
+            _build_question_assessment_result(
+                question_item=question_item,
+                index=index,
+                question=question,
+                student_answer=student_answer,
+                correct_answer=correct_answer,
+                is_correct=is_correct,
+                score=score,
+                feedback=feedback,
+                question_type="MCQ",
+                options=options,
+            )
         )
 
     percentage = round((correct_count / total) * 100) if total else 0
 
     analysis = _generate_mcq_learning_report(question_feedback)
+    evidence = _build_raw_assessment_evidence(question_feedback, percentage)
+    assessment_analytics = _build_assessment_analytics(question_feedback)
 
     total_attempted = len(question_feedback)
     report: dict[str, Any] = {
@@ -283,6 +338,14 @@ def evaluate_mcq(user_answers: list[str], quiz_data: list[dict[str, Any]]) -> di
         "weaknesses": _build_weaknesses_summary(total - correct_count, total_attempted),
         "recommendations": _build_recommendation_summary(total - correct_count, total_attempted),
         "evaluations": analysis.get("evaluations", []),
+        "question_results": question_feedback,
+        "wrong_concepts": evidence["wrong_concepts"],
+        "correct_concepts": evidence["correct_concepts"],
+        "concept_frequency": evidence["concept_frequency"],
+        "skill_performance": evidence["skill_performance"],
+        "difficulty_performance": evidence["difficulty_performance"],
+        "raw_assessment_evidence": evidence,
+        "assessment_analytics": assessment_analytics,
     }
 
     logger.info("[Quiz] MCQ evaluation completed in %.2fs", time.perf_counter() - start_time)
@@ -303,18 +366,17 @@ def evaluate_short_answer(
 
     if not expected_answer_text:
         evaluation = _fallback_short_answer_evaluation(student_answer_text, expected_answer_text, question_text)
+        evaluation = _extend_short_answer_assessment(evaluation, student_answer_text, expected_answer_text, question_text)
         logger.info("[Quiz] Short answer local evaluation completed in %.2fs", time.perf_counter() - start_time)
         return evaluation
     if not student_answer_text:
         evaluation = _fallback_short_answer_evaluation(student_answer_text, expected_answer_text, question_text)
+        evaluation = _extend_short_answer_assessment(evaluation, student_answer_text, expected_answer_text, question_text)
         logger.info("[Quiz] Short answer local evaluation completed in %.2fs", time.perf_counter() - start_time)
         return evaluation
 
     local_evaluation = _fallback_short_answer_evaluation(student_answer_text, expected_answer_text, question_text)
     local_score = _safe_int(local_evaluation.get("score"), default=0)
-    if local_score >= 4 or local_score <= 1:
-        logger.info("[Quiz] Short answer local evaluation completed in %.2fs", time.perf_counter() - start_time)
-        return local_evaluation
 
     prompt = (
         "Compare the student answer to the expected answer. "
@@ -330,6 +392,10 @@ def evaluate_short_answer(
         "- feedback must be 1-2 short sentences.\n"
         "- improvement_tip must be 1 question-specific sentence.\n"
         "- Do not use generic tips like 'review the key idea'.\n"
+        "- Treat semantically equivalent answers as Correct, even with different wording, abbreviations, formulas, symbols, capitalization, punctuation, or minor spelling mistakes.\n"
+        "- Mark these as Correct when they match the expected meaning: V=IR; V = I x R; V = I × R; Voltage = Current × Resistance; Voltage equals Current multiplied by Resistance.\n"
+        "- Mark related but incomplete answers such as 'Voltage and Current' or 'Current is proportional to voltage' as Partially Correct.\n"
+        "- Mark scientifically incorrect relationships such as 'Current is directly proportional to resistance' as Incorrect.\n"
         "- Keep language simple and dyslexia-friendly."
         f"\n\nQUESTION:\n{question_text or 'Short answer question'}\n\n"
         f"EXPECTED ANSWER:\n{expected_answer_text}\n\n"
@@ -347,7 +413,7 @@ def evaluate_short_answer(
             question_text or "<unknown>",
         )
         logger.info("[Quiz] Short answer local fallback completed in %.2fs", time.perf_counter() - start_time)
-        return local_evaluation
+        return _extend_short_answer_assessment(local_evaluation, student_answer_text, expected_answer_text, question_text)
 
     concept = str(evaluation.get("concept") or "").strip() or _infer_concept("", expected_answer_text)
     evaluation.setdefault("max_score", 5)
@@ -362,16 +428,17 @@ def evaluate_short_answer(
     if not _is_explanation_consistent_with_result(evaluation["result"], explanation) or not _teaches_concept(explanation, expected_answer_text):
         explanation = _build_question_explanation(question_text, student_answer_text, expected_answer_text, evaluation["result"])
 
-    evaluation["feedback"] = _shorten_sentences(
+    local_feedback = _shorten_sentences(
         explanation,
         fallback=explanation,
         max_sentences=3,
     )
-    evaluation["improvement_tip"] = _shorten_sentences(
-        str(evaluation.get("improvement_tip") or ""),
-        fallback=_build_tip(concept, expected_answer_text),
-        max_sentences=1,
-    )
+    evaluation["local_feedback"] = local_feedback
+    evaluation["local_explanation"] = local_feedback
+    if not str(evaluation.get("feedback") or "").strip():
+        evaluation["feedback"] = local_feedback
+    if not str(evaluation.get("improvement_tip") or "").strip():
+        evaluation["improvement_tip"] = _build_tip(concept, expected_answer_text)
 
     if not isinstance(evaluation["score"], int):
         try:
@@ -385,6 +452,7 @@ def evaluate_short_answer(
     if spelling_note:
         evaluation["spelling_note"] = f'The correct spelling is "{spelling_note}".'
     evaluation["source"] = "llm"
+    evaluation = _extend_short_answer_assessment(evaluation, student_answer_text, expected_answer_text, question_text)
     logger.info("[Quiz] Short answer LLM evaluation completed in %.2fs", time.perf_counter() - start_time)
     return evaluation
 
@@ -395,10 +463,19 @@ def evaluate_short_answer_locally(
     question_text: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate a short answer without any LLM dependency."""
-    return _fallback_short_answer_evaluation(
-        str(student_answer or "").strip(),
-        str(expected_answer or "").strip(),
-        str(question_text or "").strip(),
+    student_answer_text = str(student_answer or "").strip()
+    expected_answer_text = str(expected_answer or "").strip()
+    question_text_value = str(question_text or "").strip()
+    evaluation = _fallback_short_answer_evaluation(
+        student_answer_text,
+        expected_answer_text,
+        question_text_value,
+    )
+    return _extend_short_answer_assessment(
+        evaluation,
+        student_answer_text,
+        expected_answer_text,
+        question_text_value,
     )
 
 
@@ -474,11 +551,12 @@ def combine_quiz_report_with_short_answers(
     """Merge short-answer evaluations into a question-by-question quiz report."""
     report = dict(mcq_report)
     evaluations = list(report.get("evaluations") or [])
+    question_results = list(report.get("question_results") or [])
     correct_count = _safe_int(report.get("correct_answers"), default=_safe_int(report.get("score"), default=0))
     total_count = _safe_int(report.get("total"), default=0)
     weak_count = _safe_int(report.get("incorrect_answers"), default=max(total_count - correct_count, 0))
 
-    for item in short_feedback:
+    for index, item in enumerate(short_feedback, start=len(question_results) + 1):
         evaluation = item.get("evaluation", {}) if isinstance(item, dict) else {}
         score = _safe_int(evaluation.get("score"), default=0)
         max_score = max(_safe_int(evaluation.get("max_score"), default=5), 1)
@@ -496,6 +574,9 @@ def combine_quiz_report_with_short_answers(
         explanation = _build_question_explanation(question, student_answer, expected_answer, result)
         if not _is_explanation_consistent_with_result(result, explanation):
             explanation = _build_question_explanation(question, student_answer, expected_answer, result)
+        local_explanation = _shorten_sentences(explanation, fallback=explanation, max_sentences=3)
+        feedback_text = str(evaluation.get("feedback") or "").strip()
+        improvement_tip = str(evaluation.get("improvement_tip") or "").strip()
 
         evaluations.append(
             {
@@ -503,9 +584,28 @@ def combine_quiz_report_with_short_answers(
                 "your_answer": student_answer or "No answer",
                 "correct_answer": expected_answer,
                 "result": result,
-                "explanation": _shorten_sentences(explanation, fallback=explanation, max_sentences=3),
+                "explanation": feedback_text or local_explanation,
+                "feedback": feedback_text,
+                "improvement_tip": improvement_tip,
+                "local_explanation": str(evaluation.get("local_explanation") or "").strip() or local_explanation,
             }
         )
+        question_results.append(
+            _build_question_assessment_result(
+                question_item=item if isinstance(item, dict) else {},
+                index=index,
+                question=question,
+                student_answer=student_answer,
+                correct_answer=expected_answer,
+                is_correct=result == "Correct",
+                score=score,
+                feedback=feedback_text or local_explanation,
+                question_type="Short Answer",
+                options=[],
+            )
+        )
+        question_results[-1]["improvement_tip"] = improvement_tip
+        question_results[-1]["local_explanation"] = str(evaluation.get("local_explanation") or "").strip() or local_explanation
 
     report["evaluations"] = evaluations
     report["score"] = correct_count
@@ -516,6 +616,16 @@ def combine_quiz_report_with_short_answers(
     report["strengths"] = _build_strengths_summary(correct_count, total_count)
     report["weaknesses"] = _build_weaknesses_summary(weak_count, total_count)
     report["recommendations"] = _build_recommendation_summary(weak_count, total_count)
+    evidence = _build_raw_assessment_evidence(question_results, report["percentage"])
+    assessment_analytics = _build_assessment_analytics(question_results)
+    report["question_results"] = question_results
+    report["wrong_concepts"] = evidence["wrong_concepts"]
+    report["correct_concepts"] = evidence["correct_concepts"]
+    report["concept_frequency"] = evidence["concept_frequency"]
+    report["skill_performance"] = evidence["skill_performance"]
+    report["difficulty_performance"] = evidence["difficulty_performance"]
+    report["raw_assessment_evidence"] = evidence
+    report["assessment_analytics"] = assessment_analytics
     return report
 
 
@@ -605,6 +715,307 @@ def _fallback_short_answer_evaluation(
     return out
 
 
+def _build_question_assessment_result(
+    question_item: dict[str, Any],
+    index: int,
+    question: str,
+    student_answer: str,
+    correct_answer: str,
+    is_correct: bool,
+    score: int,
+    feedback: str,
+    question_type: str,
+    options: list[str] | None = None,
+) -> dict[str, Any]:
+    metadata = _get_assessment_question_metadata(question_item, index, question, correct_answer, question_type)
+    return {
+        **metadata,
+        "question": question,
+        "options": options or [],
+        "student_answer": student_answer,
+        "your_answer": student_answer or "No answer",
+        "correct_answer": correct_answer,
+        "answer": correct_answer,
+        "is_correct": bool(is_correct),
+        "score": score,
+        "feedback": feedback,
+        "attempt_count": 1,
+        "time_taken_seconds": None,
+        "hint_used": False,
+        "explanation_requests": 0,
+    }
+
+
+def _get_assessment_question_metadata(
+    question_item: dict[str, Any],
+    index: int,
+    question: str,
+    correct_answer: str,
+    question_type: str,
+) -> dict[str, str]:
+    concept = str(question_item.get("concept") or "").strip() or _infer_concept(question, correct_answer)
+    skill = _normalize_skill(question_item.get("skill"), question, correct_answer)
+    return {
+        "question_id": str(question_item.get("question_id") or "").strip() or _format_question_id(index),
+        "question_type": str(question_item.get("question_type") or "").strip() or question_type,
+        "concept": concept,
+        "subcategory": str(question_item.get("subcategory") or "").strip()
+        or _infer_subcategory(question, correct_answer, skill),
+        "difficulty": _normalize_difficulty(question_item.get("difficulty"), question, correct_answer),
+        "skill": skill,
+        "learning_objective": str(question_item.get("learning_objective") or "").strip()
+        or _build_learning_objective(skill, concept, question_type),
+    }
+
+
+def _build_raw_assessment_evidence(
+    question_results: list[dict[str, Any]],
+    accuracy: int,
+) -> dict[str, Any]:
+    wrong_concepts = _unique_preserving_order(
+        [str(item.get("concept") or "").strip() for item in question_results if not item.get("is_correct")]
+    )
+    correct_concepts = _unique_preserving_order(
+        [str(item.get("concept") or "").strip() for item in question_results if item.get("is_correct")]
+    )
+    concept_frequency = dict(
+        Counter(str(item.get("concept") or "").strip() for item in question_results if str(item.get("concept") or "").strip())
+    )
+
+    return {
+        "accuracy": accuracy,
+        "retry_count": 0,
+        "average_time": None,
+        "wrong_concepts": wrong_concepts,
+        "correct_concepts": correct_concepts,
+        "concept_frequency": concept_frequency,
+        "skill_performance": _summarize_performance_by_field(question_results, "skill"),
+        "difficulty_performance": _summarize_performance_by_field(question_results, "difficulty"),
+        "question_results": question_results,
+    }
+
+
+def _summarize_performance_by_field(
+    question_results: list[dict[str, Any]],
+    field_name: str,
+) -> dict[str, dict[str, int]]:
+    performance: dict[str, dict[str, int]] = {}
+    for item in question_results:
+        key = str(item.get(field_name) or "").strip()
+        if not key:
+            continue
+        if key not in performance:
+            performance[key] = {"correct": 0, "total": 0}
+        performance[key]["total"] += 1
+        if item.get("is_correct"):
+            performance[key]["correct"] += 1
+    return performance
+
+
+def _build_assessment_analytics(question_results: list[dict[str, Any]]) -> dict[str, Any]:
+    concept_accuracy = _build_concept_accuracy(question_results)
+    skill_performance = _summarize_performance_by_field(question_results, "skill")
+    difficulty_performance = _summarize_performance_by_field(question_results, "difficulty")
+    skill_breakdown = _performance_accuracy_breakdown(skill_performance)
+    difficulty_breakdown = _performance_accuracy_breakdown(difficulty_performance)
+    question_distribution = {
+        "difficulty": _distribution_by_field(question_results, "difficulty"),
+        "concept": _distribution_by_field(question_results, "concept"),
+        "skill": _distribution_by_field(question_results, "skill"),
+        "question_type": _distribution_by_field(question_results, "question_type"),
+    }
+    assessment_summary = _build_assessment_summary(
+        question_results,
+        concept_accuracy,
+        skill_breakdown,
+    )
+
+    return {
+        "concept_accuracy": concept_accuracy,
+        "skill_breakdown": skill_breakdown,
+        "difficulty_breakdown": difficulty_breakdown,
+        "question_distribution": question_distribution,
+        "assessment_summary": assessment_summary,
+        "assessment_insights": _build_assessment_insights(
+            question_results,
+            concept_accuracy,
+            skill_breakdown,
+            difficulty_breakdown,
+            assessment_summary,
+        ),
+    }
+
+
+def _build_concept_accuracy(question_results: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    performance = _summarize_performance_by_field(question_results, "concept")
+    concept_accuracy: dict[str, dict[str, int]] = {}
+    for concept, values in performance.items():
+        total = values.get("total", 0)
+        correct = values.get("correct", 0)
+        concept_accuracy[concept] = {
+            "correct": correct,
+            "total": total,
+            "accuracy": round((correct / total) * 100) if total else 0,
+        }
+    return concept_accuracy
+
+
+def _performance_accuracy_breakdown(performance: dict[str, dict[str, int]]) -> dict[str, int]:
+    breakdown = {}
+    for key, values in performance.items():
+        total = values.get("total", 0)
+        correct = values.get("correct", 0)
+        breakdown[key] = round((correct / total) * 100) if total else 0
+    return breakdown
+
+
+def _distribution_by_field(question_results: list[dict[str, Any]], field_name: str) -> dict[str, int]:
+    return dict(
+        Counter(
+            str(item.get(field_name) or "").strip()
+            for item in question_results
+            if str(item.get(field_name) or "").strip()
+        )
+    )
+
+
+def _build_assessment_summary(
+    question_results: list[dict[str, Any]],
+    concept_accuracy: dict[str, dict[str, int]],
+    skill_breakdown: dict[str, int],
+) -> dict[str, Any]:
+    questions_attempted = len(question_results)
+    questions_correct = sum(1 for item in question_results if item.get("is_correct"))
+    return {
+        "questions_attempted": questions_attempted,
+        "questions_correct": questions_correct,
+        "overall_accuracy": round((questions_correct / questions_attempted) * 100) if questions_attempted else 0,
+        "strongest_concept": _best_accuracy_key(concept_accuracy),
+        "weakest_concept": _lowest_accuracy_key(concept_accuracy),
+        "strongest_skill": _best_breakdown_key(skill_breakdown),
+        "weakest_skill": _lowest_breakdown_key(skill_breakdown),
+    }
+
+
+def _best_accuracy_key(values: dict[str, dict[str, int]]) -> str | None:
+    if not values:
+        return None
+    return max(values.items(), key=lambda item: (item[1].get("accuracy", 0), item[1].get("total", 0), item[0]))[0]
+
+
+def _lowest_accuracy_key(values: dict[str, dict[str, int]]) -> str | None:
+    if not values:
+        return None
+    return min(values.items(), key=lambda item: (item[1].get("accuracy", 0), -item[1].get("total", 0), item[0]))[0]
+
+
+def _best_breakdown_key(values: dict[str, int]) -> str | None:
+    if not values:
+        return None
+    return max(values.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def _lowest_breakdown_key(values: dict[str, int]) -> str | None:
+    if not values:
+        return None
+    return min(values.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def _build_assessment_insights(
+    question_results: list[dict[str, Any]],
+    concept_accuracy: dict[str, dict[str, int]],
+    skill_breakdown: dict[str, int],
+    difficulty_breakdown: dict[str, int],
+    assessment_summary: dict[str, Any],
+) -> list[str]:
+    insights = []
+    if not question_results:
+        return ["No quiz questions were evaluated in this assessment."]
+
+    strongest_concept = assessment_summary.get("strongest_concept")
+    weakest_concept = assessment_summary.get("weakest_concept")
+    strongest_skill = assessment_summary.get("strongest_skill")
+    weakest_skill = assessment_summary.get("weakest_skill")
+
+    if strongest_concept:
+        accuracy = concept_accuracy.get(strongest_concept, {}).get("accuracy", 0)
+        insights.append(f"{strongest_concept} questions had the highest concept accuracy at {accuracy}%.")
+    if weakest_concept and weakest_concept != strongest_concept:
+        accuracy = concept_accuracy.get(weakest_concept, {}).get("accuracy", 0)
+        insights.append(f"{weakest_concept} questions had the lowest concept accuracy at {accuracy}%.")
+    if strongest_skill:
+        insights.append(f"{strongest_skill} questions had the highest skill accuracy at {skill_breakdown[strongest_skill]}%.")
+    if weakest_skill and weakest_skill != strongest_skill:
+        insights.append(f"{weakest_skill} questions had the lowest skill accuracy at {skill_breakdown[weakest_skill]}%.")
+
+    best_difficulty = _best_breakdown_key(difficulty_breakdown)
+    weakest_difficulty = _lowest_breakdown_key(difficulty_breakdown)
+    if best_difficulty:
+        insights.append(f"{best_difficulty} questions had {difficulty_breakdown[best_difficulty]}% accuracy in this assessment.")
+    if weakest_difficulty and weakest_difficulty != best_difficulty:
+        insights.append(f"{weakest_difficulty} questions had {difficulty_breakdown[weakest_difficulty]}% accuracy in this assessment.")
+
+    return insights[:6]
+
+
+def _extend_short_answer_assessment(
+    evaluation: dict[str, Any],
+    student_answer: str,
+    expected_answer: str,
+    question_text: str,
+) -> dict[str, Any]:
+    result = dict(evaluation)
+    identified_keywords = _identified_keywords(student_answer, expected_answer)
+    missing_keywords = _missing_keywords(student_answer, expected_answer)
+    misconceptions = _misconceptions(student_answer, expected_answer, result.get("result"))
+    max_score = max(_safe_int(result.get("max_score"), default=5), 1)
+    score = _safe_int(result.get("score"), default=0)
+
+    result["student_answer"] = student_answer
+    result["correct_answer"] = expected_answer
+    result["is_correct"] = result.get("result") == "Correct"
+    result["identified_keywords"] = identified_keywords
+    result["missing_keywords"] = missing_keywords
+    result["misconceptions"] = misconceptions
+    result["confidence"] = round(score / max_score, 2)
+    result["attempt_count"] = 1
+    result["time_taken_seconds"] = None
+    result["hint_used"] = False
+    result["explanation_requests"] = 0
+    result.setdefault("question_id", "Q001")
+    result.setdefault("question_type", "Short Answer")
+    result.setdefault("concept", _infer_concept(question_text, expected_answer))
+    result.setdefault("subcategory", _infer_subcategory(question_text, expected_answer, _normalize_skill("", question_text, expected_answer)))
+    result.setdefault("difficulty", _normalize_difficulty("", question_text, expected_answer))
+    result.setdefault("skill", _normalize_skill("", question_text, expected_answer))
+    result.setdefault(
+        "learning_objective",
+        _build_learning_objective(str(result.get("skill") or ""), str(result.get("concept") or ""), "Short Answer"),
+    )
+    return result
+
+
+def _identified_keywords(student_answer: str, expected_answer: str) -> list[str]:
+    student_tokens = _content_tokens(_normalize_answer(student_answer))
+    expected_tokens = _content_tokens(_normalize_answer(expected_answer))
+    return sorted(expected_tokens & student_tokens)
+
+
+def _missing_keywords(student_answer: str, expected_answer: str) -> list[str]:
+    student_tokens = _content_tokens(_normalize_answer(student_answer))
+    expected_tokens = _content_tokens(_normalize_answer(expected_answer))
+    return sorted(expected_tokens - student_tokens)
+
+
+def _misconceptions(student_answer: str, expected_answer: str, result: Any) -> list[str]:
+    if str(result or "").strip().title() == "Correct":
+        return []
+    student_tokens = _content_tokens(_normalize_answer(student_answer))
+    expected_tokens = _content_tokens(_normalize_answer(expected_answer))
+    extra_tokens = sorted(student_tokens - expected_tokens)
+    return extra_tokens[:5]
+
+
 def _run_quiz_prompt(prompt: str, document_text: str | None = None) -> str:
     full_prompt = prompt
     if document_text is not None:
@@ -625,49 +1036,112 @@ def _run_quiz_prompt(prompt: str, document_text: str | None = None) -> str:
 
 
 def _parse_json_response(text: str) -> Any:
-    payload = _extract_json_payload(text)
-    logger.info("[Quiz Parser] Raw response received")
-    print("\n========== RAW QUIZ RESPONSE ==========")
-    print(payload)
-    print("=======================================\n")
+    # Start detailed logging of parser pipeline for debugging
+    try:
+        raw_text = text or ""
+        # Emit the complete raw LLM response exactly as received (no modification)
+        try:
+            print("\n================ RAW LLM RESPONSE ================")
+            print(raw_text)
+            print("==================================================\n")
+        except Exception:
+            # If printing fails, fall back to logging the repr
+            logger.exception("[Quiz Parser] Failed to print raw LLM response")
+        logger.info("[Quiz Parser] Raw response received (len=%d)", len(raw_text))
+        logger.debug("[Quiz Parser] Raw response head: %s", raw_text[:300])
+        logger.debug("[Quiz Parser] Raw response tail: %s", raw_text[-150:])
 
-    if not payload:
-        logger.warning("[Quiz Parser] No JSON payload found in model response.")
+        # Extract JSON-like payload
+        payload = _extract_json_payload(raw_text)
+        logger.info("[Quiz Parser] _extract_json_payload returned (type=%s len=%s)", type(payload).__name__, len(payload) if payload is not None else None)
+        logger.debug("[Quiz Parser] payload head: %s", (payload or "")[:300])
+
+        if not payload:
+            logger.warning("[Quiz Parser] No JSON payload found in model response.")
+            return None
+
+        cleaned = _strip_markdown_wrappers(payload)
+        print("\n[Quiz Parser] Original first 20 characters:")
+        print(raw_text[:20])
+        print("[Quiz Parser] Cleaned first 20 characters:")
+        print((cleaned or "")[:20])
+        # Basic truncation detection: ensure response appears to be a JSON array or object
+        try:
+            s = cleaned.strip()
+            if not ((s.startswith("[") and s.endswith("]")) or (s.startswith("{") and s.endswith("}"))):
+                # mark truncated and avoid aggressive repair attempts
+                global _QUIZ_RESPONSE_TRUNCATED
+                _QUIZ_RESPONSE_TRUNCATED = True
+                logger.warning("Detected incomplete/truncated LLM response.")
+                logger.debug("[Quiz Parser] cleaned start: %s", s[:80])
+                logger.debug("[Quiz Parser] cleaned end: %s", s[-80:])
+                return None
+        except Exception:
+            logger.exception("[Quiz Parser] Error during truncation detection")
+            return None
+        logger.info("[Quiz Parser] _strip_markdown_wrappers output (len=%d)", len(cleaned))
+        logger.debug("[Quiz Parser] cleaned head: %s", cleaned[:300])
+
+        # Try json.loads on cleaned
+        try:
+            logger.info("[Quiz Parser] Attempting json.loads on cleaned payload")
+            logger.debug("[Quiz Parser] json.loads input head: %s", cleaned[:300])
+            parsed = json.loads(cleaned)
+            logger.info("[Quiz Parser] json.loads succeeded (type=%s len=%s)", type(parsed).__name__, len(parsed) if isinstance(parsed, (list, dict)) else None)
+            return parsed
+        except Exception as exc_json:
+            tb = traceback.format_exc()
+            logger.warning("[Quiz Parser] json.loads(cleaned) failed: %s", repr(exc_json))
+            logger.debug("[Quiz Parser] json.loads(cleaned) traceback:\n%s", tb)
+
+        # Try ast.literal_eval on cleaned
+        try:
+            logger.info("[Quiz Parser] Attempting ast.literal_eval on cleaned payload")
+            parsed_ast = ast.literal_eval(cleaned)
+            logger.info("[Quiz Parser] ast.literal_eval succeeded (type=%s len=%s)", type(parsed_ast).__name__, len(parsed_ast) if isinstance(parsed_ast, (list, dict)) else None)
+            return parsed_ast
+        except Exception as exc_ast:
+            tb = traceback.format_exc()
+            logger.warning("[Quiz Parser] ast.literal_eval(cleaned) failed: %s", repr(exc_ast))
+            logger.debug("[Quiz Parser] ast.literal_eval(cleaned) traceback:\n%s", tb)
+
+        # Attempt repair
+        repaired = _repair_json_text(cleaned)
+        logger.info("[Quiz Parser] _repair_json_text produced (len=%d)", len(repaired))
+        logger.debug("[Quiz Parser] repaired head: %s", repaired[:300])
+
+        try:
+            logger.info("[Quiz Parser] Attempting json.loads on repaired payload")
+            parsed_repaired = json.loads(repaired)
+            logger.info("[Quiz Parser] json.loads(repaired) succeeded (type=%s len=%s)", type(parsed_repaired).__name__, len(parsed_repaired) if isinstance(parsed_repaired, (list, dict)) else None)
+            return parsed_repaired
+        except Exception as exc_json2:
+            tb = traceback.format_exc()
+            logger.warning("[Quiz Parser] json.loads(repaired) failed: %s", repr(exc_json2))
+            logger.debug("[Quiz Parser] json.loads(repaired) traceback:\n%s", tb)
+
+        try:
+            logger.info("[Quiz Parser] Attempting ast.literal_eval on repaired payload")
+            parsed_ast2 = ast.literal_eval(repaired)
+            logger.info("[Quiz Parser] ast.literal_eval(repaired) succeeded (type=%s len=%s)", type(parsed_ast2).__name__, len(parsed_ast2) if isinstance(parsed_ast2, (list, dict)) else None)
+            return parsed_ast2
+        except Exception as exc_ast2:
+            tb = traceback.format_exc()
+            logger.warning("[Quiz Parser] ast.literal_eval(repaired) failed: %s", repr(exc_ast2))
+            logger.debug("[Quiz Parser] ast.literal_eval(repaired) traceback:\n%s", tb)
+
+        # Fallback text extraction
+        fallback = _extract_quiz_structures_from_text(raw_text)
+        if fallback is not None:
+            logger.warning("[Quiz Parser] Falling back to extracted quiz structures from raw response (type=%s len=%s)", type(fallback).__name__, len(fallback) if isinstance(fallback, (list, dict)) else None)
+            logger.debug("[Quiz Parser] fallback head: %s", (repr(fallback)[:300]))
+            return fallback
+
+        logger.exception("[Quiz Parser] JSON parsing failed for quiz service response.")
         return None
-
-    cleaned = _strip_markdown_wrappers(payload)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    try:
-        return ast.literal_eval(cleaned)
     except Exception:
-        pass
-
-    repaired = _repair_json_text(cleaned)
-    try:
-        parsed = json.loads(repaired)
-        logger.info("[Quiz Parser] JSON repaired successfully")
-        return parsed
-    except json.JSONDecodeError:
-        pass
-
-    try:
-        parsed = ast.literal_eval(repaired)
-        logger.info("[Quiz Parser] JSON repaired successfully")
-        return parsed
-    except Exception:
-        pass
-
-    fallback = _extract_quiz_structures_from_text(text)
-    if fallback is not None:
-        logger.warning("[Quiz Parser] Falling back to extracted quiz structures from raw response")
-        return fallback
-
-    logger.exception("[Quiz Parser] JSON parsing failed for quiz service response.")
-    return None
+        logger.exception("[Quiz Parser] Unexpected error in parser instrumentation")
+        return None
 
 
 
@@ -704,6 +1178,7 @@ def _strip_markdown_wrappers(text: str) -> str:
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
+    text = re.sub(r"^json\s*(?=[\{\[])", "", text, flags=re.IGNORECASE)
     return text.strip()
 
 
@@ -781,7 +1256,10 @@ def _build_mcq_generation_prompt(num_questions: int) -> str:
     return (
         "Generate a learner-friendly multiple choice quiz from the document below. "
         f"Create exactly {num_questions} questions. "
+        "IMPORTANT: Return exactly one JSON array and nothing else. Do NOT include any text before or after the array. "
+        "Do NOT include explanations, comments, or notes. Do NOT use Markdown, fenced code blocks, or prepend the word 'json'. "
         "Return only a valid JSON array. Do not add any additional text outside the JSON array.\n"
+        "Start the response with '[' and end the response with ']'.\n"
         "For each question, return exactly these keys:\n"
         "- question_id (Q001, Q002, Q003, unique within this quiz)\n"
         "- question_type (must be exactly \"MCQ\")\n"
@@ -1059,10 +1537,12 @@ def _normalize_answer(answer: str) -> str:
 
 def _normalize_evaluation_result(result: str) -> str:
     result_text = str(result or "").strip().title()
-    if result_text in {"Perfectly Correct", "Perfect"}:
+    if result_text in {"Correct", "Perfectly Correct", "Perfect"}:
         return "Correct"
     if result_text in {"Partially", "Partially Correct"}:
         return "Partially Correct"
+    if result_text == "Incorrect":
+        return "Incorrect"
     return "Incorrect"
 
 
@@ -1137,6 +1617,21 @@ def _generate_mcq_learning_report(question_feedback: list[dict[str, Any]]) -> di
                 "correct_answer": correct_answer,
                 "result": result,
                 "explanation": _build_question_explanation(question, student_answer, correct_answer, result),
+                "question_id": item.get("question_id"),
+                "question_type": item.get("question_type"),
+                "concept": item.get("concept"),
+                "subcategory": item.get("subcategory"),
+                "difficulty": item.get("difficulty"),
+                "skill": item.get("skill"),
+                "learning_objective": item.get("learning_objective"),
+                "student_answer": student_answer,
+                "is_correct": bool(item.get("is_correct")),
+                "score": item.get("score", 0),
+                "feedback": item.get("feedback", ""),
+                "attempt_count": item.get("attempt_count", 1),
+                "time_taken_seconds": item.get("time_taken_seconds"),
+                "hint_used": item.get("hint_used", False),
+                "explanation_requests": item.get("explanation_requests", 0),
             }
         )
 

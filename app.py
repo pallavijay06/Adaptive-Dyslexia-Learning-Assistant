@@ -861,7 +861,7 @@ def render_quiz_section() -> None:
         with st.spinner("Generating quiz from your document..."):
             try:
                 document_text = st.session_state.document_text or ""
-                mcqs = generate_mcq_quiz(document_text, num_questions=8)
+                mcqs = generate_mcq_quiz(document_text, num_questions=4)
                 short_questions = generate_short_questions(document_text, num_questions=4)
                 st.session_state.quiz_mcqs = mcqs
                 st.session_state.quiz_short_questions = short_questions
@@ -1067,10 +1067,21 @@ def render_quiz_section() -> None:
                     else:
                         st.write("❌ Incorrect")
 
-                    st.markdown("**Explanation:**")
-                    explanation = str(evaluation.get("explanation") or "").strip()
-                    explanation = _shorten_explanation(explanation, max_sentences=2) or "No explanation available."
-                    st.write(explanation)
+                    feedback = str(evaluation.get("feedback") or "").strip()
+                    improvement_tip = str(evaluation.get("improvement_tip") or "").strip()
+                    local_explanation = str(evaluation.get("local_explanation") or "").strip()
+                    fallback_explanation = str(evaluation.get("explanation") or "").strip()
+
+                    st.markdown("**LLM Feedback:**")
+                    st.write(feedback or local_explanation or fallback_explanation or "No feedback available.")
+
+                    st.markdown("**Improvement Tip:**")
+                    st.write(improvement_tip or "No improvement tip available.")
+
+                    st.markdown("**Reference Explanation:**")
+                    reference_explanation = local_explanation or fallback_explanation
+                    reference_explanation = _shorten_explanation(reference_explanation, max_sentences=2) or "No reference explanation available."
+                    st.write(reference_explanation)
 
 
 def render_chat_section() -> None:
