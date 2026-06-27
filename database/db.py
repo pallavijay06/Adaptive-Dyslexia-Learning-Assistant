@@ -453,6 +453,24 @@ def get_document(document_id: int) -> DocumentRecord | None:
     )
 
 
+def get_documents(user_id: int, limit: int = 100) -> list[DocumentRecord]:
+    """Return recent documents uploaded by a specific user."""
+    query = "SELECT * FROM documents WHERE user_id = ? ORDER BY upload_time DESC LIMIT ?"
+    with _get_connection() as connection:
+        rows = connection.execute(query, (user_id, limit)).fetchall()
+    return [
+        DocumentRecord(
+            id=row["id"],
+            user_id=row["user_id"],
+            file_name=row["file_name"],
+            file_type=row["file_type"],
+            document_text=row["document_text"],
+            upload_time=row["upload_time"],
+        )
+        for row in rows
+    ]
+
+
 def save_chat(
     user_id: int,
     document_id: int | None,

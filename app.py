@@ -49,6 +49,7 @@ from components.session_state import (
     initialize_learning_mode,
     initialize_ui_preferences,
 )
+from components.progress_dashboard import render_dashboard
 from services.auth_service import (
     hash_password,
     normalize_email,
@@ -1473,15 +1474,26 @@ def main() -> None:
 
     logger.debug("Authenticated, calling render_home()")
     render_sidebar_user_panel()
-    render_home()
-    st.divider()
-    render_upload_section()
-    st.divider()
-    render_learning_modes()
-    st.divider()
-    render_word_explorer()
-    st.divider()
-    render_chat_section()
+
+    page = st.sidebar.radio(
+        "Navigate",
+        ["Dashboard", "Learning Hub"],
+        index=0,
+        key="navigation_selection",
+    )
+
+    if page == "Dashboard":
+        render_dashboard(st.session_state.current_user_id)
+    else:
+        render_home()
+        st.divider()
+        render_upload_section()
+        st.divider()
+        render_learning_modes()
+        st.divider()
+        render_word_explorer()
+        st.divider()
+        render_chat_section()
 
 
 if __name__ == "__main__":
