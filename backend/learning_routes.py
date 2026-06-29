@@ -13,6 +13,10 @@ from services.vocabulary_service import generate_vocabulary, VocabularyError
 from services.tts_service import generate_audio, TTSError
 from services.visual_service import generate_visual_content, VisualError
 from services.llm_router import LLMRouterError
+from services.behavior_tracking_service import (
+    track_audio_started,
+    track_visual_viewed,
+)
 
 
 learning_bp = Blueprint("learning", __name__)
@@ -169,7 +173,10 @@ def audio():
         return jsonify({"error": "Text cannot be empty"}), 400
 
     try:
+        user_id = data.get("user_id")
         audio_path = generate_audio(text, lang=lang, slow=slow)
+        if user_id is not None:
+            track_audio_started(user_id=int(user_id), metadata={"text_length": len(text)})
         return jsonify({
             "audio_file": audio_path,
             "success": True
@@ -205,7 +212,10 @@ def visualize():
         return jsonify({"error": "Text cannot be empty"}), 400
 
     try:
+        user_id = data.get("user_id")
         visual_content = generate_visual_content(text, visual_type=visual_type)
+        if user_id is not None:
+            track_visual_viewed(user_id=int(user_id), metadata={"visual_type": visual_type or "generic"})
         return jsonify({
             "visual": visual_content,
             "success": True

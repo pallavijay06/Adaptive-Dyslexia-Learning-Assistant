@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,23 @@ class LearnerProfileRecord:
     prefers_analogies: bool = True
     prefers_bullet_points: bool = True
     avg_response_length_preference: int = 200  # words
+    comprehension_score: float | None = None
+    comprehension_level: str | None = None
+    quiz_accuracy_score: float | None = None
+    conceptual_answer_score: float | None = None
+    learning_support_score: float | None = None
+    first_attempt_score: float | None = None
+    response_efficiency_score: float | None = None
+    metric_breakdown: dict[str, Any] | None = None
+    learner_model_metadata: dict[str, Any] | None = None
+    learning_mode_effectiveness_score: float | None = None
+    learning_mode_effectiveness_level: str | None = None
+    mode_engagement_score: float | None = None
+    mode_switching_score: float | None = None
+    feature_utilization_score: float | None = None
+    post_mode_improvement_score: float | None = None
+    mode_retention_score: float | None = None
+    learning_mode_metric_breakdown: dict[str, Any] | None = None
     last_updated: datetime | None = None
     created_at: datetime | None = None
 
@@ -109,6 +127,17 @@ class LearningHistoryRecord:
     topic: str | None
     duration_seconds: int = 0
     timestamp: datetime | None = None
+
+
+@dataclass(frozen=True)
+class BehaviorEventRecord:
+    """Stores generic learner behaviour events for future analytics."""
+    id: int | None
+    user_id: int
+    session_id: int | None
+    event_type: str
+    event_timestamp: datetime
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

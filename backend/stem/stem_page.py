@@ -12,6 +12,12 @@ from backend.stem.formula_assistant import explain_formula
 from backend.stem.symbol_assistant import explain_symbol
 from backend.stem.stem_controller import process_stem_support
 from backend.stem.step_solver.solver_service import solve_problem
+from services.behavior_tracking_service import (
+    track_diagram_explanation_used,
+    track_formula_assistant_used,
+    track_step_solver_used,
+    track_symbol_explanation_used,
+)
 
 
 def _format_step_content(content: str) -> str:
@@ -29,6 +35,9 @@ def _render_formula_tab(formulas: list[str]) -> None:
     for formula in formulas:
         title = str(formula).strip() or "Untitled Formula"
         with st.expander(title):
+            user_id = st.session_state.get("current_user_id")
+            if user_id is not None:
+                track_formula_assistant_used(user_id=user_id, metadata={"formula": formula})
             try:
                 explanation = explain_formula(formula)
             except Exception as exc:  # pragma: no cover
@@ -65,6 +74,9 @@ def _render_symbol_tab(symbols: list[str] | None) -> None:
             continue
 
         symbol_text = symbol.strip()
+        user_id = st.session_state.get("current_user_id")
+        if user_id is not None:
+            track_symbol_explanation_used(user_id=user_id, metadata={"symbol": symbol_text})
         explanation = explain_symbol(symbol_text)
         title = symbol_text or "Symbol"
 
@@ -164,6 +176,10 @@ def _render_step_solver_tab(document_text: str) -> None:
     if not problem_input or not problem_input.strip():
         st.error("Please enter a STEM problem before solving.")
         return
+
+    user_id = st.session_state.get("current_user_id")
+    if user_id is not None:
+        track_step_solver_used(user_id=user_id, metadata={"problem_length": len(problem_input.strip())})
 
     with st.spinner("Solving the entered STEM problem..."):
         result = solve_problem(problem_input.strip())

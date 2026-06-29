@@ -30,8 +30,12 @@ from backend.parser import process_uploaded_file
 from backend.retriever import retrieve_relevant_chunks_for_question
 from backend.vector_store import build_index
 from database.db import (
+    get_behavior_events,
     save_document,
     save_learning_session,
+    save_learner_comprehension_profile,
+    save_learning_mode_effectiveness_profile,
+    save_quiz_score,
     save_user,
     save_chat,
     get_user,
@@ -70,7 +74,27 @@ from services.quiz_service import (
     generate_mcq_quiz,
     generate_short_questions,
 )
+from services.learner_model_service import calculate_comprehension_score
+from services.learning_mode_effectiveness_service import calculate_learning_mode_effectiveness
 from services.adaptive_tutor import AdaptiveAITutor
+from services.behavior_tracking_service import (
+    track_ai_tutor_used,
+    track_audio_completed,
+    track_audio_paused,
+    track_audio_played,
+    track_audio_replayed,
+    track_audio_started,
+    track_document_opened,
+    track_explanation_requested,
+    track_mode_entered,
+    track_mode_exited,
+    track_mode_switched,
+    track_quiz_completed,
+    track_quiz_retry,
+    track_quiz_started,
+    track_simplify_clicked,
+    track_visual_viewed,
+)
 from services.llm_router import generate_answer, LLMRouterError
 from services.ocr_service import (
     extract_images_from_pdf,
@@ -108,6 +132,8 @@ def initialize_session_state() -> None:
 
         # Learning mode state
         "selected_learning_mode": None,  # Tracks which mode is selected (None = no mode selected)
+        "active_learning_mode": None,
+        "active_learning_mode_entered_at": None,
 
         # Generated content
         "simplified_content": None,
@@ -480,6 +506,11 @@ def _process_document(uploaded_file) -> None:
             # Expose saved DB id to the session so chat turns can reference it.
             print(f"Saved document: {record.original_filename}")
             st.session_state.saved_document_id = saved_document.id
+            if user_id is not None:
+                track_document_opened(
+                    user_id=user_id,
+                    metadata={"document_id": saved_document.id, "file_name": record.original_filename},
+                )
 
             st.session_state.document_record = record
             st.session_state.document_text = document_text
@@ -615,6 +646,11 @@ def render_read_mode() -> None:
                 try:
                     content = simplify_text(st.session_state.document_text)
                     st.session_state.simplified_content = content
+                    if st.session_state.get("current_user_id") is not None:
+                        track_simplify_clicked(
+                            user_id=st.session_state.current_user_id,
+                            metadata={"document_id": st.session_state.get("saved_document_id")},
+                        )
                     st.success("✅ Simplified content generated!")
                 except (SimplificationError, LLMRouterError) as exc:
                     show_user_error("Simplification could not be completed right now. Please try again.", exc)
@@ -673,6 +709,10 @@ def render_listen_mode() -> None:
 
                 audio_path = generate_audio(text_to_listen)
                 st.session_state.audio_file = audio_path
+                user_id = st.session_state.get("current_user_id")
+                if user_id is not None:
+                    track_audio_started(user_id=user_id, metadata={"text_length": len(text_to_listen)})
+                    track_audio_completed(user_id=user_id, metadata={"text_length": len(text_to_listen)})
                 st.success("✅ Audio generated!")
             except TTSError as exc:
                 show_user_error("Audio generation failed. Try a shorter text selection.", exc)
@@ -919,6 +959,17 @@ def render_listen_mode() -> None:
 
         components.html(audio_html, height=950)
 
+        cols = st.columns(3)
+        if cols[0].button("▶️ Play Audio", key="audio_play_btn"):
+            if st.session_state.get("current_user_id") is not None:
+                track_audio_played(user_id=st.session_state.current_user_id, metadata={"mode": "Listen"})
+        if cols[1].button("⏸️ Pause Audio", key="audio_pause_btn"):
+            if st.session_state.get("current_user_id") is not None:
+                track_audio_paused(user_id=st.session_state.current_user_id, metadata={"mode": "Listen"})
+        if cols[2].button("🔁 Replay Audio", key="audio_replay_btn"):
+            if st.session_state.get("current_user_id") is not None:
+                track_audio_replayed(user_id=st.session_state.current_user_id, metadata={"mode": "Listen"})
+
         st.download_button(
             label="⬇️ Download Audio",
             data=audio_data,
@@ -1019,6 +1070,7 @@ def render_visual_mode() -> None:
         st.info("No visual image was created for the selected type.")
         return
 
+    track_visual_viewed(user_id=st.session_state.current_user_id, metadata={"visual_type": generated_visual})
     st.markdown(f"### {generated_visual}")
     if visual_content.get("description"):
         st.write(visual_content["description"])
@@ -1055,6 +1107,11 @@ def render_quiz_section() -> None:
     Quiz validation ensures all questions are answered before submission.
     """
     if st.button("📝 Generate Quiz", type="primary", key="gen_quiz_btn"):
+        if st.session_state.get("quiz_mcqs") and st.session_state.get("current_user_id") is not None:
+            track_quiz_retry(
+                user_id=st.session_state.current_user_id,
+                metadata={"mode": "Quiz", "action": "regenerate"},
+            )
         logger.info("[Quiz] Starting quiz generation")
         with st.spinner("Generating quiz from your document..."):
             try:
@@ -1068,6 +1125,11 @@ def render_quiz_section() -> None:
                 st.session_state.quiz_short_answers = ["" for _ in short_questions]
                 st.session_state.quiz_report = None
                 st.session_state.quiz_short_feedback = None
+                if st.session_state.get("current_user_id") is not None:
+                    track_quiz_started(
+                        user_id=st.session_state.current_user_id,
+                        metadata={"question_count": len(mcqs) + len(short_questions)},
+                    )
                 st.success("✅ Quiz generated! Answer the questions below.")
             except (DocumentError, LLMRouterError, ValueError):
                 logger.exception("Quiz generation failed")
@@ -1223,6 +1285,40 @@ def render_quiz_section() -> None:
                 logger.exception("[Quiz Evaluation] Report merge failed. Returning MCQ report with short feedback stored.")
                 st.session_state.quiz_report = report
             st.session_state.quiz_short_feedback = short_feedback
+
+            try:
+                learner_model_result = calculate_comprehension_score(report, short_feedback)
+                behavior_events = get_behavior_events(user_id, limit=500) if (user_id := st.session_state.get("current_user_id")) is not None else []
+                learning_mode_result = calculate_learning_mode_effectiveness(behavior_events)
+                if user_id is not None:
+                    track_quiz_completed(
+                        user_id=user_id,
+                        metadata={
+                            "quiz_accuracy": float(report.get("percentage") or 0.0),
+                            "questions_attempted": int(report.get("total") or len(quiz_mcqs) or 0),
+                            "questions_correct": int(report.get("correct_answers") or 0),
+                        },
+                    )
+                    save_learner_comprehension_profile(user_id, learner_model_result)
+                    save_learning_mode_effectiveness_profile(user_id, learning_mode_result)
+
+                    document_record = st.session_state.get("document_record")
+                    topic = (
+                        getattr(document_record, "original_filename", None)
+                        or getattr(document_record, "file_name", None)
+                        or "Current Document"
+                    )
+                    quiz_percentage = float(report.get("percentage") or 0.0)
+                    total_questions = int(report.get("total") or len(quiz_mcqs) or 0)
+                    save_quiz_score(
+                        user_id=user_id,
+                        topic=str(topic),
+                        score=round(quiz_percentage),
+                        total_questions=total_questions,
+                    )
+            except Exception:
+                logger.exception("[Learner Model] Failed to persist learner comprehension profile.")
+
             logger.info("[Quiz]\nTotal evaluation completed in %.2f sec", time.perf_counter() - total_start)
             st.success("✅ Quiz evaluated! See your results below.")
 
@@ -1288,8 +1384,9 @@ def render_chat_section() -> None:
         return
 
     document_id_for_db = st.session_state.get("saved_document_id")
+    user_id = st.session_state.get("current_user_id")
     tutor = AdaptiveAITutor(
-        user_id=st.session_state.current_user_id,
+        user_id=user_id,
         document_id=document_id_for_db,
     )
 
@@ -1327,6 +1424,9 @@ def render_chat_section() -> None:
                 adaptive_prompt = tutor.generate_adaptive_system_prompt()
                 full_context = f"{adaptive_prompt}\n\nDOCUMENT CONTEXT:\n{context}"
                 answer = generate_answer(user_question, full_context)
+                if user_id is not None:
+                    track_ai_tutor_used(user_id=user_id, metadata={"question_length": len(user_question)})
+                    track_explanation_requested(user_id=user_id, metadata={"question_length": len(user_question)})
                 tutor.track_interaction(
                     interaction_type="question",
                     topic=None,

@@ -38,6 +38,7 @@ def render_dashboard(user_id: int) -> None:
     )
 
     overview = dashboard["overview"]
+    profile = dashboard["profile"]
     progress = dashboard["progress"]
     mastery = dashboard["concept_mastery"]
     weak = dashboard["weak_concepts"]
@@ -64,6 +65,62 @@ def render_dashboard(user_id: int) -> None:
         cols[1].metric("Learning Sessions", overview["total_learning_sessions"])
         cols[2].metric("Days Active", overview["days_active"])
         cols[3].metric("Current Streak", overview["current_streak"])
+
+    with st.expander("Comprehension Profile", expanded=True):
+        if not profile or profile.comprehension_score is None:
+            st.info("No learning profile available yet.")
+        else:
+            cols = st.columns(2)
+            cols[0].metric("Comprehension Score", f"{profile.comprehension_score:.2f}%")
+            cols[1].metric("Comprehension Level", profile.comprehension_level or "N/A")
+
+            metric_breakdown = profile.metric_breakdown or {}
+            if metric_breakdown:
+                rows = []
+                for metric_name, detail in metric_breakdown.items():
+                    if not isinstance(detail, dict):
+                        continue
+                    rows.append(
+                        {
+                            "Metric": metric_name.replace("_", " ").title(),
+                            "Value": detail.get("value"),
+                            "Weight": detail.get("weight"),
+                            "Normalized Weight": detail.get("normalized_weight"),
+                            "Contribution": detail.get("contribution"),
+                        }
+                    )
+                st.dataframe(rows, use_container_width=True)
+
+    with st.expander("Learning Mode Effectiveness", expanded=True):
+        if not profile or profile.learning_mode_effectiveness_score is None:
+            st.info("No learning mode effectiveness data available yet.")
+        else:
+            cols = st.columns(3)
+            cols[0].metric("Learning Mode Effectiveness", f"{profile.learning_mode_effectiveness_score:.2f}%")
+            cols[1].metric("Effectiveness Level", profile.learning_mode_effectiveness_level or "N/A")
+            cols[2].metric("Mode Engagement", f"{profile.mode_engagement_score:.2f}%")
+
+            cols = st.columns(4)
+            cols[0].metric("Mode Switching", f"{profile.mode_switching_score:.2f}%")
+            cols[1].metric("Feature Utilization", f"{profile.feature_utilization_score:.2f}%")
+            cols[2].metric("Post-Mode Improvement", f"{profile.post_mode_improvement_score:.2f}%")
+            cols[3].metric("Mode Retention", f"{profile.mode_retention_score:.2f}%")
+
+            breakdown = profile.learning_mode_metric_breakdown or {}
+            if breakdown:
+                rows = []
+                for metric_name, detail in breakdown.items():
+                    if not isinstance(detail, dict):
+                        continue
+                    rows.append(
+                        {
+                            "Metric": metric_name.replace("_", " ").title(),
+                            "Value": detail.get("value"),
+                            "Weight": detail.get("weight"),
+                            "Contribution": detail.get("contribution"),
+                        }
+                    )
+                st.dataframe(rows, use_container_width=True)
 
     with st.expander("Learning Progress", expanded=True):
         st.markdown("### Progress Metrics")

@@ -1,0 +1,259 @@
+"""Learner modelling calculations for comprehension scoring.
+
+This module is intentionally independent of UI, database, API, and LLM code.
+Future dashboard and personalization modules can import these pure functions
+without triggering side effects.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+
+COMPREHENSION_WEIGHTS: dict[str, float] = {
+    "quiz_accuracy": 0.35,
+    "conceptual_answer": 0.30,
+    "learning_support": 0.15,
+    "first_attempt": 0.10,
+    "response_efficiency": 0.10,
+}
+
+
+MetricValue = int | float | None
+
+
+def calculate_quiz_accuracy_score(
+    quiz_evaluation: Mapping[str, Any] | None = None,
+    *,
+    correct_answers: int | float | None = None,
+    total_questions: int | float | None = None,
+    score: int | float | None = None,
+    max_score: int | float | None = None,
+) -> float | None:
+    """Calculate quiz accuracy as a percentage from MCQ evaluation results.
+
+    Args:
+        quiz_evaluation: Optional quiz report, commonly containing
+            ``correct_answers`` and ``total_questions`` or ``score`` and
+            ``max_score``/``total_questions``.
+        correct_answers: Explicit number of correct quiz answers.
+        total_questions: Explicit number of attempted quiz questions.
+        score: Explicit score fallback when ``correct_answers`` is unavailable.
+        max_score: Explicit maximum score fallback.
+
+    Returns:
+        A score from 0 to 100, or ``None`` when no usable quiz data is supplied.
+    """
+    if quiz_evaluation:
+        correct_answers = _first_number(
+            correct_answers,
+            quiz_evaluation.get("correct_answers"),
+            quiz_evaluation.get("score"),
+        )
+        total_questions = _first_number(
+            total_questions,
+            quiz_evaluation.get("total_questions"),
+            quiz_evaluation.get("total"),
+            quiz_evaluation.get("questions_attempted"),
+            quiz_evaluation.get("max_score"),
+        )
+
+    numerator = _first_number(correct_answers, score)
+    denominator = _first_number(total_questions, max_score)
+
+    return _percentage(numerator, denominator)
+
+
+def calculate_conceptual_answer_score(
+    short_answer_evaluations: Iterable[Mapping[str, Any]] | None = None,
+) -> float | None:
+    """Calculate average conceptual short-answer score as a percentage.
+
+    Each evaluation should contain ``score`` and ``max_score``. Invalid or
+    incomplete entries are skipped so partial evaluation batches can still be
+    scored.
+
+    Args:
+        short_answer_evaluations: Short-answer evaluation dictionaries.
+
+    Returns:
+        The average percentage across valid short-answer evaluations, or
+        ``None`` when no valid evaluations are supplied.
+    """
+    if short_answer_evaluations is None:
+        return None
+
+    percentages: list[float] = []
+    for evaluation in short_answer_evaluations:
+        if not isinstance(evaluation, Mapping):
+            continue
+        if isinstance(evaluation.get("evaluation"), Mapping):
+            evaluation = evaluation["evaluation"]
+
+        percentage = _percentage(
+            _to_float(evaluation.get("score")),
+            _to_float(evaluation.get("max_score")),
+        )
+        if percentage is not None:
+            percentages.append(percentage)
+
+    if not percentages:
+        return None
+
+    return round(sum(percentages) / len(percentages), 2)
+
+
+def calculate_learning_support_score(*_: Any, **__: Any) -> None:
+    """Placeholder for future learning support dependency scoring."""
+    return None
+
+
+def calculate_first_attempt_score(*_: Any, **__: Any) -> None:
+    """Placeholder for future first-attempt success scoring."""
+    return None
+
+
+def calculate_response_efficiency_score(*_: Any, **__: Any) -> None:
+    """Placeholder for future response efficiency scoring."""
+    return None
+
+
+def calculate_comprehension_score(
+    quiz_evaluation: Mapping[str, Any] | None = None,
+    short_answer_evaluations: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Calculate the normalized overall comprehension score.
+
+    All configured metrics are computed, unavailable metrics are ignored, and
+    the weights for available metrics are normalized automatically. This keeps
+    Version 1 compatible with the full metric framework.
+
+    Args:
+        quiz_evaluation: Optional MCQ quiz evaluation report.
+        short_answer_evaluations: Optional short-answer evaluation results.
+
+    Returns:
+        A dictionary containing individual metric scores, active normalized
+        weights, final comprehension score, and comprehension level.
+    """
+    metric_scores: dict[str, MetricValue] = {
+        "quiz_accuracy": calculate_quiz_accuracy_score(quiz_evaluation),
+        "conceptual_answer": calculate_conceptual_answer_score(short_answer_evaluations),
+        "learning_support": calculate_learning_support_score(),
+        "first_attempt": calculate_first_attempt_score(),
+        "response_efficiency": calculate_response_efficiency_score(),
+    }
+
+    active_weights = _normalize_active_weights(metric_scores)
+    comprehension_score = _weighted_score(metric_scores, active_weights)
+
+    return {
+        "quiz_accuracy_score": metric_scores["quiz_accuracy"],
+        "conceptual_answer_score": metric_scores["conceptual_answer"],
+        "learning_support_score": metric_scores["learning_support"],
+        "first_attempt_score": metric_scores["first_attempt"],
+        "response_efficiency_score": metric_scores["response_efficiency"],
+        "active_weights": active_weights,
+        "metric_breakdown": _metric_breakdown(metric_scores, active_weights),
+        "comprehension_score": comprehension_score,
+        "comprehension_level": _comprehension_level(comprehension_score),
+    }
+
+
+def _normalize_active_weights(metric_scores: Mapping[str, MetricValue]) -> dict[str, float]:
+    """Return normalized weights for metrics that have available scores."""
+    available_weight_total = sum(
+        COMPREHENSION_WEIGHTS[metric_name]
+        for metric_name, metric_score in metric_scores.items()
+        if metric_score is not None
+    )
+
+    if available_weight_total <= 0:
+        return {}
+
+    return {
+        metric_name: round(COMPREHENSION_WEIGHTS[metric_name] / available_weight_total, 4)
+        for metric_name, metric_score in metric_scores.items()
+        if metric_score is not None
+    }
+
+
+def _weighted_score(
+    metric_scores: Mapping[str, MetricValue],
+    active_weights: Mapping[str, float],
+) -> float | None:
+    """Return the weighted score using normalized active weights."""
+    if not active_weights:
+        return None
+
+    total = sum(
+        float(metric_scores[metric_name]) * weight
+        for metric_name, weight in active_weights.items()
+        if metric_scores[metric_name] is not None
+    )
+    return round(total, 2)
+
+
+def _metric_breakdown(
+    metric_scores: Mapping[str, MetricValue],
+    active_weights: Mapping[str, float],
+) -> dict[str, dict[str, float]]:
+    """Build an explainable contribution map for available metrics."""
+    return {
+        metric_name: {
+            "value": round(float(metric_score), 2),
+            "weight": COMPREHENSION_WEIGHTS[metric_name],
+            "normalized_weight": normalized_weight,
+            "contribution": round(float(metric_score) * normalized_weight, 2),
+        }
+        for metric_name, metric_score in metric_scores.items()
+        if metric_score is not None
+        for normalized_weight in [active_weights.get(metric_name, 0.0)]
+    }
+
+
+def _comprehension_level(score: float | None) -> str | None:
+    """Map a comprehension score to its learning level label."""
+    if score is None:
+        return None
+    if score >= 90:
+        return "Excellent"
+    if score >= 75:
+        return "Good"
+    if score >= 60:
+        return "Moderate"
+    if score >= 40:
+        return "Weak"
+    return "Needs Immediate Support"
+
+
+def _percentage(numerator: float | None, denominator: float | None) -> float | None:
+    """Convert a score ratio into a clamped 0-100 percentage."""
+    if numerator is None or denominator is None or denominator <= 0:
+        return None
+    return round(_clamp((numerator / denominator) * 100.0), 2)
+
+
+def _first_number(*values: Any) -> float | None:
+    """Return the first value that can be interpreted as a number."""
+    for value in values:
+        number = _to_float(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _to_float(value: Any) -> float | None:
+    """Convert numeric-like values to float while rejecting booleans."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clamp(value: float, minimum: float = 0.0, maximum: float = 100.0) -> float:
+    """Clamp a numeric value to the scoring range."""
+    return max(minimum, min(maximum, value))

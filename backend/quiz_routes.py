@@ -15,6 +15,8 @@ from services.quiz_service import (
     generate_mcq_quiz,
     generate_short_questions,
 )
+from services.learner_model_service import calculate_comprehension_score
+from database.db import save_learner_comprehension_profile
 
 quiz_bp = Blueprint("quiz", __name__)
 logger = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ def submit_quiz() -> tuple[object, int]:
     payload = request.get_json(silent=True) or {}
     answers = payload.get("answers")
     quiz_data = payload.get("quiz_data")
+    user_id = payload.get("user_id")
 
     if not isinstance(answers, list):
         return jsonify({"success": False, "error": "Answers must be a list."}), 400
@@ -69,6 +72,12 @@ def submit_quiz() -> tuple[object, int]:
 
     try:
         report = evaluate_mcq(answers, quiz_data)
+        if user_id is not None:
+            try:
+                learner_model_result = calculate_comprehension_score(report)
+                save_learner_comprehension_profile(int(user_id), learner_model_result)
+            except Exception:
+                logger.exception("Failed to persist learner comprehension profile")
         return jsonify({"success": True, "report": report}), 200
     except (LLMRouterError, ValueError):
         logger.exception("Quiz submission evaluation failed. Returning local fallback report.")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from datetime import datetime
 from pathlib import Path
 from sqlite3 import Connection, IntegrityError
@@ -16,6 +17,7 @@ from database.models import (
     UserRecord,
     LearnerProfileRecord,
     LearningHistoryRecord,
+    BehaviorEventRecord,
     TopicProgressRecord,
     ConceptMasteryRecord,
     AdaptivePreferencesRecord,
@@ -132,6 +134,23 @@ def init_db() -> None:
                 prefers_analogies BOOLEAN NOT NULL DEFAULT 1,
                 prefers_bullet_points BOOLEAN NOT NULL DEFAULT 1,
                 avg_response_length_preference INTEGER NOT NULL DEFAULT 200,
+                comprehension_score REAL,
+                comprehension_level TEXT,
+                quiz_accuracy_score REAL,
+                conceptual_answer_score REAL,
+                learning_support_score REAL,
+                first_attempt_score REAL,
+                response_efficiency_score REAL,
+                metric_breakdown TEXT,
+                learner_model_metadata TEXT,
+                learning_mode_effectiveness_score REAL,
+                learning_mode_effectiveness_level TEXT,
+                mode_engagement_score REAL,
+                mode_switching_score REAL,
+                feature_utilization_score REAL,
+                post_mode_improvement_score REAL,
+                mode_retention_score REAL,
+                learning_mode_metric_breakdown TEXT,
                 last_updated TIMESTAMP,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -197,8 +216,20 @@ def init_db() -> None:
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS behavior_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                session_id INTEGER,
+                event_type TEXT NOT NULL,
+                event_timestamp TIMESTAMP NOT NULL,
+                metadata TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(session_id) REFERENCES learning_sessions(id) ON DELETE SET NULL
+            );
             """
         )
+        _migrate_database_schema(connection)
     # Mark as initialized so subsequent calls are no-ops
     _initialized = True
 
@@ -206,6 +237,23 @@ def init_db() -> None:
 def _get_table_columns(connection: Connection, table_name: str) -> set[str]:
     rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {row[1] for row in rows}
+
+
+def _json_dumps_or_none(value: object | None) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, sort_keys=True)
+
+
+def _json_loads_or_none(value: object | None) -> object | None:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def _migrate_database_schema(connection: Connection) -> None:
@@ -264,6 +312,30 @@ def _migrate_database_schema(connection: Connection) -> None:
         connection.execute("ALTER TABLE learning_sessions ADD COLUMN logout_time TIMESTAMP")
     if "session_duration_minutes" not in learning_columns:
         connection.execute("ALTER TABLE learning_sessions ADD COLUMN session_duration_minutes INTEGER NOT NULL DEFAULT 0")
+
+    learner_profile_columns = _get_table_columns(connection, "learner_profile")
+    learner_profile_additions = {
+        "comprehension_score": "REAL",
+        "comprehension_level": "TEXT",
+        "quiz_accuracy_score": "REAL",
+        "conceptual_answer_score": "REAL",
+        "learning_support_score": "REAL",
+        "first_attempt_score": "REAL",
+        "response_efficiency_score": "REAL",
+        "metric_breakdown": "TEXT",
+        "learner_model_metadata": "TEXT",
+        "learning_mode_effectiveness_score": "REAL",
+        "learning_mode_effectiveness_level": "TEXT",
+        "mode_engagement_score": "REAL",
+        "mode_switching_score": "REAL",
+        "feature_utilization_score": "REAL",
+        "post_mode_improvement_score": "REAL",
+        "mode_retention_score": "REAL",
+        "learning_mode_metric_breakdown": "TEXT",
+    }
+    for column_name, column_type in learner_profile_additions.items():
+        if column_name not in learner_profile_columns:
+            connection.execute(f"ALTER TABLE learner_profile ADD COLUMN {column_name} {column_type}")
 
 
 def save_user(
@@ -695,6 +767,23 @@ def save_learner_profile(
     prefers_analogies: bool = True,
     prefers_bullet_points: bool = True,
     avg_response_length_preference: int = 200,
+    comprehension_score: float | None = None,
+    comprehension_level: str | None = None,
+    quiz_accuracy_score: float | None = None,
+    conceptual_answer_score: float | None = None,
+    learning_support_score: float | None = None,
+    first_attempt_score: float | None = None,
+    response_efficiency_score: float | None = None,
+    metric_breakdown: dict[str, object] | None = None,
+    learner_model_metadata: dict[str, object] | None = None,
+    learning_mode_effectiveness_score: float | None = None,
+    learning_mode_effectiveness_level: str | None = None,
+    mode_engagement_score: float | None = None,
+    mode_switching_score: float | None = None,
+    feature_utilization_score: float | None = None,
+    post_mode_improvement_score: float | None = None,
+    mode_retention_score: float | None = None,
+    learning_mode_metric_breakdown: dict[str, object] | None = None,
 ) -> LearnerProfileRecord:
     """Save or update a learner profile."""
     query = """
@@ -703,9 +792,16 @@ def save_learner_profile(
             total_questions_asked, average_quiz_score, preferred_learning_mode,
             learning_frequency, confidence_level, explanation_complexity,
             prefers_examples, prefers_analogies, prefers_bullet_points,
-            avg_response_length_preference, last_updated
+            avg_response_length_preference, comprehension_score, comprehension_level,
+            quiz_accuracy_score, conceptual_answer_score, learning_support_score,
+            first_attempt_score, response_efficiency_score, metric_breakdown,
+            learner_model_metadata, learning_mode_effectiveness_score,
+            learning_mode_effectiveness_level, mode_engagement_score,
+            mode_switching_score, feature_utilization_score,
+            post_mode_improvement_score, mode_retention_score,
+            learning_mode_metric_breakdown, last_updated
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             total_study_time_minutes = excluded.total_study_time_minutes,
             documents_uploaded = excluded.documents_uploaded,
@@ -720,11 +816,31 @@ def save_learner_profile(
             prefers_analogies = excluded.prefers_analogies,
             prefers_bullet_points = excluded.prefers_bullet_points,
             avg_response_length_preference = excluded.avg_response_length_preference,
+            comprehension_score = COALESCE(excluded.comprehension_score, learner_profile.comprehension_score),
+            comprehension_level = COALESCE(excluded.comprehension_level, learner_profile.comprehension_level),
+            quiz_accuracy_score = COALESCE(excluded.quiz_accuracy_score, learner_profile.quiz_accuracy_score),
+            conceptual_answer_score = COALESCE(excluded.conceptual_answer_score, learner_profile.conceptual_answer_score),
+            learning_support_score = COALESCE(excluded.learning_support_score, learner_profile.learning_support_score),
+            first_attempt_score = COALESCE(excluded.first_attempt_score, learner_profile.first_attempt_score),
+            response_efficiency_score = COALESCE(excluded.response_efficiency_score, learner_profile.response_efficiency_score),
+            metric_breakdown = COALESCE(excluded.metric_breakdown, learner_profile.metric_breakdown),
+            learner_model_metadata = COALESCE(excluded.learner_model_metadata, learner_profile.learner_model_metadata),
+            learning_mode_effectiveness_score = COALESCE(excluded.learning_mode_effectiveness_score, learner_profile.learning_mode_effectiveness_score),
+            learning_mode_effectiveness_level = COALESCE(excluded.learning_mode_effectiveness_level, learner_profile.learning_mode_effectiveness_level),
+            mode_engagement_score = COALESCE(excluded.mode_engagement_score, learner_profile.mode_engagement_score),
+            mode_switching_score = COALESCE(excluded.mode_switching_score, learner_profile.mode_switching_score),
+            feature_utilization_score = COALESCE(excluded.feature_utilization_score, learner_profile.feature_utilization_score),
+            post_mode_improvement_score = COALESCE(excluded.post_mode_improvement_score, learner_profile.post_mode_improvement_score),
+            mode_retention_score = COALESCE(excluded.mode_retention_score, learner_profile.mode_retention_score),
+            learning_mode_metric_breakdown = COALESCE(excluded.learning_mode_metric_breakdown, learner_profile.learning_mode_metric_breakdown),
             last_updated = excluded.last_updated
     """
     now = datetime.utcnow()
+    metric_breakdown_json = _json_dumps_or_none(metric_breakdown)
+    learner_model_metadata_json = _json_dumps_or_none(learner_model_metadata)
+    learning_mode_metric_breakdown_json = _json_dumps_or_none(learning_mode_metric_breakdown)
     with _get_connection() as connection:
-        cursor = connection.execute(
+        connection.execute(
             query,
             (
                 user_id,
@@ -741,29 +857,31 @@ def save_learner_profile(
                 prefers_analogies,
                 prefers_bullet_points,
                 avg_response_length_preference,
+                comprehension_score,
+                comprehension_level,
+                quiz_accuracy_score,
+                conceptual_answer_score,
+                learning_support_score,
+                first_attempt_score,
+                response_efficiency_score,
+                metric_breakdown_json,
+                learner_model_metadata_json,
+                learning_mode_effectiveness_score,
+                learning_mode_effectiveness_level,
+                mode_engagement_score,
+                mode_switching_score,
+                feature_utilization_score,
+                post_mode_improvement_score,
+                mode_retention_score,
+                learning_mode_metric_breakdown_json,
                 now,
             ),
         )
-        profile_id = cursor.lastrowid
-    return LearnerProfileRecord(
-        id=profile_id,
-        user_id=user_id,
-        total_study_time_minutes=total_study_time_minutes,
-        documents_uploaded=documents_uploaded,
-        unique_topics_studied=unique_topics_studied,
-        total_questions_asked=total_questions_asked,
-        average_quiz_score=average_quiz_score,
-        preferred_learning_mode=preferred_learning_mode,
-        learning_frequency=learning_frequency,
-        confidence_level=confidence_level,
-        explanation_complexity=explanation_complexity,
-        prefers_examples=prefers_examples,
-        prefers_analogies=prefers_analogies,
-        prefers_bullet_points=prefers_bullet_points,
-        avg_response_length_preference=avg_response_length_preference,
-        last_updated=now,
-        created_at=now,
-    )
+        row = connection.execute(
+            "SELECT * FROM learner_profile WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return _learner_profile_from_row(row)
 
 
 def get_learner_profile(user_id: int) -> LearnerProfileRecord | None:
@@ -773,6 +891,11 @@ def get_learner_profile(user_id: int) -> LearnerProfileRecord | None:
         row = connection.execute(query, (user_id,)).fetchone()
     if row is None:
         return None
+    return _learner_profile_from_row(row)
+
+
+def _learner_profile_from_row(row: sqlite3.Row) -> LearnerProfileRecord:
+    """Convert a learner profile row to its record object."""
     return LearnerProfileRecord(
         id=row["id"],
         user_id=row["user_id"],
@@ -789,9 +912,160 @@ def get_learner_profile(user_id: int) -> LearnerProfileRecord | None:
         prefers_analogies=bool(row["prefers_analogies"]),
         prefers_bullet_points=bool(row["prefers_bullet_points"]),
         avg_response_length_preference=row["avg_response_length_preference"],
+        comprehension_score=row["comprehension_score"],
+        comprehension_level=row["comprehension_level"],
+        quiz_accuracy_score=row["quiz_accuracy_score"],
+        conceptual_answer_score=row["conceptual_answer_score"],
+        learning_support_score=row["learning_support_score"],
+        first_attempt_score=row["first_attempt_score"],
+        response_efficiency_score=row["response_efficiency_score"],
+        metric_breakdown=_json_loads_or_none(row["metric_breakdown"]),
+        learner_model_metadata=_json_loads_or_none(row["learner_model_metadata"]),
+        learning_mode_effectiveness_score=row["learning_mode_effectiveness_score"],
+        learning_mode_effectiveness_level=row["learning_mode_effectiveness_level"],
+        mode_engagement_score=row["mode_engagement_score"],
+        mode_switching_score=row["mode_switching_score"],
+        feature_utilization_score=row["feature_utilization_score"],
+        post_mode_improvement_score=row["post_mode_improvement_score"],
+        mode_retention_score=row["mode_retention_score"],
+        learning_mode_metric_breakdown=_json_loads_or_none(row["learning_mode_metric_breakdown"]),
         last_updated=row["last_updated"],
         created_at=row["created_at"],
     )
+
+
+def save_learner_comprehension_profile(
+    user_id: int,
+    learner_model_result: dict[str, object],
+) -> LearnerProfileRecord:
+    """Store the latest learner model result on the learner profile."""
+    profile = get_learner_profile(user_id)
+    metric_breakdown = learner_model_result.get("metric_breakdown")
+    learner_model_metadata = {
+        "active_weights": learner_model_result.get("active_weights", {}),
+        "version": "comprehension_v1",
+    }
+
+    return save_learner_profile(
+        user_id=user_id,
+        total_study_time_minutes=profile.total_study_time_minutes if profile else 0,
+        documents_uploaded=profile.documents_uploaded if profile else 0,
+        unique_topics_studied=profile.unique_topics_studied if profile else 0,
+        total_questions_asked=profile.total_questions_asked if profile else 0,
+        average_quiz_score=profile.average_quiz_score if profile else 0.0,
+        preferred_learning_mode=profile.preferred_learning_mode if profile else "Simplified Notes",
+        learning_frequency=profile.learning_frequency if profile else "occasional",
+        confidence_level=profile.confidence_level if profile else 0.5,
+        explanation_complexity=profile.explanation_complexity if profile else "medium",
+        prefers_examples=profile.prefers_examples if profile else True,
+        prefers_analogies=profile.prefers_analogies if profile else True,
+        prefers_bullet_points=profile.prefers_bullet_points if profile else True,
+        avg_response_length_preference=profile.avg_response_length_preference if profile else 200,
+        comprehension_score=learner_model_result.get("comprehension_score"),
+        comprehension_level=learner_model_result.get("comprehension_level"),
+        quiz_accuracy_score=learner_model_result.get("quiz_accuracy_score"),
+        conceptual_answer_score=learner_model_result.get("conceptual_answer_score"),
+        learning_support_score=learner_model_result.get("learning_support_score"),
+        first_attempt_score=learner_model_result.get("first_attempt_score"),
+        response_efficiency_score=learner_model_result.get("response_efficiency_score"),
+        metric_breakdown=metric_breakdown if isinstance(metric_breakdown, dict) else {},
+        learner_model_metadata=learner_model_metadata,
+    )
+
+
+def update_learner_profile(
+    user_id: int,
+    learner_model_result: dict[str, object],
+) -> LearnerProfileRecord:
+    """Update stored learner modelling fields for a user profile."""
+    return save_learner_comprehension_profile(user_id, learner_model_result)
+
+
+def save_learning_mode_effectiveness_profile(
+    user_id: int,
+    effectiveness_result: dict[str, object],
+) -> LearnerProfileRecord:
+    """Store the latest learning mode effectiveness result on the profile."""
+    profile = get_learner_profile(user_id)
+    metric_breakdown = effectiveness_result.get("learning_mode_metric_breakdown")
+
+    return save_learner_profile(
+        user_id=user_id,
+        total_study_time_minutes=profile.total_study_time_minutes if profile else 0,
+        documents_uploaded=profile.documents_uploaded if profile else 0,
+        unique_topics_studied=profile.unique_topics_studied if profile else 0,
+        total_questions_asked=profile.total_questions_asked if profile else 0,
+        average_quiz_score=profile.average_quiz_score if profile else 0.0,
+        preferred_learning_mode=profile.preferred_learning_mode if profile else "Simplified Notes",
+        learning_frequency=profile.learning_frequency if profile else "occasional",
+        confidence_level=profile.confidence_level if profile else 0.5,
+        explanation_complexity=profile.explanation_complexity if profile else "medium",
+        prefers_examples=profile.prefers_examples if profile else True,
+        prefers_analogies=profile.prefers_analogies if profile else True,
+        prefers_bullet_points=profile.prefers_bullet_points if profile else True,
+        avg_response_length_preference=profile.avg_response_length_preference if profile else 200,
+        learning_mode_effectiveness_score=effectiveness_result.get("learning_mode_effectiveness_score"),
+        learning_mode_effectiveness_level=effectiveness_result.get("learning_mode_effectiveness_level"),
+        mode_engagement_score=effectiveness_result.get("mode_engagement_score"),
+        mode_switching_score=effectiveness_result.get("mode_switching_score"),
+        feature_utilization_score=effectiveness_result.get("feature_utilization_score"),
+        post_mode_improvement_score=effectiveness_result.get("post_mode_improvement_score"),
+        mode_retention_score=effectiveness_result.get("mode_retention_score"),
+        learning_mode_metric_breakdown=metric_breakdown if isinstance(metric_breakdown, dict) else {},
+    )
+
+
+def save_behavior_event(
+    user_id: int,
+    event_type: str,
+    session_id: int | None = None,
+    event_timestamp: datetime | None = None,
+    metadata: dict[str, object] | None = None,
+) -> BehaviorEventRecord:
+    """Persist a generic behavior event for future learner model analysis."""
+    query = """
+        INSERT INTO behavior_events (user_id, session_id, event_type, event_timestamp, metadata)
+        VALUES (?, ?, ?, ?, ?)
+    """
+    timestamp = event_timestamp or datetime.utcnow()
+    metadata_json = _json_dumps_or_none(metadata)
+    with _get_connection() as connection:
+        cursor = connection.execute(
+            query,
+            (user_id, session_id, event_type, timestamp, metadata_json),
+        )
+        event_id = cursor.lastrowid
+    return BehaviorEventRecord(
+        id=event_id,
+        user_id=user_id,
+        session_id=session_id,
+        event_type=event_type,
+        event_timestamp=timestamp,
+        metadata=_json_loads_or_none(metadata_json) if isinstance(metadata_json, str) else metadata,
+    )
+
+
+def get_behavior_events(user_id: int, limit: int = 100) -> list[BehaviorEventRecord]:
+    """Return recent behavior events for a user."""
+    query = """
+        SELECT * FROM behavior_events
+        WHERE user_id = ?
+        ORDER BY event_timestamp DESC, id DESC
+        LIMIT ?
+    """
+    with _get_connection() as connection:
+        rows = connection.execute(query, (user_id, limit)).fetchall()
+    return [
+        BehaviorEventRecord(
+            id=row["id"],
+            user_id=row["user_id"],
+            session_id=row["session_id"],
+            event_type=row["event_type"],
+            event_timestamp=row["event_timestamp"],
+            metadata=_json_loads_or_none(row["metadata"]),
+        )
+        for row in rows
+    ]
 
 
 def save_learning_history(
