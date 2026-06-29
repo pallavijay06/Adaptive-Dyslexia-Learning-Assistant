@@ -10,8 +10,10 @@ from database.db import (
     get_user_by_id,
     get_documents,
     get_quiz_history,
+    get_quiz_question_responses,
     get_learning_sessions,
     get_learning_history,
+    get_learning_support_logs,
     get_topic_progress,
     get_concept_mastery,
     get_learner_profile,
@@ -86,6 +88,123 @@ def _format_minutes(minutes: int | float) -> str:
     return f"{remainder}m"
 
 
+def _calculate_first_attempt_success_rate(responses: list[Any]) -> float:
+    first_attempts = [record for record in responses if record.attempt_number == 1]
+    if not first_attempts:
+        return 0.0
+    correct_first_attempts = sum(1 for record in first_attempts if record.first_attempt_success or record.is_correct)
+    return round((correct_first_attempts / len(first_attempts)) * 100.0, 1)
+
+
+def _calculate_average_attempts(responses: list[Any]) -> float:
+    question_counts: dict[tuple[int | None, str], int] = {}
+    for record in responses:
+        key = (record.quiz_id, record.question_id)
+        question_counts[key] = max(question_counts.get(key, 0), record.attempt_number)
+    if not question_counts:
+        return 0.0
+    return round(sum(question_counts.values()) / len(question_counts), 1)
+
+
+def _calculate_avg_time_per_question(responses: list[Any]) -> float:
+    question_times: dict[tuple[int | None, str], int] = {}
+    for record in responses:
+        key = (record.quiz_id, record.question_id)
+        question_times[key] = question_times.get(key, 0) + record.time_taken_seconds
+    if not question_times:
+        return 0.0
+    return round(sum(question_times.values()) / len(question_times), 1)
+
+
+def _calculate_conceptual_score(concepts: list[Any], fallback_score: float = 0.0) -> float:
+    if not concepts:
+        return fallback_score
+    mastery_scores = [float(record.mastery_percentage or 0.0) for record in concepts]
+    if not mastery_scores:
+        return fallback_score
+    return round(sum(mastery_scores) / len(mastery_scores), 1)
+
+
+def _calculate_learning_support_dependency_score(support_count: int, total_questions: int) -> float:
+    if total_questions <= 0:
+        return 100.0
+    dependency_ratio = min(1.0, support_count / float(total_questions))
+    score = 100.0 - (dependency_ratio * 80.0)
+    return round(max(min(score, 100.0), 0.0), 1)
+
+
+def _calculate_response_efficiency_score(avg_time_per_question: float) -> float:
+    if avg_time_per_question <= 30:
+        return 100.0
+    if avg_time_per_question >= 120:
+        return 0.0
+    return round(100.0 - ((avg_time_per_question - 30.0) / 90.0) * 100.0, 1)
+
+
+def _calculate_comprehension_score(
+    quiz_accuracy: float,
+    conceptual_score: float,
+    learning_support_dependency: float,
+    first_attempt_success_rate: float,
+    response_efficiency: float,
+) -> float:
+    if quiz_accuracy <= 0 and conceptual_score <= 0 and first_attempt_success_rate <= 0:
+        return 0.0
+    score = (
+        (quiz_accuracy * 0.35)
+        + (conceptual_score * 0.30)
+        + (learning_support_dependency * 0.15)
+        + (first_attempt_success_rate * 0.10)
+        + (response_efficiency * 0.10)
+    )
+    return round(min(max(score, 0.0), 100.0), 1)
+
+
+def calculate_quiz_comprehension_score(
+    quiz_accuracy: float,
+    conceptual_score: float,
+    support_count: int,
+    total_questions: int,
+    first_attempt_success_rate: float,
+    avg_time_per_question: float,
+) -> float:
+    support_dependency_score = _calculate_learning_support_dependency_score(support_count, total_questions)
+    response_efficiency_score = _calculate_response_efficiency_score(avg_time_per_question)
+    return _calculate_comprehension_score(
+        quiz_accuracy,
+        conceptual_score,
+        support_dependency_score,
+        first_attempt_success_rate,
+        response_efficiency_score,
+    )
+
+
+def _create_badges(
+    quiz_attempts: int,
+    streak: int,
+    quiz_accuracy: float,
+    first_attempt_success_rate: float,
+    average_attempts: float,
+    avg_time_per_question: float,
+    hint_usage: int,
+    improvement_amount: float,
+) -> list[str]:
+    badges: list[str] = []
+    if quiz_attempts >= 3 and first_attempt_success_rate >= 70:
+        badges.append("First-Attempt Champion")
+    if streak >= 3 and quiz_attempts >= 3:
+        badges.append("Consistency Streak")
+    if improvement_amount >= 10:
+        badges.append("Growth Mindset")
+    if avg_time_per_question > 0 and avg_time_per_question <= 90 and quiz_accuracy >= 65:
+        badges.append("Quick Thinker")
+    if hint_usage <= 1 and quiz_accuracy >= 75:
+        badges.append("Independent Learner")
+    if quiz_accuracy >= 85 and first_attempt_success_rate >= 75:
+        badges.append("High Comprehension")
+    return badges
+
+
 def get_dashboard_data(user_id: int) -> dict[str, Any]:
     user = get_user_by_id(user_id)
     profile = get_learner_profile(user_id)
@@ -133,8 +252,46 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         1 for event in history if _parse_mode(event.activity_type) == "AI Tutor"
     )
     quiz_attempts = len(quizzes)
-    quiz_accuracy = (sum(attempt.score for attempt in quizzes) / quiz_attempts) if quiz_attempts else 0.0
+    quiz_accuracy = 0.0
+    quiz_percentages: list[float] = []
+    if quiz_attempts:
+        for attempt in quizzes:
+            if attempt.total_questions:
+                quiz_percentages.append(round((attempt.score / attempt.total_questions) * 100.0, 1))
+        quiz_accuracy = round(sum(quiz_percentages) / len(quiz_percentages), 1) if quiz_percentages else 0.0
+
+    all_responses = get_quiz_question_responses(user_id, limit=1000)
+    support_logs = get_learning_support_logs(user_id, limit=1000)
+    first_attempt_success_rate = _calculate_first_attempt_success_rate(all_responses)
+    average_attempts = _calculate_average_attempts(all_responses)
+    avg_time_per_question = _calculate_avg_time_per_question(all_responses)
+    hint_usage = sum(1 for log in support_logs if log.support_type == "hint")
+    concept_score = _calculate_conceptual_score(concepts, fallback_score=quiz_accuracy)
+    support_dependency_score = _calculate_learning_support_dependency_score(
+        len(support_logs),
+        len(all_responses),
+    )
+    response_efficiency_score = _calculate_response_efficiency_score(avg_time_per_question)
+    comprehension_score = _calculate_comprehension_score(
+        quiz_accuracy,
+        concept_score,
+        support_dependency_score,
+        first_attempt_success_rate,
+        response_efficiency_score,
+    )
     avg_session_duration = (sum(session_durations) / len(session_durations)) if session_durations else 0.0
+
+    quiz_percentages_sorted = sorted(quiz_percentages)
+    highest_score = max(quiz_percentages_sorted, default=0)
+    lowest_score = min(quiz_percentages_sorted, default=0)
+    quiz_line = [
+        (quiz.timestamp.strftime("%Y-%m-%d"), round((quiz.score / quiz.total_questions) * 100.0, 1))
+        for quiz in sorted(quizzes, key=lambda q: q.timestamp)
+    ]
+
+    improvement_amount = 0.0
+    if len(quiz_percentages_sorted) >= 2:
+        improvement_amount = quiz_percentages_sorted[-1] - quiz_percentages_sorted[0]
 
     # Concept mastery details
     mastery_rows: list[dict[str, Any]] = []
@@ -269,15 +426,32 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
     if len(evening_sessions) >= max(1, len(sessions) // 2):
         insights.append("You perform better during evening sessions.")
 
-    if quiz_attempts >= 2:
-        sorted_quizzes = sorted(quizzes, key=lambda q: q.timestamp)
-        first_score = sorted_quizzes[0].score
-        latest_score = sorted_quizzes[-1].score
-        if latest_score > first_score:
+    if quiz_attempts >= 2 and quiz_percentages:
+        sorted_quiz_percentages = [
+            round((quiz.score / quiz.total_questions) * 100.0, 1)
+            for quiz in sorted(quizzes, key=lambda q: q.timestamp)
+        ]
+        first_score_pct = sorted_quiz_percentages[0]
+        latest_score_pct = sorted_quiz_percentages[-1]
+        if latest_score_pct > first_score_pct:
             insights.append(
-                f"You have improved your quiz accuracy from {first_score:.0f}% to {latest_score:.0f}%.")
+                f"You have improved your quiz accuracy from {first_score_pct:.0f}% to {latest_score_pct:.0f}%.")
     if weak_concepts:
         insights.append(f"You should revise {weak_concepts[0]['Concept Name']}.")
+
+    badges = _create_badges(
+        quiz_attempts=quiz_attempts,
+        streak=streak,
+        quiz_accuracy=quiz_accuracy,
+        first_attempt_success_rate=first_attempt_success_rate,
+        average_attempts=average_attempts,
+        avg_time_per_question=avg_time_per_question,
+        hint_usage=hint_usage,
+        improvement_amount=improvement_amount,
+    )
+
+    if comprehension_score >= 80 and "High Comprehension" not in badges:
+        badges.append("High Comprehension")
 
     # Recommendations
     recommendations: list[dict[str, str]] = []
@@ -285,9 +459,7 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         recommendations.append(
             {
                 "title": "Concepts to Revise",
-                "detail": ", ".join(
-                    row["Concept Name"] for row in weak_concepts[:3]
-                ),
+                "detail": ", ".join(row["Concept Name"] for row in weak_concepts[:3]),
             }
         )
     next_topic = None
@@ -322,6 +494,20 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
             {
                 "title": "Quiz Practice",
                 "detail": "Try a short quiz to reinforce your learning.",
+            }
+        )
+    if first_attempt_success_rate < 60 and quiz_attempts > 0:
+        recommendations.append(
+            {
+                "title": "First-Attempt Review",
+                "detail": "Review the concepts behind the questions you missed on the first try.",
+            }
+        )
+    if avg_time_per_question > 90 and quiz_attempts > 0:
+        recommendations.append(
+            {
+                "title": "Time Management",
+                "detail": "Take a moment to slow down and read each question carefully.",
             }
         )
     if any("🔴 Weak Concept" in row["Current Status"] for row in mastery_rows):
@@ -363,6 +549,11 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
             "quiz_attempts": quiz_attempts,
             "quiz_accuracy": quiz_accuracy,
             "avg_session_duration": avg_session_duration,
+            "first_attempt_success_rate": first_attempt_success_rate,
+            "comprehension_score": comprehension_score,
+            "average_attempts": average_attempts,
+            "avg_time_per_question": avg_time_per_question,
+            "hint_usage": hint_usage,
         },
         "concept_mastery": mastery_rows,
         "weak_concepts": weak_concepts,
@@ -375,10 +566,11 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         "quiz_performance": {
             "total_quizzes": quiz_attempts,
             "average_score": round(quiz_accuracy, 1),
-            "highest_score": max((quiz.score for quiz in quizzes), default=0),
-            "lowest_score": min((quiz.score for quiz in quizzes), default=0),
+            "highest_score": highest_score,
+            "lowest_score": lowest_score,
             "improvement": quiz_line,
         },
+        "badges": badges,
         "timeline": timeline,
         "insights": insights,
         "recommendations": recommendations,
