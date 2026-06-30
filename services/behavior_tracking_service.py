@@ -153,6 +153,7 @@ def track_mode_entered(
     payload = _normalize_metadata(metadata)
     payload.update({
         "mode": mode,
+        "learning_mode": mode,
         "document_id": document_id,
         "previous_mode": previous_mode,
     })
@@ -181,6 +182,7 @@ def track_mode_exited(
     payload = _normalize_metadata(metadata)
     payload.update({
         "mode": mode,
+        "learning_mode": mode,
         "document_id": document_id,
         "next_mode": next_mode,
         "entered_at": entered_at.isoformat(),
@@ -210,6 +212,7 @@ def track_mode_switched(
     payload.update({
         "previous_mode": previous_mode,
         "mode": mode,
+        "learning_mode": mode,
         "document_id": document_id,
     })
     return track_event(

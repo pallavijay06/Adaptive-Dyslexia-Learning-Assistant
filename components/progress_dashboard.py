@@ -8,6 +8,12 @@ from typing import Any
 from services.progress_dashboard_service import get_dashboard_data
 
 
+def _format_metric_value(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}%"
+
+
 def _render_metrics_row(label: str, value: Any, delta: str | None = None, description: str | None = None) -> None:
     if delta:
         st.metric(label, value, delta=delta)
@@ -98,13 +104,13 @@ def render_dashboard(user_id: int) -> None:
             cols = st.columns(3)
             cols[0].metric("Learning Mode Effectiveness", f"{profile.learning_mode_effectiveness_score:.2f}%")
             cols[1].metric("Effectiveness Level", profile.learning_mode_effectiveness_level or "N/A")
-            cols[2].metric("Mode Engagement", f"{profile.mode_engagement_score:.2f}%")
+            cols[2].metric("Mode Engagement", _format_metric_value(profile.mode_engagement_score))
 
             cols = st.columns(4)
-            cols[0].metric("Mode Switching", f"{profile.mode_switching_score:.2f}%")
-            cols[1].metric("Feature Utilization", f"{profile.feature_utilization_score:.2f}%")
-            cols[2].metric("Post-Mode Improvement", f"{profile.post_mode_improvement_score:.2f}%")
-            cols[3].metric("Mode Retention", f"{profile.mode_retention_score:.2f}%")
+            cols[0].metric("Mode Switching", _format_metric_value(profile.mode_switching_score))
+            cols[1].metric("Feature Utilization", _format_metric_value(profile.feature_utilization_score))
+            cols[2].metric("Post-Mode Improvement", _format_metric_value(profile.post_mode_improvement_score))
+            cols[3].metric("Mode Retention", _format_metric_value(profile.mode_retention_score))
 
             breakdown = profile.learning_mode_metric_breakdown or {}
             if breakdown:

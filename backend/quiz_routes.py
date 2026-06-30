@@ -10,13 +10,11 @@ from flask import Blueprint, jsonify, request
 
 from database.db import (
     attach_learning_support_logs_to_quiz,
-    get_behavior_events,
     save_learning_support_log,
-    save_learning_mode_effectiveness_profile,
     save_quiz_question_responses,
     save_quiz_score,
-    save_learner_comprehension_profile,
 )
+from services.behavior_tracking_service import track_quiz_completed
 from services.document_context import DocumentError, get_document_text
 from services.llm_router import LLMRouterError
 from services.progress_dashboard_service import calculate_quiz_comprehension_score
@@ -28,8 +26,7 @@ from services.quiz_service import (
     generate_personalized_quiz_feedback,
     generate_short_questions,
 )
-from services.learner_model_service import calculate_comprehension_score
-from services.learning_mode_effectiveness_service import calculate_learning_mode_effectiveness
+from services.learner_model_service import refresh_learner_profiles_from_quiz
 
 quiz_bp = Blueprint("quiz", __name__)
 logger = logging.getLogger(__name__)
@@ -277,11 +274,20 @@ def submit_quiz() -> tuple[object, int]:
 
         if user_id_for_tracking is not None:
             try:
-                learner_model_result = calculate_comprehension_score(report)
-                save_learner_comprehension_profile(user_id_for_tracking, learner_model_result)
-                behavior_events = get_behavior_events(user_id_for_tracking, limit=500)
-                learning_mode_result = calculate_learning_mode_effectiveness(behavior_events)
-                save_learning_mode_effectiveness_profile(user_id_for_tracking, learning_mode_result)
+                total_questions = len(quiz_data)
+                quiz_accuracy = round((int(report.get("score") or 0) / total_questions) * 100.0, 1) if total_questions else 0.0
+                track_quiz_completed(
+                    user_id=user_id_for_tracking,
+                    metadata={
+                        "quiz_accuracy": quiz_accuracy,
+                        "score": quiz_accuracy,
+                        "mode": "Quiz",
+                    },
+                )
+                refresh_learner_profiles_from_quiz(
+                    user_id_for_tracking,
+                    quiz_evaluation=report,
+                )
             except Exception:
                 logger.exception("Failed to persist learner comprehension profile")
         return jsonify({"success": True, "report": report}), 200

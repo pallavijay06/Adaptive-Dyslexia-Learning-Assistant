@@ -266,19 +266,30 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
     average_attempts = _calculate_average_attempts(all_responses)
     avg_time_per_question = _calculate_avg_time_per_question(all_responses)
     hint_usage = sum(1 for log in support_logs if log.support_type == "hint")
-    concept_score = _calculate_conceptual_score(concepts, fallback_score=quiz_accuracy)
-    support_dependency_score = _calculate_learning_support_dependency_score(
-        len(support_logs),
-        len(all_responses),
-    )
-    response_efficiency_score = _calculate_response_efficiency_score(avg_time_per_question)
-    comprehension_score = _calculate_comprehension_score(
-        quiz_accuracy,
-        concept_score,
-        support_dependency_score,
-        first_attempt_success_rate,
-        response_efficiency_score,
-    )
+
+    if profile and profile.comprehension_score is not None:
+        comprehension_score = float(profile.comprehension_score)
+        concept_score = float(profile.conceptual_answer_score or 0.0)
+        support_dependency_score = float(profile.learning_support_score or 0.0)
+        response_efficiency_score = float(profile.response_efficiency_score or 0.0)
+        if profile.first_attempt_score is not None:
+            first_attempt_success_rate = float(profile.first_attempt_score)
+        if profile.quiz_accuracy_score is not None:
+            quiz_accuracy = float(profile.quiz_accuracy_score)
+    else:
+        concept_score = _calculate_conceptual_score(concepts, fallback_score=quiz_accuracy)
+        support_dependency_score = _calculate_learning_support_dependency_score(
+            len(support_logs),
+            len(all_responses),
+        )
+        response_efficiency_score = _calculate_response_efficiency_score(avg_time_per_question)
+        comprehension_score = _calculate_comprehension_score(
+            quiz_accuracy,
+            concept_score,
+            support_dependency_score,
+            first_attempt_success_rate,
+            response_efficiency_score,
+        )
     avg_session_duration = (sum(session_durations) / len(session_durations)) if session_durations else 0.0
 
     quiz_percentages_sorted = sorted(quiz_percentages)

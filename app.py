@@ -32,13 +32,10 @@ from backend.retriever import retrieve_relevant_chunks_for_question
 from backend.vector_store import build_index
 from database.db import (
     attach_learning_support_logs_to_quiz,
-    get_behavior_events,
     save_chat,
     save_document,
     save_learning_session,
     save_learning_support_log,
-    save_learner_comprehension_profile,
-    save_learning_mode_effectiveness_profile,
     save_quiz_question_responses,
     save_quiz_score,
     save_user,
@@ -93,8 +90,7 @@ from services.quiz_service import (
     generate_personalized_quiz_feedback,
     generate_short_questions,
 )
-from services.learner_model_service import calculate_comprehension_score
-from services.learning_mode_effectiveness_service import calculate_learning_mode_effectiveness
+from services.learner_model_service import refresh_learner_profiles_from_quiz
 from services.progress_dashboard_service import calculate_quiz_comprehension_score
 from services.quiz_hint_service import generate_quiz_hint, generate_short_answer_hint
 from services.adaptive_tutor import AdaptiveAITutor
@@ -616,6 +612,77 @@ def _process_image_ocr(image_file) -> None:
             show_user_error("Something went wrong during OCR. Please try again.", exc)
 
 
+_LEARNING_MODE_TRACKING_MAP = {
+    "📖 Read": "Read",
+    "🔊 Listen": "Listen",
+    "🧠 Visual Learn": "Visual",
+    "📝 Quiz": "Quiz",
+    "🧮 STEM Support": "STEM",
+}
+
+
+def _handle_learning_mode_transition(selected_mode: str) -> None:
+    """Record MODE_ENTERED, MODE_EXITED, and MODE_SWITCHED behaviour events."""
+    user_id = st.session_state.get("current_user_id")
+    if user_id is None:
+        return
+
+    current_mode = st.session_state.get("active_learning_mode")
+    entered_at = st.session_state.get("active_learning_mode_entered_at")
+    document_id = st.session_state.get("saved_document_id")
+    now = datetime.utcnow()
+
+    if selected_mode == "Select a Mode":
+        if current_mode and entered_at:
+            try:
+                track_mode_exited(
+                    user_id=user_id,
+                    mode=current_mode,
+                    entered_at=entered_at,
+                    document_id=document_id,
+                )
+            except Exception:
+                logger.exception("Failed to track mode exit")
+        st.session_state.active_learning_mode = None
+        st.session_state.active_learning_mode_entered_at = None
+        return
+
+    new_mode = _LEARNING_MODE_TRACKING_MAP.get(selected_mode)
+    if not new_mode or new_mode == current_mode:
+        return
+
+    if current_mode and entered_at:
+        try:
+            track_mode_exited(
+                user_id=user_id,
+                mode=current_mode,
+                entered_at=entered_at,
+                document_id=document_id,
+                next_mode=new_mode,
+            )
+            track_mode_switched(
+                user_id=user_id,
+                previous_mode=current_mode,
+                mode=new_mode,
+                document_id=document_id,
+            )
+        except Exception:
+            logger.exception("Failed to track mode switch")
+
+    try:
+        track_mode_entered(
+            user_id=user_id,
+            mode=new_mode,
+            document_id=document_id,
+            previous_mode=current_mode,
+        )
+    except Exception:
+        logger.exception("Failed to track mode entry")
+
+    st.session_state.active_learning_mode = new_mode
+    st.session_state.active_learning_mode_entered_at = now
+
+
 def render_learning_modes() -> None:
     """Render learning mode selector with Read, Listen, Visual Learn, and Quiz.
     
@@ -635,6 +702,7 @@ def render_learning_modes() -> None:
         index=0,  # First option is always default
     )
     st.session_state.selected_learning_mode = selected_mode
+    _handle_learning_mode_transition(selected_mode)
     st.divider()
 
     # Only render content if a real mode is selected (not the placeholder)
@@ -1815,14 +1883,22 @@ def _persist_interactive_quiz_timings(
 
     if user_id is not None:
         try:
-            learner_model_result = calculate_comprehension_score(
-                quiz_evaluation=report,
-                behavior_events=behavior_events,
+            quiz_accuracy = round((int(report.get("score") or 0) / total_questions) * 100.0, 1) if total_questions else 0.0
+            track_quiz_completed(
+                user_id=user_id,
+                metadata={
+                    "quiz_id": quiz_attempt.id,
+                    "quiz_accuracy": quiz_accuracy,
+                    "score": quiz_accuracy,
+                    "mode": "Quiz",
+                    "timestamp": submit_time.isoformat(),
+                },
             )
-            save_learner_comprehension_profile(user_id, learner_model_result)
-            behavior_history = get_behavior_events(user_id, limit=500)
-            learning_mode_result = calculate_learning_mode_effectiveness(behavior_history)
-            save_learning_mode_effectiveness_profile(user_id, learning_mode_result)
+            refresh_learner_profiles_from_quiz(
+                user_id,
+                quiz_evaluation=report,
+                short_answer_evaluations=short_feedback,
+            )
         except Exception:
             logger.exception("Failed to persist learner profile metrics")
     

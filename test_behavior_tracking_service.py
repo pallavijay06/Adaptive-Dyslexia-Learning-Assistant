@@ -1,5 +1,6 @@
 import unittest
 import uuid
+from datetime import datetime
 
 from database import db
 from services.behavior_tracking_service import (
@@ -8,7 +9,7 @@ from services.behavior_tracking_service import (
     track_event,
     track_formula_assistant_used,
 )
-from services.learner_model_service import calculate_comprehension_score
+from services.learner_model_service import calculate_comprehension_score, calculate_conceptual_answer_score
 
 
 class BehaviorTrackingServiceTests(unittest.TestCase):
@@ -72,6 +73,39 @@ class BehaviorTrackingServiceTests(unittest.TestCase):
         self.assertEqual(result["learning_support_score"], 60.0)
         self.assertEqual(result["first_attempt_score"], 50.0)
         self.assertAlmostEqual(result["response_efficiency_score"], 72.2, places=1)
+
+    def test_conceptual_answer_score_from_short_answer_evaluations(self) -> None:
+        short_answers = [
+            {"evaluation": {"score": 4, "max_score": 5}},
+            {"evaluation": {"score": 3, "max_score": 5}},
+        ]
+        score = calculate_conceptual_answer_score(short_answers)
+        self.assertEqual(score, 70.0)
+
+        result = calculate_comprehension_score(
+            quiz_evaluation={"correct_answers": 3, "total_questions": 4},
+            short_answer_evaluations=short_answers,
+        )
+        self.assertEqual(result["conceptual_answer_score"], 70.0)
+        self.assertIn("conceptual_answer", result["metric_breakdown"])
+
+    def test_mode_tracking_events_persist(self) -> None:
+        from services.behavior_tracking_service import (
+            track_mode_entered,
+            track_mode_exited,
+            track_mode_switched,
+        )
+
+        entered_at = datetime.utcnow()
+        track_mode_entered(self.user.id, mode="Read", document_id=1)
+        track_mode_switched(self.user.id, previous_mode="Read", mode="Listen", document_id=1)
+        track_mode_exited(self.user.id, mode="Listen", entered_at=entered_at, document_id=1)
+
+        stored = db.get_behavior_events(self.user.id, limit=10)
+        event_types = {event.event_type for event in stored}
+        self.assertIn("MODE_ENTERED", event_types)
+        self.assertIn("MODE_SWITCHED", event_types)
+        self.assertIn("MODE_EXITED", event_types)
 
 
 if __name__ == "__main__":

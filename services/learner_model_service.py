@@ -355,3 +355,33 @@ def _to_float(value: Any) -> float | None:
 def _clamp(value: float, minimum: float = 0.0, maximum: float = 100.0) -> float:
     """Clamp a numeric value to the scoring range."""
     return max(minimum, min(maximum, value))
+
+
+def refresh_learner_profiles_from_quiz(
+    user_id: int,
+    *,
+    quiz_evaluation: Mapping[str, Any] | None = None,
+    short_answer_evaluations: Iterable[Mapping[str, Any]] | None = None,
+    behavior_event_limit: int = 500,
+) -> dict[str, Any]:
+    """Recompute and persist comprehension and learning-mode profiles from stored events."""
+    from database.db import (
+        get_behavior_events,
+        save_learner_comprehension_profile,
+        save_learning_mode_effectiveness_profile,
+    )
+    from services.learning_mode_effectiveness_service import calculate_learning_mode_effectiveness
+
+    behavior_events = get_behavior_events(user_id, limit=behavior_event_limit)
+    learner_model_result = calculate_comprehension_score(
+        quiz_evaluation=quiz_evaluation,
+        short_answer_evaluations=short_answer_evaluations,
+        behavior_events=behavior_events,
+    )
+    save_learner_comprehension_profile(user_id, learner_model_result)
+    learning_mode_result = calculate_learning_mode_effectiveness(behavior_events)
+    save_learning_mode_effectiveness_profile(user_id, learning_mode_result)
+    return {
+        "comprehension": learner_model_result,
+        "learning_mode": learning_mode_result,
+    }
