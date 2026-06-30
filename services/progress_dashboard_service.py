@@ -18,6 +18,7 @@ from database.db import (
     get_concept_mastery,
     get_learner_profile,
     get_chat_history,
+    get_behavior_events,
 )
 from services.learning_mode_effectiveness_service import compute_mode_effectiveness
 
@@ -72,6 +73,47 @@ def _parse_mode(activity_type: str) -> str:
     if "stem" in lower:
         return "STEM Support"
     return "Other"
+
+
+# Canonical mapping from MODE_ENTERED event metadata "mode" values to display labels.
+_MODE_LABEL_MAP: dict[str, str] = {
+    "Read": "Simplified Notes",
+    "Listen": "Audio Learning",
+    "Visual": "Visual Learning",
+    "Quiz": "Quiz",
+    "AI Tutor": "AI Tutor",
+    "STEM": "STEM Support",
+    "read": "Simplified Notes",
+    "listen": "Audio Learning",
+    "visual": "Visual Learning",
+    "quiz": "Quiz",
+    "ai tutor": "AI Tutor",
+    "stem": "STEM Support",
+}
+
+
+def _count_mode_entries_from_behavior(behavior_events: list[Any]) -> Counter:
+    """Count MODE_ENTERED behavior events by their canonical display label.
+
+    Returns an empty Counter when no MODE_ENTERED events exist so the caller
+    can distinguish "no data" from a non-zero count.
+    """
+    counts: Counter = Counter()
+    for event in behavior_events:
+        if (event.event_type or "").upper() != "MODE_ENTERED":
+            continue
+        metadata = event.metadata or {}
+        raw_mode = str(
+            metadata.get("learning_mode")
+            or metadata.get("mode")
+            or ""
+        ).strip()
+        if not raw_mode:
+            continue
+        label = _MODE_LABEL_MAP.get(raw_mode) or _MODE_LABEL_MAP.get(raw_mode.lower())
+        if label:
+            counts[label] += 1
+    return counts
 
 
 def _build_chart_series(data: dict[str, float], max_points: int = 30) -> list[tuple[str, float]]:
@@ -334,19 +376,30 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         )
     ]
 
-    # Learning mode preference
-    mode_counts = Counter(_parse_mode(event.activity_type) for event in history)
+    # Learning mode preference — built exclusively from real MODE_ENTERED behavior events.
+    behavior_events_all = get_behavior_events(user_id, limit=2000)
+    mode_counts = _count_mode_entries_from_behavior(behavior_events_all)
+
+    # Secondary signal: learning_history activity_type, used only when no
+    # MODE_ENTERED events exist at all (e.g. very old data without tracking).
     if not mode_counts:
-        mode_counts["Simplified Notes"] = 1
-    total_mode_events = sum(mode_counts.values()) or 1
-    mode_usage = [
-        {
-            "mode": mode,
-            "count": count,
-            "percentage": round((count / total_mode_events) * 100, 1),
-        }
-        for mode, count in mode_counts.most_common()
-    ]
+        for event in history:
+            parsed = _parse_mode(event.activity_type)
+            if parsed != "Other":
+                mode_counts[parsed] += 1
+
+    total_mode_events = sum(mode_counts.values()) or 0
+    if total_mode_events > 0:
+        mode_usage = [
+            {
+                "mode": mode,
+                "count": count,
+                "percentage": round((count / total_mode_events) * 100, 1),
+            }
+            for mode, count in mode_counts.most_common()
+        ]
+    else:
+        mode_usage = []
 
     # Study activity trends
     daily_study: dict[str, float] = defaultdict(float)
@@ -364,80 +417,127 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         weekly_study[week_key] += duration
         monthly_study[month_key] += duration
 
-    # Timeline events
-    timeline: list[dict[str, str]] = []
-    for document in documents:
-        timeline.append(
-            {
-                "time": document.upload_time.strftime("%Y-%m-%d %H:%M"),
-                "event": "Document Uploaded",
-                "details": document.file_name,
-            }
-        )
+    # --- Day-grouped summarized timeline ---
+    _day_uploads: dict[str, list[str]] = defaultdict(list)
+    _day_quizzes: dict[str, int] = defaultdict(int)
+    _day_ai_questions: dict[str, int] = defaultdict(int)
+    _day_modes: dict[str, set] = defaultdict(set)
+
+    for doc in documents:
+        day = _extract_date(doc.upload_time)
+        if day:
+            _day_uploads[str(day)].append(doc.file_name)
+
     for quiz in quizzes:
-        timeline.append(
-            {
-                "time": quiz.timestamp.strftime("%Y-%m-%d %H:%M"),
-                "event": "Quiz Taken",
-                "details": f"{quiz.topic} — {quiz.score}/{quiz.total_questions}",
-            }
-        )
-    for topic in topics:
-        if topic.last_studied:
-            timeline.append(
-                {
-                    "time": topic.last_studied.strftime("%Y-%m-%d %H:%M"),
-                    "event": "Topic Learned",
-                    "details": topic.topic,
-                }
-            )
-    for activity in history:
-        activity_type = activity.activity_type or ""
-        timestamp = _normalize_datetime(activity.timestamp)
-        if not timestamp:
+        day = _extract_date(quiz.timestamp)
+        if day:
+            _day_quizzes[str(day)] += 1
+
+    for chat in chats:
+        day = _extract_date(chat.timestamp)
+        if day:
+            _day_ai_questions[str(day)] += 1
+
+    for event in behavior_events_all:
+        if (event.event_type or "").upper() != "MODE_ENTERED":
             continue
-        if "audio" in activity_type:
-            timeline.append(
-                {
-                    "time": timestamp.strftime("%Y-%m-%d %H:%M"),
-                    "event": "Audio Generated",
-                    "details": activity.topic or "Audio learning session",
-                }
-            )
-        elif "visual" in activity_type:
-            timeline.append(
-                {
-                    "time": timestamp.strftime("%Y-%m-%d %H:%M"),
-                    "event": "Visual Generated",
-                    "details": activity.topic or "Visual learning session",
-                }
-            )
-        elif "question" in activity_type or "chat" in activity_type:
-            timeline.append(
-                {
-                    "time": timestamp.strftime("%Y-%m-%d %H:%M"),
-                    "event": "AI Tutor Session",
-                    "details": activity.topic or "Question answered",
-                }
-            )
-    timeline.sort(key=lambda item: item["time"], reverse=True)
+        day = _extract_date(event.event_timestamp)
+        if not day:
+            continue
+        metadata = event.metadata or {}
+        raw_mode = str(
+            metadata.get("learning_mode") or metadata.get("mode") or ""
+        ).strip()
+        label = _MODE_LABEL_MAP.get(raw_mode) or _MODE_LABEL_MAP.get(raw_mode.lower())
+        if label:
+            _day_modes[str(day)].add(label)
+
+    all_days = sorted(
+        set(_day_uploads) | set(_day_quizzes) | set(_day_ai_questions) | set(_day_modes),
+        reverse=True,
+    )
+
+    today = datetime.utcnow().date()
+    yesterday = today - timedelta(days=1)
+    last_week_start = today - timedelta(days=7)
+
+    def _day_label(day_str: str) -> str:
+        try:
+            d = datetime.strptime(day_str, "%Y-%m-%d").date()
+        except ValueError:
+            return day_str
+        if d == today:
+            return "Today"
+        if d == yesterday:
+            return "Yesterday"
+        return d.strftime("%A, %d %b %Y")
+
+    timeline_days: list[dict[str, Any]] = []
+    last_week_days: list[str] = []
+    for day_str in all_days:
+        try:
+            day_date = datetime.strptime(day_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if day_date < last_week_start:
+            last_week_days.append(day_str)
+            continue
+        bullets: list[str] = []
+        uploads = _day_uploads.get(day_str, [])
+        if uploads:
+            for fname in uploads[:3]:
+                bullets.append(f"Uploaded {fname}")
+            if len(uploads) > 3:
+                bullets.append(f"... and {len(uploads) - 3} more document(s)")
+        qcount = _day_quizzes.get(day_str, 0)
+        if qcount:
+            bullets.append(f"Completed {qcount} quiz{'zes' if qcount > 1 else ''}")
+        aiq = _day_ai_questions.get(day_str, 0)
+        if aiq:
+            bullets.append(f"Asked {aiq} AI Tutor question{'s' if aiq > 1 else ''}")
+        modes = _day_modes.get(day_str, set())
+        for m in sorted(modes):
+            bullets.append(f"Used {m}")
+        if bullets:
+            timeline_days.append({"label": _day_label(day_str), "bullets": bullets})
+
+    if last_week_days:
+        lw_docs = sum(len(_day_uploads.get(d, [])) for d in last_week_days)
+        lw_quizzes = sum(_day_quizzes.get(d, 0) for d in last_week_days)
+        lw_modes: set = set()
+        for d in last_week_days:
+            lw_modes |= _day_modes.get(d, set())
+        lw_bullets: list[str] = []
+        if lw_docs:
+            lw_bullets.append(f"Studied {lw_docs} document{'s' if lw_docs > 1 else ''}")
+        if lw_quizzes:
+            lw_bullets.append(f"Completed {lw_quizzes} quiz{'zes' if lw_quizzes > 1 else ''}")
+        for m in sorted(lw_modes):
+            lw_bullets.append(f"Used {m}")
+        if lw_bullets:
+            timeline_days.append({"label": "Last Week & Earlier", "bullets": lw_bullets})
+
+    # Flat list kept for backward compatibility.
+    timeline: list[dict[str, str]] = []
+    for entry in timeline_days:
+        for bullet in entry["bullets"]:
+            timeline.append({"time": entry["label"], "event": bullet, "details": ""})
 
     # Insights
     insights: list[str] = []
-    favorite_mode = mode_usage[0]["mode"] if mode_usage else "Simplified Notes"
-    insights.append(f"You learn best using {favorite_mode}.")
-
+    favorite_mode = mode_usage[0]["mode"] if mode_usage else "No preferred mode yet"
+    if mode_usage:
+        insights.append(f"You learn best using {favorite_mode}.")
     if topics:
         strongest_topic = max(topics, key=lambda t: t.mastery_level)
         insights.append(f"You usually study {strongest_topic.topic}.")
-
     evening_sessions = [
         _normalize_datetime(session.timestamp).hour for session in sessions
-        if _normalize_datetime(session.timestamp) is not None and 17 <= _normalize_datetime(session.timestamp).hour <= 22
+        if _normalize_datetime(session.timestamp) is not None
+        and 17 <= _normalize_datetime(session.timestamp).hour <= 22
     ]
     if len(evening_sessions) >= max(1, len(sessions) // 2):
         insights.append("You perform better during evening sessions.")
-
     if quiz_attempts >= 2 and quiz_percentages:
         sorted_quiz_percentages = [
             round((quiz.score / quiz.total_questions) * 100.0, 1)
@@ -447,9 +547,9 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         latest_score_pct = sorted_quiz_percentages[-1]
         if latest_score_pct > first_score_pct:
             insights.append(
-                f"You have improved your quiz accuracy from {first_score_pct:.0f}% to {latest_score_pct:.0f}%.")
+                f"Your quiz accuracy improved from {first_score_pct:.0f}% to {latest_score_pct:.0f}%.")
     if weak_concepts:
-        insights.append(f"You should revise {weak_concepts[0]['Concept Name']}.")
+        insights.append(f"Repeated mistakes detected on {weak_concepts[0]['Concept Name']}.")
 
     badges = _create_badges(
         quiz_attempts=quiz_attempts,
@@ -461,72 +561,165 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         hint_usage=hint_usage,
         improvement_amount=improvement_amount,
     )
-
     if comprehension_score >= 80 and "High Comprehension" not in badges:
         badges.append("High Comprehension")
 
-    # Recommendations
+    # --- Data-driven, reason-explained recommendations ---
     recommendations: list[dict[str, str]] = []
-    if weak_concepts:
+
+    truly_weak = [r for r in mastery_rows if r["Current Status"] == "\U0001f534 Weak Concept"]
+    needs_revision = [r for r in mastery_rows if r["Current Status"] == "\U0001f7e1 Needs Revision"]
+    revision_targets = truly_weak[:2] + needs_revision[:1]
+    for r in revision_targets:
         recommendations.append(
             {
-                "title": "Concepts to Revise",
-                "detail": ", ".join(row["Concept Name"] for row in weak_concepts[:3]),
+                "title": f"Revise: {r['Concept Name']}",
+                "detail": (
+                    f"Your mastery score for {r['Concept Name']} is {r['Mastery Score']}% "
+                    f"with {r['Revisions']} revision(s) recorded. "
+                    "Revisit this concept before attempting another quiz."
+                ),
             }
         )
-    next_topic = None
+
+    if favorite_mode != "No preferred mode yet":
+        mode_pct = mode_usage[0]["percentage"] if mode_usage else 0
+        recommendations.append(
+            {
+                "title": f"Keep Using {favorite_mode}",
+                "detail": (
+                    f"{favorite_mode} accounts for {mode_pct}% of your learning activity "
+                    "and is your most-used mode. Continue using it as your primary study method."
+                ),
+            }
+        )
+    else:
+        recommendations.append(
+            {
+                "title": "Explore a Learning Mode",
+                "detail": (
+                    "You haven't used any learning mode yet. "
+                    "Try Simplified Notes or Audio Learning to find the format that suits you best."
+                ),
+            }
+        )
+
+    if quiz_attempts > 0 and first_attempt_success_rate < 60:
+        recommendations.append(
+            {
+                "title": "Improve First-Attempt Success",
+                "detail": (
+                    f"Your first-attempt success rate is {first_attempt_success_rate:.1f}%, "
+                    "meaning you frequently revise answers. "
+                    "Re-read simplified notes before each quiz to reduce this."
+                ),
+            }
+        )
+    elif quiz_attempts > 0 and first_attempt_success_rate >= 80:
+        recommendations.append(
+            {
+                "title": "Strong First-Attempt Performance",
+                "detail": (
+                    f"You answered {first_attempt_success_rate:.1f}% of questions correctly on the first try. "
+                    "This shows solid preparation. Keep using the same study routine."
+                ),
+            }
+        )
+
+    if quiz_attempts > 0 and avg_time_per_question > 90:
+        recommendations.append(
+            {
+                "title": "Reduce Time Per Question",
+                "detail": (
+                    f"You average {avg_time_per_question:.0f} seconds per question "
+                    "(recommended: under 90 seconds). "
+                    "Practice reading questions quickly to improve response speed."
+                ),
+            }
+        )
+    elif quiz_attempts > 0 and 0 < avg_time_per_question <= 45:
+        recommendations.append(
+            {
+                "title": "Efficient Response Time",
+                "detail": (
+                    f"Your average response time is {avg_time_per_question:.0f} seconds per question. "
+                    "Excellent recall and preparation."
+                ),
+            }
+        )
+
+    if hint_usage > 3 and quiz_attempts > 0:
+        hint_per_quiz = round(hint_usage / quiz_attempts, 1)
+        recommendations.append(
+            {
+                "title": "Reduce Hint Dependency",
+                "detail": (
+                    f"You used hints {hint_usage} times across {quiz_attempts} quiz(zes) "
+                    f"({hint_per_quiz} hints per quiz on average). "
+                    "Try completing quizzes without hints to strengthen independent recall."
+                ),
+            }
+        )
+
     if topics:
         weak_topics = [t for t in topics if t.mastery_level < 0.7]
         if weak_topics:
-            next_topic = min(weak_topics, key=lambda t: t.mastery_level).topic
+            nt = min(weak_topics, key=lambda t: t.mastery_level)
+            recommendations.append(
+                {
+                    "title": f"Study Next: {nt.topic}",
+                    "detail": (
+                        f"{nt.topic} has the lowest mastery level "
+                        f"({nt.mastery_level * 100:.0f}%) among your tracked topics. "
+                        "Focus on this before moving to new material."
+                    ),
+                }
+            )
         else:
-            next_topic = topics[0].topic
-    if next_topic:
+            nt = topics[0]
+            recommendations.append(
+                {
+                    "title": f"Continue: {nt.topic}",
+                    "detail": (
+                        "You have strong mastery across all studied topics. "
+                        f"Continue deepening your knowledge of {nt.topic} with a new quiz."
+                    ),
+                }
+            )
+
+    if quiz_attempts == 0:
         recommendations.append(
             {
-                "title": "Next Topic to Study",
-                "detail": next_topic,
+                "title": "Take Your First Quiz",
+                "detail": (
+                    "You haven't taken any quizzes yet. "
+                    "Quizzes are the best way to measure retention. "
+                    "Upload a document and generate a quiz to get started."
+                ),
             }
         )
-    recommendations.append(
-        {
-            "title": "Suggested Learning Mode",
-            "detail": favorite_mode,
-        }
-    )
-    target_minutes = 30 if total_study_time < 60 else 45
-    recommendations.append(
-        {
-            "title": "Daily Learning Goal",
-            "detail": f"Aim for {target_minutes} minutes today.",
-        }
-    )
-    if quiz_attempts < 5:
+    elif quiz_attempts < 5:
         recommendations.append(
             {
-                "title": "Quiz Practice",
-                "detail": "Try a short quiz to reinforce your learning.",
+                "title": "Build Quiz Consistency",
+                "detail": (
+                    f"You have completed {quiz_attempts} quiz(zes) so far. "
+                    "Taking at least 5 quizzes gives the AI Tutor enough data "
+                    "to personalise recommendations accurately."
+                ),
             }
         )
-    if first_attempt_success_rate < 60 and quiz_attempts > 0:
+
+    if truly_weak and favorite_mode != "Visual Learning":
+        weak_names = ", ".join(r["Concept Name"] for r in truly_weak[:2])
         recommendations.append(
             {
-                "title": "First-Attempt Review",
-                "detail": "Review the concepts behind the questions you missed on the first try.",
-            }
-        )
-    if avg_time_per_question > 90 and quiz_attempts > 0:
-        recommendations.append(
-            {
-                "title": "Time Management",
-                "detail": "Take a moment to slow down and read each question carefully.",
-            }
-        )
-    if any("🔴 Weak Concept" in row["Current Status"] for row in mastery_rows):
-        recommendations.append(
-            {
-                "title": "Visual Revision",
-                "detail": "Review weak concepts with a visual learning exercise.",
+                "title": "Try Visual Learning for Weak Concepts",
+                "detail": (
+                    f"Concepts like {weak_names} have low mastery scores. "
+                    "Visual Learning (flowcharts and mind maps) can reinforce these "
+                    "more effectively than text alone."
+                ),
             }
         )
 
@@ -584,6 +777,7 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         },
         "badges": badges,
         "timeline": timeline,
+        "timeline_days": timeline_days,
         "insights": insights,
         "recommendations": recommendations,
         "favorite_mode": favorite_mode,

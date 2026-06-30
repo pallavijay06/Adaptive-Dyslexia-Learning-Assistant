@@ -122,7 +122,7 @@ class LearnerProfileRecord:
     unique_topics_studied: int = 0
     total_questions_asked: int = 0
     average_quiz_score: float = 0.0
-    preferred_learning_mode: str = "Simplified Notes"
+    preferred_learning_mode: str | None = None
     learning_frequency: str = "occasional"  # daily, weekly, occasional
     confidence_level: float = 0.5  # 0-1 scale
     explanation_complexity: str = "medium"  # simple, medium, advanced
