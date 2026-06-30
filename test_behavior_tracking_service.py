@@ -8,6 +8,7 @@ from services.behavior_tracking_service import (
     track_event,
     track_formula_assistant_used,
 )
+from services.learner_model_service import calculate_comprehension_score
 
 
 class BehaviorTrackingServiceTests(unittest.TestCase):
@@ -56,6 +57,21 @@ class BehaviorTrackingServiceTests(unittest.TestCase):
         self.assertEqual(len(stored_events), 2)
         self.assertIn("AUDIO_PLAYED", {event.event_type for event in stored_events})
         self.assertIn("FORMULA_ASSISTANT_USED", {event.event_type for event in stored_events})
+
+    def test_calculate_comprehension_score_uses_behavior_events(self) -> None:
+        behavior_events = [
+            {"event_type": "HINT_REQUESTED", "metadata": {"question_id": "q1", "hint_number": 1}},
+            {"event_type": "HINT_REQUESTED", "metadata": {"question_id": "q2", "hint_number": 2}},
+            {"event_type": "QUIZ_RETRY", "metadata": {"question_id": "q1", "attempt_number": 2}},
+            {"event_type": "RESPONSE_TIME", "metadata": {"question_id": "q1", "attempt_number": 1, "time_taken_seconds": 20}},
+            {"event_type": "RESPONSE_TIME", "metadata": {"question_id": "q2", "attempt_number": 2, "time_taken_seconds": 90}},
+        ]
+
+        result = calculate_comprehension_score(behavior_events=behavior_events)
+
+        self.assertEqual(result["learning_support_score"], 60.0)
+        self.assertEqual(result["first_attempt_score"], 50.0)
+        self.assertAlmostEqual(result["response_efficiency_score"], 72.2, places=1)
 
 
 if __name__ == "__main__":

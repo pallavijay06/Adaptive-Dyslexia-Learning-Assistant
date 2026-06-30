@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from database.db import (
     get_learner_profile,
@@ -11,6 +11,8 @@ from database.db import (
     get_concept_mastery,
     get_learning_history,
     get_adaptive_preferences,
+    get_quiz_question_responses,
+    get_learning_support_logs,
 )
 from services.behavior_tracker import BehaviorTracker
 

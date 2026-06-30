@@ -1,0 +1,332 @@
+"""Interactive one-question-at-a-time quiz UI component."""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime
+from typing import Any
+
+import streamlit as st
+
+logger = logging.getLogger(__name__)
+
+
+def initialize_quiz_session_state(
+    mcqs: list[dict[str, Any]],
+    short_questions: list[dict[str, Any]],
+) -> None:
+    """Initialize session state for the new interactive quiz experience."""
+    if "quiz_state" not in st.session_state:
+        # Merge MCQs and short questions into a single quiz list
+        all_questions = []
+        
+        for i, mcq in enumerate(mcqs):
+            all_questions.append({
+                **mcq,
+                "quiz_index": i,
+                "original_type": "MCQ",
+                "question_id": f"mcq_{i}",
+            })
+        
+        for i, short_q in enumerate(short_questions):
+            all_questions.append({
+                **short_q,
+                "quiz_index": len(mcqs) + i,
+                "original_type": "Short Answer",
+                "question_id": f"short_{i}",
+            })
+        
+        st.session_state.quiz_state = {
+            "questions": all_questions,
+            "current_question_index": 0,
+            "answers": [""] * len(all_questions),  # Store answers
+            "question_timers": {},  # { question_index: { "start_time": ts, "accumulated_time": seconds } }
+            "hints": {},  # { question_index: hint_text } - cached hints
+            "hint_used": {},  # { question_index: count } - track hint usage
+            "quiz_started": True,
+            "quiz_submitted": False,
+        }
+        
+        # Initialize timer for first question
+        _start_question_timer(0)
+
+
+def _start_question_timer(question_index: int) -> None:
+    """Start or resume the timer for a question."""
+    if question_index not in st.session_state.quiz_state["question_timers"]:
+        st.session_state.quiz_state["question_timers"][question_index] = {
+            "start_time": time.time(),
+            "accumulated_time": 0,
+        }
+    else:
+        # Resume timer: set new start time
+        st.session_state.quiz_state["question_timers"][question_index]["start_time"] = time.time()
+
+
+def _pause_question_timer(question_index: int) -> None:
+    """Pause the timer and accumulate the elapsed time."""
+    timer_data = st.session_state.quiz_state["question_timers"].get(question_index)
+    if timer_data:
+        elapsed = time.time() - timer_data["start_time"]
+        timer_data["accumulated_time"] += elapsed
+        timer_data["start_time"] = None  # Mark as paused
+
+
+def get_current_question_time_seconds(question_index: int) -> int:
+    """Get the current total time spent on a question (accumulated + current session)."""
+    timer_data = st.session_state.quiz_state["question_timers"].get(question_index, {})
+    accumulated = timer_data.get("accumulated_time", 0)
+    
+    if timer_data.get("start_time"):
+        # Timer is running
+        elapsed = time.time() - timer_data["start_time"]
+        return int(accumulated + elapsed)
+    else:
+        # Timer is paused
+        return int(accumulated)
+
+
+def format_time_seconds(seconds: int) -> str:
+    """Format seconds to MM:SS format."""
+    mins = seconds // 60
+    secs = seconds % 60
+    return f"{mins:02d}:{secs:02d}"
+
+
+def render_quiz_progress_indicator(current_index: int, total: int) -> None:
+    """Render the progress indicator with question counter and progress bar."""
+    col1, col2 = st.columns([1, 3])
+    
+    with col1:
+        st.markdown(f"### Question {current_index + 1} of {total}")
+    
+    with col2:
+        progress = (current_index + 1) / total
+        st.progress(progress)
+        st.markdown(f"**{int(progress * 100)}% Completed**")
+
+
+def render_quiz_question(
+    question: dict[str, Any],
+    question_index: int,
+    stored_answer: str,
+) -> str:
+    """
+    Render a single quiz question with appropriate input based on type.
+    
+    Args:
+        question: Question data dict
+        question_index: Index in the quiz
+        stored_answer: The previously stored answer for this question
+    
+    Returns:
+        The selected/entered answer
+    """
+    question_text = question.get("question", "")
+    options = question.get("options", [])
+    original_type = question.get("original_type", "MCQ")
+    
+    st.markdown("---")
+    st.markdown(f"**Question:**\n\n{question_text}")
+    st.markdown("---")
+    
+    if original_type == "MCQ" and options:
+        # Multiple choice question
+        st.markdown("**Choose the best answer:**")
+        options_with_placeholder = ["-- Select Answer --"] + options
+        
+        if stored_answer and stored_answer in options:
+            selected_index = options_with_placeholder.index(stored_answer)
+        else:
+            selected_index = 0
+        
+        selected = st.radio(
+            "Options:",
+            options=options_with_placeholder,
+            index=selected_index,
+            key=f"question_{question_index}_answer",
+            label_visibility="collapsed",
+        )
+        
+        # Return the actual answer (not the placeholder)
+        return selected if selected != "-- Select Answer --" else ""
+    else:
+        # Short answer question
+        st.markdown("**Your answer:**")
+        answer = st.text_area(
+            "Enter your answer:",
+            value=stored_answer,
+            key=f"question_{question_index}_answer",
+            height=120,
+            label_visibility="collapsed",
+        )
+        return answer or ""
+
+
+def render_question_timer(question_index: int) -> None:
+    """Render a live updating timer for the current question."""
+    # This will be updated on each rerun via a placeholder
+    timer_placeholder = st.empty()
+    
+    def update_timer():
+        seconds = get_current_question_time_seconds(question_index)
+        timer_placeholder.metric(
+            label="⏱ Time on this question",
+            value=format_time_seconds(seconds),
+        )
+    
+    update_timer()
+    return timer_placeholder
+
+
+def render_hint_button(question_index: int, question: dict[str, Any]) -> str | None:
+    """
+    Render hint button and return the hint if available.
+    
+    Hints are cached in session state to avoid repeated LLM calls.
+    """
+    # Import here to avoid circular imports
+    from services.quiz_hint_service import generate_quiz_hint
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        if st.button(
+            "💡 Show Hint",
+            key=f"hint_btn_{question_index}",
+            help="Get a helpful hint for this question",
+        ):
+            # Generate or retrieve cached hint
+            if question_index not in st.session_state.quiz_state["hints"]:
+                question_text = question.get("question", "")
+                correct_answer = question.get("answer", "")
+                concept = question.get("concept", None)
+                
+                try:
+                    hint = generate_quiz_hint(
+                        question=question_text,
+                        correct_answer=correct_answer,
+                        concept=concept,
+                    )
+                    st.session_state.quiz_state["hints"][question_index] = hint
+                    
+                    # Track hint usage for learning support logs
+                    if question_index not in st.session_state.quiz_state["hint_used"]:
+                        st.session_state.quiz_state["hint_used"][question_index] = 0
+                    st.session_state.quiz_state["hint_used"][question_index] += 1
+                    
+                except Exception:
+                    logger.exception("Failed to generate hint")
+                    st.error("Could not generate hint. Please try again.")
+                    return None
+            
+            # Return the cached hint
+            return st.session_state.quiz_state["hints"].get(question_index)
+        
+        # Show cached hint if it exists
+        hint = st.session_state.quiz_state["hints"].get(question_index)
+        if hint:
+            st.info(f"💡 **Hint:** {hint}")
+            return hint
+    
+    return None
+
+
+def render_quiz_navigation(
+    current_index: int,
+    total_questions: int,
+    answers: list[str],
+) -> tuple[str, int | None]:
+    """
+    Render navigation buttons (Previous, Next, Submit).
+    
+    Returns:
+        Tuple of (action, next_index) where action is "previous", "next", "submit", or None
+    """
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        if current_index > 0:
+            if st.button("◀ Previous", key="nav_prev", use_container_width=True):
+                return "previous", current_index - 1
+        else:
+            st.button("◀ Previous", key="nav_prev", disabled=True, use_container_width=True)
+    
+    with col3:
+        if current_index < total_questions - 1:
+            if st.button("Next ▶", key="nav_next", use_container_width=True):
+                return "next", current_index + 1
+        else:
+            # Last question - show Submit button
+            if st.button("Submit Quiz", key="nav_submit", use_container_width=True):
+                # Validate all questions are answered
+                unanswered = [i for i, ans in enumerate(answers) if not ans or not str(ans).strip()]
+                if unanswered:
+                    st.warning(f"⚠️ Please answer all questions. Unanswered: {[i+1 for i in unanswered]}")
+                    return None, None
+                return "submit", None
+    
+    return None, None
+
+
+def persist_question_timing(
+    question_index: int,
+    user_id: int | None = None,
+    quiz_id: int | None = None,
+) -> int:
+    """
+    Pause the current question's timer and return accumulated time.
+    
+    Args:
+        question_index: Index of the question
+        user_id: User ID (for database tracking)
+        quiz_id: Quiz attempt ID (for database tracking)
+    
+    Returns:
+        Time spent on question in seconds
+    """
+    _pause_question_timer(question_index)
+    accumulated_time = get_current_question_time_seconds(question_index)
+    
+    # Optionally save to database if user_id is provided
+    if user_id is not None:
+        question = st.session_state.quiz_state["questions"][question_index]
+        question_id = question.get("question_id", f"q_{question_index}")
+        
+        # This would be handled during quiz submission
+        # For now, just track in session state
+        pass
+    
+    return accumulated_time
+
+
+def get_quiz_summary() -> dict[str, Any]:
+    """
+    Generate a quiz summary with per-question timing and basic stats.
+    
+    Returns:
+        A dict with summary statistics
+    """
+    questions = st.session_state.quiz_state.get("questions", [])
+    question_timers = st.session_state.quiz_state.get("question_timers", {})
+    
+    total_time = 0
+    question_times = []
+    
+    for i, question in enumerate(questions):
+        time_seconds = get_current_question_time_seconds(i)
+        total_time += time_seconds
+        question_times.append({
+            "question_number": i + 1,
+            "question": question.get("question", ""),
+            "time_seconds": time_seconds,
+            "time_formatted": format_time_seconds(time_seconds),
+        })
+    
+    return {
+        "total_time_seconds": total_time,
+        "total_time_formatted": format_time_seconds(total_time),
+        "question_times": question_times,
+        "total_questions": len(questions),
+    }

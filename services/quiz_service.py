@@ -1702,6 +1702,106 @@ def _build_recommendation_summary(weak_count: int, total_count: int) -> str:
     )
 
 
+def _derive_conceptual_score_from_weak_concepts(weak_concepts: list[str]) -> float:
+    if not weak_concepts:
+        return 90.0
+    score = 100.0 - min(len(weak_concepts) * 12.0, 60.0)
+    return round(max(score, 30.0), 1)
+
+
+def _calculate_learning_support_dependency(weak_dependency_count: int, total_questions: int) -> float:
+    if total_questions <= 0:
+        return 100.0
+    ratio = min(1.0, weak_dependency_count / float(total_questions))
+    return round(max(0.0, 100.0 - ratio * 80.0), 1)
+
+
+def _calculate_response_efficiency_score(avg_response_time: float) -> float:
+    if avg_response_time <= 30:
+        return 100.0
+    if avg_response_time >= 120:
+        return 0.0
+    return round(100.0 - ((avg_response_time - 30.0) / 90.0) * 100.0, 1)
+
+
+def _choose_suggested_learning_mode(
+    conceptual_score: float,
+    response_efficiency_score: float,
+    learning_support_dependency_score: float,
+    first_attempt_success_rate: float,
+) -> str:
+    if conceptual_score < 65.0:
+        return "Visual Learning"
+    if learning_support_dependency_score < 50.0:
+        return "AI Tutor"
+    if response_efficiency_score < 50.0:
+        return "Audio Learning"
+    if first_attempt_success_rate < 70.0:
+        return "Simplified Notes"
+    return "Simplified Notes"
+
+
+def generate_personalized_quiz_feedback(
+    quiz_accuracy: float,
+    conceptual_score: float | None = None,
+    avg_response_time: float = 0.0,
+    support_count: int = 0,
+    total_questions: int = 0,
+    first_attempt_success_rate: float = 0.0,
+    weak_concepts: list[str] | None = None,
+) -> dict[str, str]:
+    weak_concepts = weak_concepts or []
+    conceptual_score = conceptual_score if conceptual_score is not None else _derive_conceptual_score_from_weak_concepts(weak_concepts)
+    response_efficiency_score = _calculate_response_efficiency_score(avg_response_time)
+    support_dependency_score = _calculate_learning_support_dependency(support_count, total_questions)
+    suggested_learning_mode = _choose_suggested_learning_mode(
+        conceptual_score,
+        response_efficiency_score,
+        support_dependency_score,
+        first_attempt_success_rate,
+    )
+
+    strengths: list[str] = []
+    if quiz_accuracy >= 80.0:
+        strengths.append("Strong quiz accuracy")
+    if conceptual_score >= 75.0:
+        strengths.append("Good conceptual understanding")
+    if response_efficiency_score >= 70.0:
+        strengths.append("Efficient response pace")
+    if first_attempt_success_rate >= 70.0:
+        strengths.append("Good first-attempt recall")
+    if support_dependency_score >= 70.0:
+        strengths.append("Low support dependency")
+    if not strengths:
+        strengths.append("You have a solid starting point to improve with focused review.")
+
+    weaknesses: list[str] = []
+    if quiz_accuracy < 70.0:
+        weaknesses.append("Quiz accuracy needs improvement")
+    if conceptual_score < 70.0:
+        weaknesses.append("Concept understanding is still developing")
+    if response_efficiency_score < 60.0:
+        weaknesses.append("Take a bit more time to answer carefully")
+    if support_dependency_score < 60.0:
+        weaknesses.append("Reduce reliance on support hints")
+    if first_attempt_success_rate < 60.0:
+        weaknesses.append("Aim for better first-try answers")
+    if not weaknesses:
+        weaknesses.append("No major weaknesses identified from this quiz attempt.")
+
+    if weak_concepts:
+        recommended_concepts = ", ".join(weak_concepts[:3])
+    else:
+        recommended_concepts = "Review the concepts behind the questions you missed."
+
+    return {
+        "feedback_strengths": ", ".join(strengths),
+        "feedback_weaknesses": ", ".join(weaknesses),
+        "feedback_recommended_concepts": recommended_concepts,
+        "feedback_suggested_learning_mode": suggested_learning_mode,
+    }
+
+
 def _build_question_explanation(question: str, student_answer: str, correct_answer: str, result: str) -> str:
     correct_trim = _trim_text(correct_answer, max_words=20)
     student_trim = _trim_text(student_answer, max_words=18)

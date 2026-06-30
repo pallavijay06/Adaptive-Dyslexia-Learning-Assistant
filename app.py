@@ -18,8 +18,9 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -30,14 +31,17 @@ from backend.parser import process_uploaded_file
 from backend.retriever import retrieve_relevant_chunks_for_question
 from backend.vector_store import build_index
 from database.db import (
+    attach_learning_support_logs_to_quiz,
     get_behavior_events,
+    save_chat,
     save_document,
     save_learning_session,
+    save_learning_support_log,
     save_learner_comprehension_profile,
     save_learning_mode_effectiveness_profile,
+    save_quiz_question_responses,
     save_quiz_score,
     save_user,
-    save_chat,
     get_user,
     update_user_last_login,
     update_user_logout,
@@ -54,6 +58,20 @@ from components.session_state import (
     initialize_ui_preferences,
 )
 from components.progress_dashboard import render_dashboard
+from components.quiz_interactive import (
+    initialize_quiz_session_state,
+    mark_question_completed,
+    _start_question_viewing,
+    get_quiz_submission_attempt_metadata,
+    render_quiz_progress_indicator,
+    render_quiz_question,
+    render_question_timer,
+    render_hint_button,
+    get_current_question_time_seconds,
+    format_time_seconds,
+    persist_question_timing,
+    get_quiz_summary,
+)
 from services.auth_service import (
     hash_password,
     normalize_email,
@@ -72,10 +90,13 @@ from services.quiz_service import (
     evaluate_short_answer,
     evaluate_short_answer_locally,
     generate_mcq_quiz,
+    generate_personalized_quiz_feedback,
     generate_short_questions,
 )
 from services.learner_model_service import calculate_comprehension_score
 from services.learning_mode_effectiveness_service import calculate_learning_mode_effectiveness
+from services.progress_dashboard_service import calculate_quiz_comprehension_score
+from services.quiz_hint_service import generate_quiz_hint, generate_short_answer_hint
 from services.adaptive_tutor import AdaptiveAITutor
 from services.behavior_tracking_service import (
     track_ai_tutor_used,
@@ -86,12 +107,14 @@ from services.behavior_tracking_service import (
     track_audio_started,
     track_document_opened,
     track_explanation_requested,
+    track_hint_requested,
     track_mode_entered,
     track_mode_exited,
     track_mode_switched,
     track_quiz_completed,
     track_quiz_retry,
     track_quiz_started,
+    track_response_time,
     track_simplify_clicked,
     track_visual_viewed,
 )
@@ -150,6 +173,7 @@ def initialize_session_state() -> None:
         "quiz_short_answers": None,
         "quiz_report": None,
         "quiz_short_feedback": None,
+        "quiz_question_start_times": {},
 
         # STEM PDF image extraction
         "document_diagram_images": [],
@@ -642,6 +666,7 @@ def render_read_mode() -> None:
         render_read_mode_accessibility_panel()
 
         if st.button("Generate Simplified Version", key="gen_simplify"):
+            _log_learning_support_event("simplify")
             with st.spinner("Simplifying text..."):
                 try:
                     content = simplify_text(st.session_state.document_text)
@@ -701,6 +726,7 @@ def render_listen_mode() -> None:
     )
     
     if st.button("🎙️ Generate Audio", type="primary", key="gen_audio"):
+        _log_learning_support_event("audio")
         with st.spinner("Generating audio..."):
             try:
                 previous_audio = st.session_state.get("audio_file")
@@ -824,7 +850,7 @@ def render_listen_mode() -> None:
             const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
             let activeSentence = -1;
             const sentenceWeights = sentences.map(function(sentence) {{
-                return Math.max(1, sentence.trim().split(/\s+/).length);
+                return Math.max(1, sentence.trim().split(/\\s+/).length);
             }});
             const sentenceTimings = [];
 
@@ -1031,6 +1057,7 @@ def render_visual_mode() -> None:
     }
 
     if st.button("Generate Visual", type="primary", key="gen_visual_btn"):
+        _log_learning_support_event("visual")
         if selected_visual not in visual_type_map:
             st.warning("Please choose a visual type before generating.")
             return
@@ -1100,12 +1127,279 @@ def _shorten_explanation(text: str, max_sentences: int = 3) -> str:
     return short
 
 
+def _quiz_question_key(question_type: str, index: int, question: dict) -> str:
+    """Build a stable session key for hidden per-question timing."""
+    question_id = str(question.get("question_id") or f"Q{index + 1:03d}").strip()
+    return f"{question_type}:{question_id}:{index}"
+
+
+def _initialize_quiz_question_start_times(force: bool = False) -> None:
+    """Capture the timestamp when generated quiz questions first become visible."""
+    if not force and st.session_state.get("quiz_question_start_times"):
+        return
+
+    now = datetime.utcnow()
+    start_times = {}
+    mcqs = st.session_state.quiz_mcqs if isinstance(st.session_state.quiz_mcqs, list) else []
+    short_questions = (
+        st.session_state.quiz_short_questions
+        if isinstance(st.session_state.quiz_short_questions, list)
+        else []
+    )
+
+    for index, question in enumerate(mcqs):
+        if isinstance(question, dict):
+            start_times[_quiz_question_key("MCQ", index, question)] = now
+    for index, question in enumerate(short_questions):
+        if isinstance(question, dict):
+            start_times[_quiz_question_key("Short Answer", index, question)] = now
+
+    st.session_state.quiz_question_start_times = start_times
+
+
+def _quiz_question_duration(
+    question_type: str,
+    index: int,
+    question: dict,
+    submit_time: datetime,
+) -> tuple[datetime, int]:
+    """Return the hidden start timestamp and elapsed seconds for one question."""
+    start_times = st.session_state.get("quiz_question_start_times") or {}
+    start_time = start_times.get(_quiz_question_key(question_type, index, question))
+    if not isinstance(start_time, datetime):
+        start_time = submit_time
+    return start_time, max(0, int(round((submit_time - start_time).total_seconds())))
+
+
+def _infer_quiz_topic(quiz_mcqs: list[dict], short_questions: list[dict]) -> str:
+    """Infer a compact topic label from generated quiz metadata."""
+    for question in [*quiz_mcqs, *short_questions]:
+        if isinstance(question, dict):
+            topic = str(question.get("concept") or question.get("subcategory") or "").strip()
+            if topic:
+                return topic
+    document_record = st.session_state.get("document_record")
+    return str(getattr(document_record, "original_filename", None) or "Document Quiz")
+
+
+def _compute_quiz_feedback_metadata(
+    report: dict,
+    total_questions: int,
+    question_durations: list[int],
+    support_count: int = 0,
+    first_attempt_success_count: int | None = None,
+) -> tuple[float, dict[str, str]]:
+    quiz_accuracy = float(report.get("percentage") or 0.0)
+    conceptual_score = float(report.get("conceptual_score") or quiz_accuracy)
+    avg_response_time = round(sum(question_durations) / len(question_durations), 1) if question_durations else 0.0
+    if first_attempt_success_count is None:
+        first_attempt_success_rate = quiz_accuracy
+    else:
+        first_attempt_success_rate = (
+            round((first_attempt_success_count / total_questions) * 100.0, 1)
+            if total_questions else quiz_accuracy
+        )
+    comprehension_score = calculate_quiz_comprehension_score(
+        quiz_accuracy=quiz_accuracy,
+        conceptual_score=conceptual_score,
+        support_count=support_count,
+        total_questions=total_questions,
+        first_attempt_success_rate=first_attempt_success_rate,
+        avg_time_per_question=avg_response_time,
+    )
+    weak_concepts = report.get("wrong_concepts") if isinstance(report.get("wrong_concepts"), list) else []
+    feedback = generate_personalized_quiz_feedback(
+        quiz_accuracy=quiz_accuracy,
+        conceptual_score=conceptual_score,
+        avg_response_time=avg_response_time,
+        support_count=support_count,
+        total_questions=total_questions,
+        first_attempt_success_rate=first_attempt_success_rate,
+        weak_concepts=weak_concepts,
+    )
+    return comprehension_score, feedback
+
+
+def _active_quiz_question_ids() -> list[str]:
+    """Return generated quiz question ids for behaviour log association."""
+    question_ids = []
+    mcqs = st.session_state.quiz_mcqs if isinstance(st.session_state.quiz_mcqs, list) else []
+    short_questions = (
+        st.session_state.quiz_short_questions
+        if isinstance(st.session_state.quiz_short_questions, list)
+        else []
+    )
+
+    for index, question in enumerate([*mcqs, *short_questions]):
+        if isinstance(question, dict):
+            question_ids.append(str(question.get("question_id") or f"Q{index + 1:03d}"))
+    return question_ids
+
+
+def _current_quiz_support_question_id() -> str | None:
+    """Choose the best available question id for a background support event."""
+    if not st.session_state.quiz_mcqs or st.session_state.quiz_report:
+        return None
+
+    mcqs = st.session_state.quiz_mcqs if isinstance(st.session_state.quiz_mcqs, list) else []
+    mcq_answers = st.session_state.quiz_answers if isinstance(st.session_state.quiz_answers, list) else []
+    for index, question in enumerate(mcqs):
+        if index >= len(mcq_answers) or not mcq_answers[index]:
+            return str(question.get("question_id") or f"Q{index + 1:03d}")
+
+    short_questions = (
+        st.session_state.quiz_short_questions
+        if isinstance(st.session_state.quiz_short_questions, list)
+        else []
+    )
+    short_answers = st.session_state.quiz_short_answers if isinstance(st.session_state.quiz_short_answers, list) else []
+    offset = len(mcqs)
+    for index, question in enumerate(short_questions):
+        answer = short_answers[index] if index < len(short_answers) else ""
+        if not str(answer or "").strip():
+            return str(question.get("question_id") or f"Q{offset + index + 1:03d}")
+
+    question_ids = _active_quiz_question_ids()
+    return question_ids[-1] if question_ids else None
+
+
+def _log_learning_support_event(support_type: str, question_id: str | None = None) -> None:
+    """Persist a hidden support-use event when the learner is solving a quiz."""
+    user_id = st.session_state.current_user_id
+    if user_id is None:
+        return
+
+    active_question_id = question_id or _current_quiz_support_question_id()
+    if not active_question_id:
+        return
+
+    try:
+        save_learning_support_log(
+            user_id=user_id,
+            quiz_id=None,
+            question_id=active_question_id,
+            support_type=support_type,
+            timestamp=datetime.utcnow(),
+        )
+    except Exception:
+        logger.exception("[Support Tracking] Failed to save %s support event.", support_type)
+
+
+def _active_quiz_started_at() -> datetime | None:
+    """Return the earliest hidden start timestamp for the active quiz."""
+    start_times = st.session_state.get("quiz_question_start_times") or {}
+    values = [value for value in start_times.values() if isinstance(value, datetime)]
+    return min(values) if values else None
+
+
+def _persist_quiz_question_timings(
+    quiz_mcqs: list[dict],
+    short_questions: list[dict],
+    short_feedback: list[dict],
+    report: dict,
+) -> None:
+    """Save one permanent SQLite row for each answered quiz question."""
+    user_id = st.session_state.current_user_id
+    if user_id is None:
+        return
+
+    submit_time = datetime.utcnow()
+    topic = _infer_quiz_topic(quiz_mcqs, short_questions)
+    total_questions = len(quiz_mcqs) + len(short_questions)
+    quiz_state = st.session_state.get("quiz_state", {}) or {}
+    hint_used = quiz_state.get("hint_used", {}) if isinstance(quiz_state.get("hint_used", {}), dict) else {}
+    first_attempt_success_flags = quiz_state.get("first_attempt_success_flags", {}) if isinstance(quiz_state.get("first_attempt_success_flags", {}), dict) else {}
+    support_count = sum(int(value) for value in hint_used.values() if isinstance(value, (int, float)))
+    first_attempt_success_count = sum(
+        1 for idx in range(total_questions) if first_attempt_success_flags.get(idx, False)
+    ) if total_questions else None
+
+    question_results = report.get("question_results") or []
+    records: list[dict] = []
+    question_durations: list[int] = []
+
+    for index, question in enumerate(quiz_mcqs):
+        if not isinstance(question, dict):
+            continue
+        start_time, duration = _quiz_question_duration("MCQ", index, question, submit_time)
+        question_durations.append(duration)
+        result = question_results[index] if index < len(question_results) and isinstance(question_results[index], dict) else {}
+        records.append(
+            {
+                "user_id": user_id,
+                "question_id": str(question.get("question_id") or f"Q{index + 1:03d}"),
+                "question_type": str(question.get("question_type") or "MCQ"),
+                "topic": str(question.get("concept") or topic),
+                "difficulty": str(question.get("difficulty") or ""),
+                "question_start_time": start_time,
+                "question_submit_time": submit_time,
+                "time_taken_seconds": duration,
+                "is_correct": bool(result.get("is_correct")),
+            }
+        )
+
+    for index, question in enumerate(short_questions):
+        if not isinstance(question, dict):
+            continue
+        start_time, duration = _quiz_question_duration("Short Answer", index, question, submit_time)
+        question_durations.append(duration)
+        feedback_item = short_feedback[index] if index < len(short_feedback) and isinstance(short_feedback[index], dict) else {}
+        evaluation = feedback_item.get("evaluation") if isinstance(feedback_item.get("evaluation"), dict) else {}
+        records.append(
+            {
+                "user_id": user_id,
+                "question_id": str(question.get("question_id") or f"Q{index + 1:03d}"),
+                "question_type": str(question.get("question_type") or "Short Answer"),
+                "topic": str(question.get("concept") or topic),
+                "difficulty": str(question.get("difficulty") or ""),
+                "question_start_time": start_time,
+                "question_submit_time": submit_time,
+                "time_taken_seconds": duration,
+                "is_correct": str(evaluation.get("result") or "").strip() == "Correct",
+            }
+        )
+
+    comprehension_score, feedback_fields = _compute_quiz_feedback_metadata(
+        report=report,
+        total_questions=total_questions,
+        question_durations=question_durations,
+        support_count=support_count,
+        first_attempt_success_count=first_attempt_success_count,
+    )
+    quiz_attempt = save_quiz_score(
+        user_id=user_id,
+        topic=topic,
+        score=int(report.get("score") or 0),
+        total_questions=total_questions,
+        comprehension_score=comprehension_score,
+        **feedback_fields,
+    )
+
+    for record in records:
+        record["quiz_id"] = quiz_attempt.id
+
+    if records:
+        save_quiz_question_responses(records)
+        attach_learning_support_logs_to_quiz(
+            user_id=user_id,
+            quiz_id=quiz_attempt.id,
+            question_ids=_active_quiz_question_ids(),
+            started_after=_active_quiz_started_at(),
+        )
+
+
 def render_quiz_section() -> None:
-    """Render the intelligent quiz mode UI as a learning mode option.
+    """Render the enhanced interactive one-question-at-a-time quiz experience.
     
-    MCQ answers start unanswered. Student must explicitly select each answer.
-    Quiz validation ensures all questions are answered before submission.
+    Features:
+    - One question at a time with Previous/Next navigation
+    - Cumulative timer for each question
+    - Live timer display
+    - Progress indicator
+    - AI-generated hints (cached to avoid repeated API calls)
+    - Final quiz summary with timing analytics
     """
+    # Generate Quiz button
     if st.button("📝 Generate Quiz", type="primary", key="gen_quiz_btn"):
         if st.session_state.get("quiz_mcqs") and st.session_state.get("current_user_id") is not None:
             track_quiz_retry(
@@ -1120,17 +1414,18 @@ def render_quiz_section() -> None:
                 short_questions = generate_short_questions(document_text, num_questions=4)
                 st.session_state.quiz_mcqs = mcqs
                 st.session_state.quiz_short_questions = short_questions
-                # Initialize answers as empty strings (unanswered state)
-                st.session_state.quiz_answers = ["" for _ in mcqs]
-                st.session_state.quiz_short_answers = ["" for _ in short_questions]
                 st.session_state.quiz_report = None
                 st.session_state.quiz_short_feedback = None
+                st.session_state.quiz_attempt_count = 1
+
+                # Initialize new quiz state
+                initialize_quiz_session_state(mcqs, short_questions)
                 if st.session_state.get("current_user_id") is not None:
                     track_quiz_started(
                         user_id=st.session_state.current_user_id,
                         metadata={"question_count": len(mcqs) + len(short_questions)},
                     )
-                st.success("✅ Quiz generated! Answer the questions below.")
+                st.success("✅ Quiz generated! Start answering questions below.")
             except (DocumentError, LLMRouterError, ValueError):
                 logger.exception("Quiz generation failed")
                 st.error("Quiz generation is temporarily unavailable.")
@@ -1140,242 +1435,559 @@ def render_quiz_section() -> None:
                 st.error("Quiz generation is temporarily unavailable.")
                 return
 
-    if not st.session_state.quiz_mcqs or not st.session_state.quiz_short_questions:
-        st.info("Generate a quiz to begin. The quiz will use the currently uploaded document.")
+    if not st.session_state.get("quiz_mcqs") or not st.session_state.get("quiz_short_questions"):
+        st.info("📝 Generate a quiz to begin. The quiz will use the currently uploaded document.")
         return
 
-    st.subheader("Multiple Choice Questions")
-    for index, mcq in enumerate(st.session_state.quiz_mcqs):
-        key = f"mcq_{index}"
-        st.write(f"**{index + 1}. {mcq['question']}**")
-        current_answer = st.session_state.quiz_answers[index] if st.session_state.quiz_answers else ""
-        
-        # Build options with empty placeholder at the start
-        options_with_placeholder = ["-- Select Answer --"] + mcq["options"]
-        
-        # Determine which option is currently selected
-        if current_answer and current_answer in mcq["options"]:
-            # User has already selected an answer
-            selected_index = options_with_placeholder.index(current_answer)
-        else:
-            # No answer selected yet (start at placeholder)
-            selected_index = 0
-        
-        selected = st.radio(
-            "Choose the best answer:",
-            options=options_with_placeholder,
-            key=key,
-            index=selected_index,
+    # Show old quiz results if they exist
+    if st.session_state.get("quiz_report"):
+        _render_quiz_summary_results()
+        return
+
+    # Interactive one-question-at-a-time quiz
+    _render_interactive_quiz()
+
+
+def _sanitize_incorrect_feedback(feedback: str) -> str:
+    """Ensure incorrect feedback does not reveal the correct answer."""
+    sanitized = str(feedback or "").strip()
+    # Remove explicit correct-answer reveal patterns.
+    sanitized = sanitized.replace("Correct answer is:", "Your answer is incorrect.")
+    sanitized = sanitized.replace("the correct answer is", "consider reviewing the question and trying again")
+    sanitized = sanitized.replace("Correct Answer:", "Review the question again.")
+    return sanitized
+
+
+def _render_interactive_quiz() -> None:
+    """Render the interactive one-question-at-a-time quiz experience with retry support.
+    
+    Layout:
+    - Top: Progress indicator (Question X of Y + progress bar + timer)
+    - Middle: Question + options/text area + hint
+    - Evaluation: If submitted, show result (Correct/Incorrect + feedback)
+    - Bottom: Navigation (Previous/Next/Try Again/Submit)
+    """
+    # Ensure quiz state is initialized
+    if "quiz_state" not in st.session_state:
+        initialize_quiz_session_state(
+            st.session_state.quiz_mcqs,
+            st.session_state.quiz_short_questions,
         )
-        
-        # Store only the actual answer, not the placeholder
-        if selected != "-- Select Answer --":
-            st.session_state.quiz_answers[index] = selected
+    
+    quiz_state = st.session_state.quiz_state
+    current_index = quiz_state["current_question_index"]
+    questions = quiz_state["questions"]
+    answers = quiz_state["answers"]
+    
+    # Start viewing the current question (tracks time from when they navigate to it)
+    _start_question_viewing(current_index)
+    
+    # TOP: Progress and timer
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        render_quiz_progress_indicator(current_index, len(questions))
+    
+    with col2:
+        render_question_timer(current_index)
+    
+    st.markdown("---")
+    
+    # MIDDLE: Question, options, and hints
+    current_question = questions[current_index]
+    stored_answer = answers[current_index] if current_index < len(answers) else ""
+    
+    # Render the question and get the answer
+    answer = render_quiz_question(current_question, current_index, stored_answer)
+    answers[current_index] = answer
+    
+    st.markdown("---")
+    
+    # Hint area
+    render_hint_button(current_index, current_question)
+    
+    st.markdown("---")
+    st.info("🧭 Answer each question in any order, then submit the full quiz once when you are ready.")
+    st.markdown("---")
+    
+    # BOTTOM: Navigation that never blocks progress
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        if current_index > 0:
+            if st.button("◀ Previous", key="nav_prev", use_container_width=True):
+                mark_question_completed(current_index)
+                persist_question_timing(current_index)
+                quiz_state["current_question_index"] = current_index - 1
+                st.rerun()
         else:
-            st.session_state.quiz_answers[index] = ""
+            st.button("◀ Previous", key="nav_prev", disabled=True, use_container_width=True)
+    
+    with col2:
+        if current_index < len(questions) - 1:
+            if st.button("Next ▶", key="nav_next", use_container_width=True):
+                mark_question_completed(current_index)
+                persist_question_timing(current_index)
+                quiz_state["current_question_index"] = current_index + 1
+                st.rerun()
+        else:
+            if st.button("Submit Quiz", key="nav_submit", use_container_width=True):
+                mark_question_completed(current_index)
+                persist_question_timing(current_index)
+                _submit_interactive_quiz()
 
-    st.subheader("Short Answer Questions")
-    for index, short_question in enumerate(st.session_state.quiz_short_questions):
-        prompt = f"{index + 1}. {short_question['question']}"
-        user_text = st.text_area(
-            prompt,
-            value=(st.session_state.quiz_short_answers[index] if st.session_state.quiz_short_answers else ""),
-            key=f"short_{index}",
-            height=120,
-        )
-        if st.session_state.quiz_short_answers is None:
-            st.session_state.quiz_short_answers = []
-        if len(st.session_state.quiz_short_answers) < len(st.session_state.quiz_short_questions):
-            st.session_state.quiz_short_answers = ["" for _ in st.session_state.quiz_short_questions]
-        st.session_state.quiz_short_answers[index] = user_text
 
-    if st.button("📤 Submit Quiz", type="secondary", key="submit_quiz_btn"):
-        # Validation: ensure all questions are answered
-        unanswered_mcqs = [i for i, ans in enumerate(st.session_state.quiz_answers or []) if not ans]
-        unanswered_short = [i for i, ans in enumerate(st.session_state.quiz_short_answers or []) if not ans or not ans.strip()]
+def _submit_interactive_quiz() -> None:
+    """Submit the completed quiz and show results."""
+    quiz_state = st.session_state.quiz_state
+    questions = quiz_state["questions"]
+    answers = quiz_state["answers"]
+    
+    # Pause final question timer
+    current_index = quiz_state["current_question_index"]
+    persist_question_timing(current_index)
+    
+    # Mark quiz as submitted
+    quiz_state["quiz_submitted"] = True
+    
+    with st.spinner("Evaluating your quiz answers..."):
+        total_start = time.perf_counter()
         
-        if unanswered_mcqs or unanswered_short:
-            st.warning("⚠️ Please answer all questions before submitting.")
-            if unanswered_mcqs:
-                st.info(f"Unanswered MCQs: {', '.join(str(i+1) for i in unanswered_mcqs)}")
-            if unanswered_short:
-                st.info(f"Unanswered short questions: {', '.join(str(i+1) for i in unanswered_short)}")
-            return
+        # Separate MCQs and short answers
+        mcqs = [q for q in questions if q.get("original_type") == "MCQ"]
+        short_questions = [q for q in questions if q.get("original_type") == "Short Answer"]
         
-        with st.spinner("Evaluating your quiz answers..."):
-            total_start = time.perf_counter()
-            quiz_mcqs = st.session_state.quiz_mcqs if isinstance(st.session_state.quiz_mcqs, list) else []
-            quiz_answers = st.session_state.quiz_answers if isinstance(st.session_state.quiz_answers, list) else []
-            short_questions = (
-                st.session_state.quiz_short_questions
-                if isinstance(st.session_state.quiz_short_questions, list)
-                else []
-            )
-            short_answers = (
-                st.session_state.quiz_short_answers
-                if isinstance(st.session_state.quiz_short_answers, list)
-                else []
-            )
-
+        # Get answers in original order
+        mcq_answers = [answers[q["quiz_index"]] for q in mcqs]
+        short_answers = [answers[q["quiz_index"]] for q in short_questions]
+        
+        try:
+            # Evaluate MCQs
             mcq_start = time.perf_counter()
+            report = evaluate_mcq(mcq_answers, mcqs)
+            logger.info("[Quiz] MCQ evaluation completed in %.2f sec", time.perf_counter() - mcq_start)
+        except Exception:
+            logger.exception("[Quiz Evaluation] MCQ evaluation failed")
+            report = {
+                "score": 0,
+                "total": len(mcqs),
+                "percentage": 0,
+                "correct_answers": 0,
+                "incorrect_answers": len(mcqs),
+                "strengths": "Complete the quiz to see a summary of your strengths.",
+                "weaknesses": "The quiz could not be evaluated normally.",
+                "recommendations": "Review the quiz material and try again.",
+                "evaluations": [],
+            }
+        
+        # Evaluate short answers
+        short_feedback = []
+        for index, short_question in enumerate(short_questions):
+            short_start = time.perf_counter()
+            question_text = str(short_question.get("question", "")).strip()
+            expected_answer = str(short_question.get("answer", "")).strip()
+            student_response = short_answers[index] if index < len(short_answers) else ""
+            student_response = str(student_response or "").strip()
+
             try:
-                report = evaluate_mcq(quiz_answers, quiz_mcqs)
-            except Exception:
-                logger.exception("[Quiz Evaluation] MCQ evaluation failed. Falling back to local empty report.")
-                total = len(quiz_mcqs)
-                report = {
-                    "score": 0,
-                    "total": total,
-                    "percentage": 0,
-                    "correct_answers": 0,
-                    "incorrect_answers": total,
-                    "strengths": "Complete the quiz to see a summary of your strengths.",
-                    "weaknesses": "The quiz could not be evaluated normally, so review each answer carefully.",
-                    "recommendations": "Review the quiz material and try the questions again.",
-                    "evaluations": [],
-                }
-            logger.info("[Quiz]\nMCQ evaluation completed in %.2f sec", time.perf_counter() - mcq_start)
-
-            short_feedback = []
-            for index, short_question in enumerate(short_questions):
-                short_start = time.perf_counter()
-                short_question_data = short_question if isinstance(short_question, dict) else {}
-                question_text = str(short_question_data.get("question", "")).strip()
-                expected_answer = str(short_question_data.get("answer", "")).strip()
-                student_response = short_answers[index] if index < len(short_answers) else ""
-                student_response = str(student_response or "").strip()
-
-                try:
-                    if student_response:
-                        feedback = evaluate_short_answer(
-                            student_response,
-                            expected_answer,
-                            question_text=question_text,
-                        )
-                    else:
-                        feedback = evaluate_short_answer_locally(
-                            student_response,
-                            expected_answer,
-                            question_text=question_text,
-                        )
-                except Exception:
-                    logger.exception(
-                        "[Quiz Evaluation] Short answer %s failed. Falling back to local evaluation.",
-                        index + 1,
+                if student_response:
+                    feedback = evaluate_short_answer(
+                        student_response,
+                        expected_answer,
+                        question_text=question_text,
                     )
+                else:
                     feedback = evaluate_short_answer_locally(
                         student_response,
                         expected_answer,
                         question_text=question_text,
                     )
-
-                logger.info("[Quiz]\nShort answer %s completed in %.2f sec", index + 1, time.perf_counter() - short_start)
-                short_feedback.append(
-                    {
-                        "question": question_text,
-                        "student_answer": student_response,
-                        "expected_answer": expected_answer,
-                        "evaluation": feedback,
-                    }
+            except Exception:
+                logger.exception("[Quiz Evaluation] Short answer %s failed", index + 1)
+                feedback = evaluate_short_answer_locally(
+                    student_response,
+                    expected_answer,
+                    question_text=question_text,
                 )
 
-            try:
-                st.session_state.quiz_report = combine_quiz_report_with_short_answers(report, short_feedback)
-            except Exception:
-                logger.exception("[Quiz Evaluation] Report merge failed. Returning MCQ report with short feedback stored.")
-                st.session_state.quiz_report = report
-            st.session_state.quiz_short_feedback = short_feedback
+            logger.info("[Quiz] Short answer %s completed in %.2f sec", index + 1, time.perf_counter() - short_start)
+            short_feedback.append({
+                "question": question_text,
+                "student_answer": student_response,
+                "expected_answer": expected_answer,
+                "evaluation": feedback,
+            })
 
+        # Combine reports
+        try:
+            st.session_state.quiz_report = combine_quiz_report_with_short_answers(report, short_feedback)
+        except Exception:
+            logger.exception("[Quiz Evaluation] Report merge failed")
+            st.session_state.quiz_report = report
+
+        st.session_state.quiz_short_feedback = short_feedback
+
+        # Persist timing and learning support data
+        try:
+            _persist_interactive_quiz_timings(mcqs, short_questions, short_feedback, st.session_state.quiz_report)
+        except Exception:
+            logger.exception("[Quiz Timing] Failed to save timing data")
+
+        logger.info("[Quiz] Total evaluation completed in %.2f sec", time.perf_counter() - total_start)
+        st.success("✅ Quiz submitted! See your results below.")
+        st.rerun()
+
+
+def _reset_quiz_for_retake() -> None:
+    """Reset state for a retake of the same generated quiz."""
+    if "quiz_state" in st.session_state:
+        del st.session_state["quiz_state"]
+    st.session_state.quiz_report = None
+    st.session_state.quiz_short_feedback = None
+    st.session_state.quiz_attempt_count = st.session_state.get("quiz_attempt_count", 1) + 1
+
+
+def _persist_interactive_quiz_timings(
+    mcqs: list[dict],
+    short_questions: list[dict],
+    short_feedback: list[dict],
+    report: dict,
+) -> None:
+    """Save timing data, attempt tracking, and learning support logs for the interactive quiz."""
+    user_id = st.session_state.current_user_id
+    if user_id is None:
+        return
+    
+    quiz_state = st.session_state.quiz_state
+    hint_used = quiz_state.get("hint_used", {}) if isinstance(quiz_state.get("hint_used", {}), dict) else {}
+    
+    submit_time = datetime.utcnow()
+    topic = _infer_quiz_topic(mcqs, short_questions)
+    total_questions = len(mcqs) + len(short_questions)
+    support_count = sum(int(value) for value in hint_used.values() if isinstance(value, (int, float)))
+    attempt_number = max(1, int(st.session_state.get("quiz_attempt_count", 1)))
+    first_attempt_success_count = None
+    if total_questions and attempt_number == 1:
+        first_attempt_success_count = sum(
+            1 for result in report.get("question_results", []) if bool(result.get("is_correct", False))
+        )
+
+    question_results = report.get("question_results", [])
+    records: list[dict] = []
+    question_durations: list[int] = []
+    
+    # Save MCQ timing records with attempt tracking
+    for index, question in enumerate(mcqs):
+        if not isinstance(question, dict):
+            continue
+        
+        # Get cumulative time from quiz_state
+        time_taken = get_current_question_time_seconds(question["quiz_index"])
+        question_durations.append(time_taken)
+        result = question_results[index] if index < len(question_results) else {}
+        
+        question_index = question["quiz_index"]
+        is_correct = bool(result.get("is_correct", False))
+        attempt_num, first_attempt_success = get_quiz_submission_attempt_metadata(attempt_number, is_correct)
+        
+        records.append({
+            "user_id": user_id,
+            "question_id": str(question.get("question_id", f"mcq_{index}")),
+            "question_type": "MCQ",
+            "topic": str(question.get("concept", topic)),
+            "difficulty": str(question.get("difficulty", "")),
+            "question_start_time": submit_time - timedelta(seconds=time_taken),
+            "question_submit_time": submit_time,
+            "time_taken_seconds": time_taken,
+            "is_correct": is_correct,
+            "attempt_number": attempt_num,
+            "first_attempt_success": first_attempt_success,
+        })
+     
+    # Save short answer timing records with attempt tracking
+    for index, question in enumerate(short_questions):
+        if not isinstance(question, dict):
+            continue
+        
+        time_taken = get_current_question_time_seconds(question["quiz_index"])
+        question_durations.append(time_taken)
+        feedback_item = short_feedback[index] if index < len(short_feedback) else {}
+        evaluation = feedback_item.get("evaluation", {})
+        
+        question_index = question["quiz_index"]
+        is_correct = str(evaluation.get("result", "")).strip() == "Correct"
+        attempt_num, first_attempt_success = get_quiz_submission_attempt_metadata(attempt_number, is_correct)
+        
+        records.append({
+            "user_id": user_id,
+            "question_id": str(question.get("question_id", f"short_{index}")),
+            "question_type": "Short Answer",
+            "topic": str(question.get("concept", topic)),
+            "difficulty": str(question.get("difficulty", "")),
+            "question_start_time": submit_time - timedelta(seconds=time_taken),
+            "question_submit_time": submit_time,
+            "time_taken_seconds": time_taken,
+            "is_correct": is_correct,
+            "attempt_number": attempt_num,
+            "first_attempt_success": first_attempt_success,
+        })
+    
+    comprehension_score, feedback_fields = _compute_quiz_feedback_metadata(
+        report=report,
+        total_questions=total_questions,
+        question_durations=question_durations,
+        support_count=support_count,
+        first_attempt_success_count=first_attempt_success_count,
+    )
+    quiz_attempt = save_quiz_score(
+        user_id=user_id,
+        topic=topic,
+        score=int(report.get("score") or 0),
+        total_questions=total_questions,
+        comprehension_score=comprehension_score,
+        **feedback_fields,
+    )
+
+    for record in records:
+        record["quiz_id"] = quiz_attempt.id
+
+    if records:
+        save_quiz_question_responses(records)
+
+    behavior_events = []
+    for question_index, hint_count in hint_used.items():
+        question = quiz_state["questions"][question_index]
+        question_id = str(question.get("question_id", f"q_{question_index}"))
+        for hint_number in range(1, int(hint_count) + 1):
             try:
-                learner_model_result = calculate_comprehension_score(report, short_feedback)
-                behavior_events = get_behavior_events(user_id, limit=500) if (user_id := st.session_state.get("current_user_id")) is not None else []
-                learning_mode_result = calculate_learning_mode_effectiveness(behavior_events)
-                if user_id is not None:
-                    track_quiz_completed(
+                behavior_events.append(
+                    track_hint_requested(
                         user_id=user_id,
                         metadata={
-                            "quiz_accuracy": float(report.get("percentage") or 0.0),
-                            "questions_attempted": int(report.get("total") or len(quiz_mcqs) or 0),
-                            "questions_correct": int(report.get("correct_answers") or 0),
+                            "user_id": user_id,
+                            "question_id": question_id,
+                            "quiz_id": quiz_attempt.id,
+                            "concept": str(question.get("concept") or ""),
+                            "hint_number": hint_number,
+                            "timestamp": submit_time.isoformat(),
                         },
                     )
-                    save_learner_comprehension_profile(user_id, learner_model_result)
-                    save_learning_mode_effectiveness_profile(user_id, learning_mode_result)
-
-                    document_record = st.session_state.get("document_record")
-                    topic = (
-                        getattr(document_record, "original_filename", None)
-                        or getattr(document_record, "file_name", None)
-                        or "Current Document"
-                    )
-                    quiz_percentage = float(report.get("percentage") or 0.0)
-                    total_questions = int(report.get("total") or len(quiz_mcqs) or 0)
-                    save_quiz_score(
-                        user_id=user_id,
-                        topic=str(topic),
-                        score=round(quiz_percentage),
-                        total_questions=total_questions,
-                    )
+                )
             except Exception:
-                logger.exception("[Learner Model] Failed to persist learner comprehension profile.")
+                logger.exception("Failed to save hint behavior event")
 
-            logger.info("[Quiz]\nTotal evaluation completed in %.2f sec", time.perf_counter() - total_start)
-            st.success("✅ Quiz evaluated! See your results below.")
+    for record in records:
+        try:
+            behavior_events.append(
+                track_response_time(
+                    user_id=user_id,
+                    metadata={
+                        "user_id": user_id,
+                        "question_id": record["question_id"],
+                        "quiz_id": quiz_attempt.id,
+                        "concept": record.get("topic") or "",
+                        "time_taken_seconds": record.get("time_taken_seconds"),
+                        "timestamp": submit_time.isoformat(),
+                    },
+                )
+            )
+        except Exception:
+            logger.exception("Failed to save response-time behavior event")
 
-    if st.session_state.quiz_report:
-        report = st.session_state.quiz_report
-        st.subheader("Quiz Results")
-        st.metric("Score", f"{report['score']}/{report['total']}")
-        st.progress(report["percentage"] / 100 if report["total"] else 0)
-        # Strengths, Weaknesses, Recommendations: concise readable summaries
-        st.markdown("### Strengths")
-        st.write(str(report.get("strengths") or "Complete the quiz to see your strengths."))
+    if attempt_number > 1:
+        for record in records:
+            try:
+                behavior_events.append(
+                    track_quiz_retry(
+                        user_id=user_id,
+                        metadata={
+                            "user_id": user_id,
+                            "question_id": record["question_id"],
+                            "quiz_id": quiz_attempt.id,
+                            "attempt_number": attempt_number,
+                            "concept": record.get("topic") or "",
+                            "timestamp": submit_time.isoformat(),
+                        },
+                    )
+                )
+            except Exception:
+                logger.exception("Failed to save retry behavior event")
 
-        st.markdown("### Weaknesses")
-        st.write(str(report.get("weaknesses") or "No major weaknesses were identified in this attempt."))
+    if user_id is not None:
+        try:
+            learner_model_result = calculate_comprehension_score(
+                quiz_evaluation=report,
+                behavior_events=behavior_events,
+            )
+            save_learner_comprehension_profile(user_id, learner_model_result)
+            behavior_history = get_behavior_events(user_id, limit=500)
+            learning_mode_result = calculate_learning_mode_effectiveness(behavior_history)
+            save_learning_mode_effectiveness_profile(user_id, learning_mode_result)
+        except Exception:
+            logger.exception("Failed to persist learner profile metrics")
+    
+    # Save hint usage as learning support logs
+    for question_index, hint_count in hint_used.items():
+        question = quiz_state["questions"][question_index]
+        for _ in range(hint_count):
+            try:
+                save_learning_support_log(
+                    user_id=user_id,
+                    quiz_id=quiz_attempt.id,
+                    question_id=str(question.get("question_id", f"q_{question_index}")),
+                    support_type="hint",
+                    timestamp=submit_time,
+                )
+            except Exception:
+                logger.exception("Failed to save hint usage log")
 
-        st.markdown("### Recommendations")
-        st.write(str(report.get("recommendations") or "Review the explanations below and retry the missed questions."))
 
-        evaluations = report.get("evaluations") or []
-        if evaluations:
-            st.markdown("### Evaluation")
-            for index, evaluation in enumerate(evaluations, start=1):
-                # Use numeric question index as expander title (do not use topic/concept names)
-                with st.expander(f"Question {index} — View Evaluation"):
-                    st.markdown("**Question:**")
-                    st.write(evaluation.get("question", ""))
+def _render_quiz_summary_results() -> None:
+    """Render the final quiz summary with results and timing analytics."""
+    report = st.session_state.quiz_report
+    quiz_state = st.session_state.get("quiz_state", {})
+    
+    st.header("✅ Quiz Completed")
+    
+    # Summary metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Score", f"{report.get('score', 0)}/{report.get('total', 0)}")
+    with col2:
+        st.metric("Percentage", f"{report.get('percentage', 0)}%")
+    with col3:
+        # Calculate total time
+        if quiz_state:
+            total_time = 0
+            for idx in range(len(quiz_state.get("questions", []))):
+                total_time += get_current_question_time_seconds(idx)
+            st.metric("Total Time", format_time_seconds(total_time))
+    
+    st.progress(report.get("percentage", 0) / 100 if report.get("total") else 0)
+    
+    total_questions = len(quiz_state.get("questions", []))
+    hint_used = quiz_state.get("hint_used", {}) if isinstance(quiz_state.get("hint_used", {}), dict) else {}
+    support_count = sum(int(value) for value in hint_used.values() if isinstance(value, (int, float)))
+    attempt_number = max(1, int(st.session_state.get("quiz_attempt_count", 1)))
+    first_attempt_success_count = sum(
+        1 for result in report.get("question_results", []) if bool(result.get("is_correct", False)) and attempt_number == 1
+    ) if total_questions else 0
+    first_attempt_success_pct = round((first_attempt_success_count / total_questions) * 100) if total_questions else 0
+    question_durations = [get_current_question_time_seconds(idx) for idx in range(total_questions)]
+    comprehension_score, feedback_fields = _compute_quiz_feedback_metadata(
+        report=report,
+        total_questions=total_questions,
+        question_durations=question_durations,
+        support_count=support_count,
+        first_attempt_success_count=first_attempt_success_count,
+    )
 
-                    st.markdown("**Your Answer:**")
-                    st.write(evaluation.get("your_answer", ""))
+    st.markdown("### Quiz Comprehension")
+    st.metric("Comprehension Score", f"{comprehension_score}%")
+    st.write(
+        f"Based on accuracy, concept mastery, support dependency, first-attempt success, and response efficiency."
+    )
 
-                    st.markdown("**Correct Answer:**")
-                    st.write(evaluation.get("correct_answer", ""))
+    st.markdown("### Personalized Feedback")
+    st.subheader("Focus Areas")
+    st.write(feedback_fields.get("feedback_strengths", "No strengths identified."))
+    st.write(feedback_fields.get("feedback_weaknesses", "No weaknesses identified."))
+    st.write("**Recommended concepts:**")
+    st.write(feedback_fields.get("feedback_recommended_concepts", "Review the concepts behind questions missed."))
+    st.write("**Suggested mode:**")
+    st.write(feedback_fields.get("feedback_suggested_learning_mode", "Simplified Notes"))
+    st.markdown("---")
 
-                    st.markdown("**Result:**")
-                    result = str(evaluation.get("result") or "Incorrect")
-                    if result == "Correct":
-                        st.write("✅ Correct")
-                    elif result in {"Partially Correct", "Partially"}:
-                        st.write("⚠ Partially Correct")
-                    else:
-                        st.write("❌ Incorrect")
+    attempt_count = st.session_state.get("quiz_attempt_count", 1)
+    st.markdown(f"### Quiz Attempt {attempt_count}")
+    st.write(
+        "This quiz has been submitted as a separate attempt. You can retake the same questions to compare progress across attempts."
+    )
+    st.markdown("---")
 
-                    feedback = str(evaluation.get("feedback") or "").strip()
-                    improvement_tip = str(evaluation.get("improvement_tip") or "").strip()
-                    local_explanation = str(evaluation.get("local_explanation") or "").strip()
-                    fallback_explanation = str(evaluation.get("explanation") or "").strip()
-
-                    st.markdown("**LLM Feedback:**")
-                    st.write(feedback or local_explanation or fallback_explanation or "No feedback available.")
-
-                    st.markdown("**Improvement Tip:**")
-                    st.write(improvement_tip or "No improvement tip available.")
-
-                    st.markdown("**Reference Explanation:**")
-                    reference_explanation = local_explanation or fallback_explanation
-                    reference_explanation = _shorten_explanation(reference_explanation, max_sentences=2) or "No reference explanation available."
-                    st.write(reference_explanation)
+    st.markdown("### First Attempt Success")
+    st.metric("Score", f"{first_attempt_success_pct}%")
+    st.write(f"{first_attempt_success_count} / {total_questions} questions answered correctly on the first attempt.")
+    st.markdown("---")
+    
+    # Question-wise timing breakdown
+    if quiz_state:
+        st.subheader("Question-wise Time Breakdown")
+        summary = get_quiz_summary()
+        
+        timing_cols = st.columns([2, 1])
+        with timing_cols[0]:
+            st.markdown("**Question**")
+        with timing_cols[1]:
+            st.markdown("**Time**")
+        
+        for qt in summary["question_times"]:
+            timing_cols = st.columns([2, 1])
+            with timing_cols[0]:
+                st.write(f"Q{qt['question_number']}: {qt['question'][:60]}...")
+            with timing_cols[1]:
+                st.write(qt["time_formatted"])
+    
+    # Analysis
+    st.subheader("Performance Analysis")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Strengths**")
+        st.write(str(report.get("strengths", "No data")))
+    with col2:
+        st.markdown("**Weaknesses**")
+        st.write(str(report.get("weaknesses", "No data")))
+    
+    st.markdown("**Recommendations**")
+    st.write(str(report.get("recommendations", "No data")))
+    
+    # Detailed evaluation
+    evaluations = report.get("evaluations", [])
+    if evaluations:
+        st.subheader("Detailed Evaluation")
+        for index, evaluation in enumerate(evaluations, start=1):
+            with st.expander(f"Question {index} — View Evaluation"):
+                st.markdown("**Question:**")
+                st.write(evaluation.get("question", ""))
+                
+                st.markdown("**Your Answer:**")
+                st.write(evaluation.get("your_answer", ""))
+                
+                st.markdown("**Correct Answer:**")
+                st.write(evaluation.get("correct_answer", ""))
+                
+                st.markdown("**Result:**")
+                result = str(evaluation.get("result", "Incorrect"))
+                if result == "Correct":
+                    st.write("✅ Correct")
+                elif result in {"Partially Correct", "Partially"}:
+                    st.write("⚠️ Partially Correct")
+                else:
+                    st.write("❌ Incorrect")
+                
+                feedback = str(evaluation.get("feedback", "")).strip()
+                improvement_tip = str(evaluation.get("improvement_tip", "")).strip()
+                local_explanation = str(evaluation.get("local_explanation", "")).strip()
+                fallback_explanation = str(evaluation.get("explanation", "")).strip()
+                
+                st.markdown("**Feedback:**")
+                st.write(feedback or local_explanation or fallback_explanation or "No feedback available")
+    
+    retake_col, new_quiz_col = st.columns(2)
+    with retake_col:
+        if st.button("🔁 Retake This Quiz", type="secondary"):
+            _reset_quiz_for_retake()
+            st.rerun()
+    with new_quiz_col:
+        if st.button("📝 Generate a New Quiz", type="secondary"):
+            st.session_state.quiz_mcqs = None
+            st.session_state.quiz_short_questions = None
+            st.session_state.quiz_report = None
+            st.session_state.quiz_short_feedback = None
+            if "quiz_state" in st.session_state:
+                del st.session_state.quiz_state
+            st.rerun()
 
 
 def render_chat_section() -> None:
@@ -1509,6 +2121,7 @@ def render_word_explorer() -> None:
         if not word_input or not word_input.strip():
             st.error("🚫 Please enter a word.")
         else:
+            _log_learning_support_event("vocabulary")
             with st.spinner(f"Looking up '{word_input.strip()}'..."):
                 try:
                     # Check cache first

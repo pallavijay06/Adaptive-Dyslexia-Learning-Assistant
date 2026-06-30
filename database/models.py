@@ -56,6 +56,40 @@ class QuizAttemptRecord:
     score: int
     total_questions: int
     timestamp: datetime
+    comprehension_score: float = 0.0
+    feedback_strengths: str = ""
+    feedback_weaknesses: str = ""
+    feedback_recommended_concepts: str = ""
+    feedback_suggested_learning_mode: str = ""
+
+
+@dataclass(frozen=True)
+class QuizQuestionResponseRecord:
+    id: int | None
+    user_id: int
+    quiz_id: int | None
+    question_id: str
+    question_type: str
+    topic: str | None
+    difficulty: str | None
+    question_start_time: datetime
+    question_submit_time: datetime
+    time_taken_seconds: int
+    is_correct: bool
+    created_at: datetime
+    attempt_number: int = 1  # NEW: Track which attempt this was (1, 2, 3, ...)
+    first_attempt_success: bool = False  # NEW: True if correct on first attempt
+
+
+@dataclass(frozen=True)
+class LearningSupportLogRecord:
+    id: int | None
+    user_id: int
+    quiz_id: int | None
+    question_id: str
+    support_type: str
+    timestamp: datetime
+    created_at: datetime
 
 
 @dataclass(frozen=True)

@@ -104,24 +104,82 @@ def calculate_conceptual_answer_score(
     return round(sum(percentages) / len(percentages), 2)
 
 
-def calculate_learning_support_score(*_: Any, **__: Any) -> None:
-    """Placeholder for future learning support dependency scoring."""
-    return None
+def calculate_learning_support_score(
+    behavior_events: Iterable[Mapping[str, Any]] | None = None,
+) -> float | None:
+    """Calculate learning support score from hint-request events."""
+    hint_requests = _count_behavior_events(behavior_events, "HINT_REQUESTED")
+    if hint_requests is None:
+        return None
+    if hint_requests <= 0:
+        return 100.0
+    if hint_requests == 1:
+        return 80.0
+    if hint_requests == 2:
+        return 60.0
+    return 40.0
 
 
-def calculate_first_attempt_score(*_: Any, **__: Any) -> None:
-    """Placeholder for future first-attempt success scoring."""
-    return None
+def calculate_first_attempt_score(
+    behavior_events: Iterable[Mapping[str, Any]] | None = None,
+) -> float | None:
+    """Estimate first-attempt success rate from retry behavior events."""
+    if behavior_events is None:
+        return None
+
+    total_questions: set[str] = set()
+    retry_questions: set[str] = set()
+    for event in _normalize_behavior_events(behavior_events):
+        metadata = event.get("metadata") or {}
+        question_id = metadata.get("question_id")
+        if not question_id:
+            continue
+
+        event_type = str(event.get("event_type") or "").strip().upper()
+        if event_type == "RESPONSE_TIME":
+            total_questions.add(str(question_id))
+        elif event_type == "QUIZ_RETRY":
+            retry_questions.add(str(question_id))
+
+    if not total_questions:
+        return None
+
+    first_attempt_success_count = sum(1 for question_id in total_questions if str(question_id) not in retry_questions)
+    return _percentage(first_attempt_success_count, len(total_questions))
 
 
-def calculate_response_efficiency_score(*_: Any, **__: Any) -> None:
-    """Placeholder for future response efficiency scoring."""
-    return None
+def calculate_response_efficiency_score(
+    behavior_events: Iterable[Mapping[str, Any]] | None = None,
+) -> float | None:
+    """Calculate response efficiency from recorded response-time events."""
+    if behavior_events is None:
+        return None
+
+    response_times: list[float] = []
+    for event in _normalize_behavior_events(behavior_events):
+        metadata = event.get("metadata") or {}
+        event_type = str(event.get("event_type") or "").strip().upper()
+        if event_type != "RESPONSE_TIME":
+            continue
+        time_taken = _to_float(metadata.get("time_taken_seconds"))
+        if time_taken is not None:
+            response_times.append(time_taken)
+
+    if not response_times:
+        return None
+
+    avg_response_time = sum(response_times) / len(response_times)
+    if avg_response_time <= 30.0:
+        return 100.0
+    if avg_response_time >= 120.0:
+        return 0.0
+    return round(100.0 - ((avg_response_time - 30.0) / 90.0) * 100.0, 1)
 
 
 def calculate_comprehension_score(
     quiz_evaluation: Mapping[str, Any] | None = None,
     short_answer_evaluations: Iterable[Mapping[str, Any]] | None = None,
+    behavior_events: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Calculate the normalized overall comprehension score.
 
@@ -140,9 +198,9 @@ def calculate_comprehension_score(
     metric_scores: dict[str, MetricValue] = {
         "quiz_accuracy": calculate_quiz_accuracy_score(quiz_evaluation),
         "conceptual_answer": calculate_conceptual_answer_score(short_answer_evaluations),
-        "learning_support": calculate_learning_support_score(),
-        "first_attempt": calculate_first_attempt_score(),
-        "response_efficiency": calculate_response_efficiency_score(),
+        "learning_support": calculate_learning_support_score(behavior_events),
+        "first_attempt": calculate_first_attempt_score(behavior_events),
+        "response_efficiency": calculate_response_efficiency_score(behavior_events),
     }
 
     active_weights = _normalize_active_weights(metric_scores)
@@ -233,6 +291,46 @@ def _percentage(numerator: float | None, denominator: float | None) -> float | N
     if numerator is None or denominator is None or denominator <= 0:
         return None
     return round(_clamp((numerator / denominator) * 100.0), 2)
+
+
+def _count_behavior_events(
+    behavior_events: Iterable[Mapping[str, Any]] | None,
+    event_type: str,
+) -> int | None:
+    """Count matching behavior events from a supplied event stream."""
+    if behavior_events is None:
+        return None
+
+    count = 0
+    for event in _normalize_behavior_events(behavior_events):
+        if str(event.get("event_type") or "").strip().upper() == str(event_type).strip().upper():
+            count += 1
+    return count
+
+
+def _normalize_behavior_events(
+    behavior_events: Iterable[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Normalize behavior-event objects and mappings into lightweight dictionaries."""
+    if behavior_events is None:
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for event in behavior_events:
+        if isinstance(event, Mapping):
+            metadata = event.get("metadata")
+            normalized.append({
+                "event_type": event.get("event_type"),
+                "metadata": metadata if isinstance(metadata, Mapping) else None,
+            })
+            continue
+
+        metadata = getattr(event, "metadata", None)
+        normalized.append({
+            "event_type": getattr(event, "event_type", None),
+            "metadata": metadata if isinstance(metadata, Mapping) else None,
+        })
+    return normalized
 
 
 def _first_number(*values: Any) -> float | None:
