@@ -21,6 +21,7 @@ from database.models import (
     LearnerProfileRecord,
     LearningHistoryRecord,
     BehaviorEventRecord,
+    LearningModeSessionRecord,
     TopicProgressRecord,
     ConceptMasteryRecord,
     AdaptivePreferencesRecord,
@@ -182,14 +183,14 @@ def init_db() -> None:
                 response_efficiency_score REAL,
                 metric_breakdown TEXT,
                 learner_model_metadata TEXT,
-                learning_mode_effectiveness_score REAL,
-                learning_mode_effectiveness_level TEXT,
+                learning_behaviour_analytics_score REAL,
+                learning_behaviour_analytics_level TEXT,
                 mode_engagement_score REAL,
                 mode_switching_score REAL,
                 feature_utilization_score REAL,
                 post_mode_improvement_score REAL,
                 mode_retention_score REAL,
-                learning_mode_metric_breakdown TEXT,
+                learning_behaviour_analytics_metric_breakdown TEXT,
                 last_updated TIMESTAMP,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -299,6 +300,13 @@ def _get_row_value(row: sqlite3.Row, key: str, default: Any = "") -> Any:
     return row[key] if key in row.keys() else default
 
 
+def _profile_column(row: sqlite3.Row, *keys: str) -> Any:
+    for key in keys:
+        if key in row.keys():
+            return row[key]
+    return None
+
+
 def _migrate_database_schema(connection: Connection) -> None:
     users_columns = _get_table_columns(connection, "users")
 
@@ -357,6 +365,20 @@ def _migrate_database_schema(connection: Connection) -> None:
         connection.execute("ALTER TABLE learning_sessions ADD COLUMN session_duration_minutes INTEGER NOT NULL DEFAULT 0")
 
     learner_profile_columns = _get_table_columns(connection, "learner_profile")
+    behaviour_analytics_renames = {
+        "learning_mode_effectiveness_score": "learning_behaviour_analytics_score",
+        "learning_mode_effectiveness_level": "learning_behaviour_analytics_level",
+        "learning_mode_metric_breakdown": "learning_behaviour_analytics_metric_breakdown",
+    }
+    for old_name, new_name in behaviour_analytics_renames.items():
+        if old_name in learner_profile_columns and new_name not in learner_profile_columns:
+            try:
+                connection.execute(f"ALTER TABLE learner_profile RENAME COLUMN {old_name} TO {new_name}")
+                learner_profile_columns.add(new_name)
+                learner_profile_columns.discard(old_name)
+            except Exception:
+                pass
+
     learner_profile_additions = {
         "comprehension_score": "REAL",
         "comprehension_level": "TEXT",
@@ -367,14 +389,14 @@ def _migrate_database_schema(connection: Connection) -> None:
         "response_efficiency_score": "REAL",
         "metric_breakdown": "TEXT",
         "learner_model_metadata": "TEXT",
-        "learning_mode_effectiveness_score": "REAL",
-        "learning_mode_effectiveness_level": "TEXT",
+        "learning_behaviour_analytics_score": "REAL",
+        "learning_behaviour_analytics_level": "TEXT",
         "mode_engagement_score": "REAL",
         "mode_switching_score": "REAL",
         "feature_utilization_score": "REAL",
         "post_mode_improvement_score": "REAL",
         "mode_retention_score": "REAL",
-        "learning_mode_metric_breakdown": "TEXT",
+        "learning_behaviour_analytics_metric_breakdown": "TEXT",
     }
     for column_name, column_type in learner_profile_additions.items():
         if column_name not in learner_profile_columns:
@@ -440,6 +462,23 @@ def _migrate_database_schema(connection: Connection) -> None:
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY(quiz_id) REFERENCES quiz_attempts(id) ON DELETE SET NULL
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS learning_mode_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            document_id INTEGER,
+            document_name TEXT,
+            timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            modes_used TEXT NOT NULL,
+            quiz_accuracy REAL NOT NULL,
+            comprehension_score REAL NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
         """
     )
@@ -1149,14 +1188,14 @@ def save_learner_profile(
     response_efficiency_score: float | None = None,
     metric_breakdown: dict[str, object] | None = None,
     learner_model_metadata: dict[str, object] | None = None,
-    learning_mode_effectiveness_score: float | None = None,
-    learning_mode_effectiveness_level: str | None = None,
+    learning_behaviour_analytics_score: float | None = None,
+    learning_behaviour_analytics_level: str | None = None,
     mode_engagement_score: float | None = None,
     mode_switching_score: float | None = None,
     feature_utilization_score: float | None = None,
     post_mode_improvement_score: float | None = None,
     mode_retention_score: float | None = None,
-    learning_mode_metric_breakdown: dict[str, object] | None = None,
+    learning_behaviour_analytics_metric_breakdown: dict[str, object] | None = None,
 ) -> LearnerProfileRecord:
     """Save or update a learner profile."""
     query = """
@@ -1168,11 +1207,11 @@ def save_learner_profile(
             avg_response_length_preference, comprehension_score, comprehension_level,
             quiz_accuracy_score, conceptual_answer_score, learning_support_score,
             first_attempt_score, response_efficiency_score, metric_breakdown,
-            learner_model_metadata, learning_mode_effectiveness_score,
-            learning_mode_effectiveness_level, mode_engagement_score,
+            learner_model_metadata, learning_behaviour_analytics_score,
+            learning_behaviour_analytics_level, mode_engagement_score,
             mode_switching_score, feature_utilization_score,
             post_mode_improvement_score, mode_retention_score,
-            learning_mode_metric_breakdown, last_updated
+            learning_behaviour_analytics_metric_breakdown, last_updated
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
@@ -1198,20 +1237,20 @@ def save_learner_profile(
             response_efficiency_score = COALESCE(excluded.response_efficiency_score, learner_profile.response_efficiency_score),
             metric_breakdown = COALESCE(excluded.metric_breakdown, learner_profile.metric_breakdown),
             learner_model_metadata = COALESCE(excluded.learner_model_metadata, learner_profile.learner_model_metadata),
-            learning_mode_effectiveness_score = COALESCE(excluded.learning_mode_effectiveness_score, learner_profile.learning_mode_effectiveness_score),
-            learning_mode_effectiveness_level = COALESCE(excluded.learning_mode_effectiveness_level, learner_profile.learning_mode_effectiveness_level),
+            learning_behaviour_analytics_score = COALESCE(excluded.learning_behaviour_analytics_score, learner_profile.learning_behaviour_analytics_score),
+            learning_behaviour_analytics_level = COALESCE(excluded.learning_behaviour_analytics_level, learner_profile.learning_behaviour_analytics_level),
             mode_engagement_score = COALESCE(excluded.mode_engagement_score, learner_profile.mode_engagement_score),
             mode_switching_score = COALESCE(excluded.mode_switching_score, learner_profile.mode_switching_score),
             feature_utilization_score = COALESCE(excluded.feature_utilization_score, learner_profile.feature_utilization_score),
             post_mode_improvement_score = COALESCE(excluded.post_mode_improvement_score, learner_profile.post_mode_improvement_score),
             mode_retention_score = COALESCE(excluded.mode_retention_score, learner_profile.mode_retention_score),
-            learning_mode_metric_breakdown = COALESCE(excluded.learning_mode_metric_breakdown, learner_profile.learning_mode_metric_breakdown),
+            learning_behaviour_analytics_metric_breakdown = COALESCE(excluded.learning_behaviour_analytics_metric_breakdown, learner_profile.learning_behaviour_analytics_metric_breakdown),
             last_updated = excluded.last_updated
     """
     now = datetime.utcnow()
     metric_breakdown_json = _json_dumps_or_none(metric_breakdown)
     learner_model_metadata_json = _json_dumps_or_none(learner_model_metadata)
-    learning_mode_metric_breakdown_json = _json_dumps_or_none(learning_mode_metric_breakdown)
+    learning_behaviour_analytics_metric_breakdown_json = _json_dumps_or_none(learning_behaviour_analytics_metric_breakdown)
     with _get_connection() as connection:
         connection.execute(
             query,
@@ -1239,14 +1278,14 @@ def save_learner_profile(
                 response_efficiency_score,
                 metric_breakdown_json,
                 learner_model_metadata_json,
-                learning_mode_effectiveness_score,
-                learning_mode_effectiveness_level,
+                learning_behaviour_analytics_score,
+                learning_behaviour_analytics_level,
                 mode_engagement_score,
                 mode_switching_score,
                 feature_utilization_score,
                 post_mode_improvement_score,
                 mode_retention_score,
-                learning_mode_metric_breakdown_json,
+                learning_behaviour_analytics_metric_breakdown_json,
                 now,
             ),
         )
@@ -1294,14 +1333,16 @@ def _learner_profile_from_row(row: sqlite3.Row) -> LearnerProfileRecord:
         response_efficiency_score=row["response_efficiency_score"],
         metric_breakdown=_json_loads_or_none(row["metric_breakdown"]),
         learner_model_metadata=_json_loads_or_none(row["learner_model_metadata"]),
-        learning_mode_effectiveness_score=row["learning_mode_effectiveness_score"],
-        learning_mode_effectiveness_level=row["learning_mode_effectiveness_level"],
+        learning_behaviour_analytics_score=_profile_column(row, "learning_behaviour_analytics_score", "learning_mode_effectiveness_score"),
+        learning_behaviour_analytics_level=_profile_column(row, "learning_behaviour_analytics_level", "learning_mode_effectiveness_level"),
         mode_engagement_score=row["mode_engagement_score"],
         mode_switching_score=row["mode_switching_score"],
         feature_utilization_score=row["feature_utilization_score"],
         post_mode_improvement_score=row["post_mode_improvement_score"],
         mode_retention_score=row["mode_retention_score"],
-        learning_mode_metric_breakdown=_json_loads_or_none(row["learning_mode_metric_breakdown"]),
+        learning_behaviour_analytics_metric_breakdown=_json_loads_or_none(
+            _profile_column(row, "learning_behaviour_analytics_metric_breakdown", "learning_mode_metric_breakdown")
+        ),
         last_updated=row["last_updated"],
         created_at=row["created_at"],
     )
@@ -1354,13 +1395,13 @@ def update_learner_profile(
     return save_learner_comprehension_profile(user_id, learner_model_result)
 
 
-def save_learning_mode_effectiveness_profile(
+def save_learning_behaviour_analytics_profile(
     user_id: int,
-    effectiveness_result: dict[str, object],
+    analytics_result: dict[str, object],
 ) -> LearnerProfileRecord:
-    """Store the latest learning mode effectiveness result on the profile."""
+    """Store the latest learning behaviour analytics result on the profile."""
     profile = get_learner_profile(user_id)
-    metric_breakdown = effectiveness_result.get("learning_mode_metric_breakdown")
+    metric_breakdown = analytics_result.get("learning_behaviour_analytics_metric_breakdown")
 
     return save_learner_profile(
         user_id=user_id,
@@ -1377,14 +1418,14 @@ def save_learning_mode_effectiveness_profile(
         prefers_analogies=profile.prefers_analogies if profile else True,
         prefers_bullet_points=profile.prefers_bullet_points if profile else True,
         avg_response_length_preference=profile.avg_response_length_preference if profile else 200,
-        learning_mode_effectiveness_score=effectiveness_result.get("learning_mode_effectiveness_score"),
-        learning_mode_effectiveness_level=effectiveness_result.get("learning_mode_effectiveness_level"),
-        mode_engagement_score=effectiveness_result.get("mode_engagement_score"),
-        mode_switching_score=effectiveness_result.get("mode_switching_score"),
-        feature_utilization_score=effectiveness_result.get("feature_utilization_score"),
-        post_mode_improvement_score=effectiveness_result.get("post_mode_improvement_score"),
-        mode_retention_score=effectiveness_result.get("mode_retention_score"),
-        learning_mode_metric_breakdown=metric_breakdown if isinstance(metric_breakdown, dict) else {},
+        learning_behaviour_analytics_score=analytics_result.get("learning_behaviour_analytics_score"),
+        learning_behaviour_analytics_level=analytics_result.get("learning_behaviour_analytics_level"),
+        mode_engagement_score=analytics_result.get("mode_engagement_score"),
+        mode_switching_score=analytics_result.get("mode_switching_score"),
+        feature_utilization_score=analytics_result.get("feature_utilization_score"),
+        post_mode_improvement_score=analytics_result.get("post_mode_improvement_score"),
+        mode_retention_score=analytics_result.get("mode_retention_score"),
+        learning_behaviour_analytics_metric_breakdown=metric_breakdown if isinstance(metric_breakdown, dict) else {},
     )
 
 
@@ -1757,6 +1798,78 @@ def get_adaptive_preferences(user_id: int) -> AdaptivePreferencesRecord | None:
         response_time_patience=row["response_time_patience"],
         quiz_difficulty_preference=row["quiz_difficulty_preference"],
         last_updated=row["last_updated"],
+    )
+
+
+def save_learning_mode_session(
+    session_id: str,
+    user_id: int,
+    *,
+    document_id: int | None = None,
+    document_name: str | None = None,
+    modes_used: list[str] | None = None,
+    quiz_accuracy: float,
+    comprehension_score: float,
+    timestamp: datetime | None = None,
+) -> LearningModeSessionRecord:
+    """Persist a completed document-to-quiz learning mode session."""
+    query = """
+        INSERT INTO learning_mode_sessions (
+            session_id, user_id, document_id, document_name,
+            timestamp, modes_used, quiz_accuracy, comprehension_score
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    now = timestamp or datetime.utcnow()
+    modes_json = _json_dumps_or_none(modes_used or []) or "[]"
+    with _get_connection() as connection:
+        cursor = connection.execute(
+            query,
+            (
+                session_id,
+                user_id,
+                document_id,
+                document_name,
+                now,
+                modes_json,
+                quiz_accuracy,
+                comprehension_score,
+            ),
+        )
+        row_id = cursor.lastrowid
+        row = connection.execute(
+            "SELECT * FROM learning_mode_sessions WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+    return _learning_mode_session_from_row(row)
+
+
+def get_learning_mode_sessions(user_id: int, limit: int = 500) -> list[LearningModeSessionRecord]:
+    """Return completed learning mode sessions for a learner."""
+    query = """
+        SELECT * FROM learning_mode_sessions
+        WHERE user_id = ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+    """
+    with _get_connection() as connection:
+        rows = connection.execute(query, (user_id, limit)).fetchall()
+    return [_learning_mode_session_from_row(row) for row in rows]
+
+
+def _learning_mode_session_from_row(row: sqlite3.Row) -> LearningModeSessionRecord:
+    modes_raw = _json_loads_or_none(row["modes_used"])
+    modes_list = modes_raw if isinstance(modes_raw, list) else []
+    return LearningModeSessionRecord(
+        id=row["id"],
+        session_id=row["session_id"],
+        user_id=row["user_id"],
+        document_id=row["document_id"],
+        document_name=row["document_name"],
+        timestamp=row["timestamp"],
+        modes_used=[str(mode) for mode in modes_list],
+        quiz_accuracy=row["quiz_accuracy"],
+        comprehension_score=row["comprehension_score"],
     )
 
 

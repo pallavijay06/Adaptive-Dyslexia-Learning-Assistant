@@ -97,13 +97,13 @@ def render_dashboard(user_id: int) -> None:
                     )
                 st.dataframe(rows, use_container_width=True)
 
-    with st.expander("Learning Mode Effectiveness", expanded=True):
-        if not profile or profile.learning_mode_effectiveness_score is None:
-            st.info("No learning mode effectiveness data available yet.")
+    with st.expander("Learning Behaviour Analytics", expanded=True):
+        if not profile or profile.learning_behaviour_analytics_score is None:
+            st.info("No learning behaviour analytics data available yet.")
         else:
             cols = st.columns(3)
-            cols[0].metric("Learning Mode Effectiveness", f"{profile.learning_mode_effectiveness_score:.2f}%")
-            cols[1].metric("Effectiveness Level", profile.learning_mode_effectiveness_level or "N/A")
+            cols[0].metric("Behaviour Analytics Score", f"{profile.learning_behaviour_analytics_score:.2f}%")
+            cols[1].metric("Analytics Level", profile.learning_behaviour_analytics_level or "N/A")
             cols[2].metric("Mode Engagement", _format_metric_value(profile.mode_engagement_score))
 
             cols = st.columns(4)
@@ -112,7 +112,7 @@ def render_dashboard(user_id: int) -> None:
             cols[2].metric("Post-Mode Improvement", _format_metric_value(profile.post_mode_improvement_score))
             cols[3].metric("Mode Retention", _format_metric_value(profile.mode_retention_score))
 
-            breakdown = profile.learning_mode_metric_breakdown or {}
+            breakdown = profile.learning_behaviour_analytics_metric_breakdown or {}
             if breakdown:
                 rows = []
                 for metric_name, detail in breakdown.items():
@@ -127,6 +127,30 @@ def render_dashboard(user_id: int) -> None:
                         }
                     )
                 st.dataframe(rows, use_container_width=True)
+
+    with st.expander("Learning Mode Effectiveness", expanded=True):
+        effectiveness = dashboard.get("learning_mode_effectiveness") or {}
+        rankings = effectiveness.get("mode_rankings") or []
+        recommended_mode = effectiveness.get("recommended_mode")
+
+        if recommended_mode:
+            st.metric("Overall Recommended Learning Mode", recommended_mode)
+        else:
+            st.info("Complete a quiz after using learning modes to see effectiveness rankings.")
+
+        if rankings:
+            table_rows = []
+            for row in rankings:
+                table_rows.append({
+                    "Learning Mode": row["mode"] + (" ★" if row["mode"] == recommended_mode else ""),
+                    "Sessions Used": row["sessions"],
+                    "Average Quiz Accuracy": f"{row['average_quiz']:.1f}%",
+                    "Average Comprehension Score": f"{row['average_comprehension']:.1f}%",
+                    "Effectiveness Score": f"{row['effectiveness']:.1f}%",
+                })
+            st.dataframe(table_rows, use_container_width=True)
+            if recommended_mode:
+                st.caption(f"★ {recommended_mode} is the recommended mode based on your session history.")
 
     with st.expander("Learning Progress", expanded=True):
         st.markdown("### Progress Metrics")

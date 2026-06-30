@@ -32,6 +32,7 @@ from backend.retriever import retrieve_relevant_chunks_for_question
 from backend.vector_store import build_index
 from database.db import (
     attach_learning_support_logs_to_quiz,
+    get_behavior_events,
     save_chat,
     save_document,
     save_learning_session,
@@ -91,6 +92,7 @@ from services.quiz_service import (
     generate_short_questions,
 )
 from services.learner_model_service import refresh_learner_profiles_from_quiz
+from services.learning_mode_effectiveness_service import finalize_learning_session_on_quiz
 from services.progress_dashboard_service import calculate_quiz_comprehension_score
 from services.quiz_hint_service import generate_quiz_hint, generate_short_answer_hint
 from services.adaptive_tutor import AdaptiveAITutor
@@ -1898,6 +1900,16 @@ def _persist_interactive_quiz_timings(
                 user_id,
                 quiz_evaluation=report,
                 short_answer_evaluations=short_feedback,
+            )
+            document_record = st.session_state.get("document_record")
+            document_name = str(getattr(document_record, "original_filename", None) or "")
+            finalize_learning_session_on_quiz(
+                user_id,
+                quiz_accuracy=quiz_accuracy,
+                comprehension_score=comprehension_score,
+                document_id=st.session_state.get("saved_document_id"),
+                document_name=document_name or None,
+                behavior_events=get_behavior_events(user_id, limit=500),
             )
         except Exception:
             logger.exception("Failed to persist learner profile metrics")

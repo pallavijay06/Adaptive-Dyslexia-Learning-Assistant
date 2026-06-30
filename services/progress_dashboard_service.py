@@ -19,6 +19,7 @@ from database.db import (
     get_learner_profile,
     get_chat_history,
 )
+from services.learning_mode_effectiveness_service import compute_mode_effectiveness
 
 
 def _normalize_datetime(value: Any) -> datetime | None:
@@ -586,4 +587,5 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         "insights": insights,
         "recommendations": recommendations,
         "favorite_mode": favorite_mode,
+        "learning_mode_effectiveness": compute_mode_effectiveness(user_id),
     }

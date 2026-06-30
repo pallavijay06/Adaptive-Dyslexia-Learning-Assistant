@@ -368,9 +368,9 @@ def refresh_learner_profiles_from_quiz(
     from database.db import (
         get_behavior_events,
         save_learner_comprehension_profile,
-        save_learning_mode_effectiveness_profile,
+        save_learning_behaviour_analytics_profile,
     )
-    from services.learning_mode_effectiveness_service import calculate_learning_mode_effectiveness
+    from services.learning_behaviour_analytics_service import calculate_learning_behaviour_analytics
 
     behavior_events = get_behavior_events(user_id, limit=behavior_event_limit)
     learner_model_result = calculate_comprehension_score(
@@ -379,9 +379,10 @@ def refresh_learner_profiles_from_quiz(
         behavior_events=behavior_events,
     )
     save_learner_comprehension_profile(user_id, learner_model_result)
-    learning_mode_result = calculate_learning_mode_effectiveness(behavior_events)
-    save_learning_mode_effectiveness_profile(user_id, learning_mode_result)
+    behaviour_analytics_result = calculate_learning_behaviour_analytics(behavior_events)
+    save_learning_behaviour_analytics_profile(user_id, behaviour_analytics_result)
     return {
         "comprehension": learner_model_result,
-        "learning_mode": learning_mode_result,
+        "learning_behaviour_analytics": behaviour_analytics_result,
+        "learning_mode": behaviour_analytics_result,
     }

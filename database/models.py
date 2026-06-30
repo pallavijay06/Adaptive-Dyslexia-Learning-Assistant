@@ -139,14 +139,14 @@ class LearnerProfileRecord:
     response_efficiency_score: float | None = None
     metric_breakdown: dict[str, Any] | None = None
     learner_model_metadata: dict[str, Any] | None = None
-    learning_mode_effectiveness_score: float | None = None
-    learning_mode_effectiveness_level: str | None = None
+    learning_behaviour_analytics_score: float | None = None
+    learning_behaviour_analytics_level: str | None = None
     mode_engagement_score: float | None = None
     mode_switching_score: float | None = None
     feature_utilization_score: float | None = None
     post_mode_improvement_score: float | None = None
     mode_retention_score: float | None = None
-    learning_mode_metric_breakdown: dict[str, Any] | None = None
+    learning_behaviour_analytics_metric_breakdown: dict[str, Any] | None = None
     last_updated: datetime | None = None
     created_at: datetime | None = None
 
@@ -172,6 +172,20 @@ class BehaviorEventRecord:
     event_type: str
     event_timestamp: datetime
     metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class LearningModeSessionRecord:
+    """Stores a completed document-to-quiz learning session for effectiveness analysis."""
+    id: int | None
+    session_id: str
+    user_id: int
+    document_id: int | None
+    document_name: str | None
+    timestamp: datetime | None
+    modes_used: list[str]
+    quiz_accuracy: float
+    comprehension_score: float
 
 
 @dataclass(frozen=True)

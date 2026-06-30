@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Any, Mapping
 
@@ -10,6 +11,109 @@ from database.db import save_behavior_event
 from database.models import BehaviorEventRecord
 
 logger = logging.getLogger(__name__)
+
+STANDARD_SESSION_MODES = frozenset({"Simplified Notes", "Audio", "Visual", "AI Tutor"})
+
+_TRACKED_MODE_LABELS = {
+    "Read": "Simplified Notes",
+    "READ": "Simplified Notes",
+    "Listen": "Audio",
+    "LISTEN": "Audio",
+    "Visual": "Visual",
+    "VISUAL": "Visual",
+}
+
+_EVENT_TO_SESSION_MODE = {
+    "SIMPLIFY_CLICKED": "Simplified Notes",
+    "VOCABULARY_CLICKED": "Simplified Notes",
+    "AUDIO_STARTED": "Audio",
+    "AUDIO_PLAYED": "Audio",
+    "AUDIO_PAUSED": "Audio",
+    "AUDIO_REPLAYED": "Audio",
+    "AUDIO_COMPLETED": "Audio",
+    "VISUAL_VIEWED": "Visual",
+    "DIAGRAM_OPENED": "Visual",
+    "IMAGE_EXPLANATION_VIEWED": "Visual",
+    "ANIMATION_VIEWED": "Visual",
+    "AI_TUTOR_USED": "AI Tutor",
+    "AI_TUTOR_OPENED": "AI Tutor",
+    "EXPLANATION_REQUESTED": "AI Tutor",
+}
+
+_active_learning_sessions: dict[int, dict[str, Any]] = {}
+
+
+def begin_learning_session(
+    user_id: int,
+    *,
+    document_id: int | None = None,
+    document_name: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Start a document-to-quiz learning session and reset tracked modes."""
+    context = {
+        "session_id": session_id or str(uuid.uuid4()),
+        "document_id": document_id,
+        "document_name": document_name,
+        "modes_used": set(),
+    }
+    _active_learning_sessions[user_id] = context
+    return context
+
+
+def get_active_learning_session(user_id: int) -> dict[str, Any] | None:
+    """Return the in-progress learning session for a learner, if any."""
+    return _active_learning_sessions.get(user_id)
+
+
+def clear_active_learning_session(user_id: int) -> None:
+    """Clear the active learning session after it has been persisted."""
+    _active_learning_sessions.pop(user_id, None)
+
+
+def record_session_mode(user_id: int, mode: str) -> None:
+    """Record a learning mode used during the current session (deduplicated)."""
+    if mode not in STANDARD_SESSION_MODES:
+        return
+    session = _active_learning_sessions.get(user_id)
+    if session is None:
+        return
+    session["modes_used"].add(mode)
+
+
+def collect_session_modes_from_events(behavior_events: list[Any]) -> list[str]:
+    """Derive session modes from stored behaviour events as a fallback."""
+    modes: set[str] = set()
+    for event in behavior_events:
+        event_type = str(getattr(event, "event_type", None) or (event.get("event_type") if isinstance(event, Mapping) else "")).strip().upper()
+        metadata = getattr(event, "metadata", None)
+        if metadata is None and isinstance(event, Mapping):
+            metadata = event.get("metadata")
+        if not isinstance(metadata, Mapping):
+            metadata = {}
+        mode = _resolve_session_mode(event_type, metadata)
+        if mode:
+            modes.add(mode)
+    return sorted(modes)
+
+
+def _resolve_session_mode(event_type: str, metadata: Mapping[str, Any]) -> str | None:
+    if event_type == MODE_ENTERED:
+        raw_mode = metadata.get("mode") or metadata.get("learning_mode")
+        if raw_mode is None:
+            return None
+        return _TRACKED_MODE_LABELS.get(str(raw_mode))
+    return _EVENT_TO_SESSION_MODE.get(event_type)
+
+
+def _record_session_mode_from_event(
+    user_id: int,
+    event_type: str,
+    metadata: Mapping[str, Any],
+) -> None:
+    mode = _resolve_session_mode(event_type, metadata)
+    if mode:
+        record_session_mode(user_id, mode)
 
 DOCUMENT_OPENED = "DOCUMENT_OPENED"
 MODE_ENTERED = "MODE_ENTERED"
@@ -117,13 +221,15 @@ def track_event(
 
     timestamp = event_timestamp or datetime.utcnow()
     payload = _normalize_metadata(metadata)
-    return save_behavior_event(
+    record = save_behavior_event(
         user_id=user_id,
         session_id=session_id,
         event_type=normalized_type,
         event_timestamp=timestamp,
         metadata=payload,
     )
+    _record_session_mode_from_event(user_id, normalized_type, payload)
+    return record
 
 
 def track_document_opened(
@@ -132,12 +238,19 @@ def track_document_opened(
     metadata: Mapping[str, Any] | None = None,
 ) -> BehaviorEventRecord:
     """Record that a document was opened or selected by a learner."""
-    return track_event(
+    payload = _normalize_metadata(metadata)
+    record = track_event(
         user_id=user_id,
         event_type=DOCUMENT_OPENED,
         session_id=session_id,
-        metadata=metadata,
+        metadata=payload,
     )
+    begin_learning_session(
+        user_id,
+        document_id=payload.get("document_id"),
+        document_name=str(payload.get("file_name") or payload.get("document_name") or ""),
+    )
+    return record
 
 
 def track_mode_entered(

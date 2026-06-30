@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 
 from database.db import (
     attach_learning_support_logs_to_quiz,
+    get_behavior_events,
     save_learning_support_log,
     save_quiz_question_responses,
     save_quiz_score,
@@ -27,6 +28,7 @@ from services.quiz_service import (
     generate_short_questions,
 )
 from services.learner_model_service import refresh_learner_profiles_from_quiz
+from services.learning_mode_effectiveness_service import finalize_learning_session_on_quiz
 
 quiz_bp = Blueprint("quiz", __name__)
 logger = logging.getLogger(__name__)
@@ -284,9 +286,20 @@ def submit_quiz() -> tuple[object, int]:
                         "mode": "Quiz",
                     },
                 )
-                refresh_learner_profiles_from_quiz(
+                profile_result = refresh_learner_profiles_from_quiz(
                     user_id_for_tracking,
                     quiz_evaluation=report,
+                )
+                comprehension_score = profile_result.get("comprehension", {}).get("comprehension_score")
+                if comprehension_score is None:
+                    comprehension_score = quiz_accuracy
+                finalize_learning_session_on_quiz(
+                    user_id_for_tracking,
+                    quiz_accuracy=quiz_accuracy,
+                    comprehension_score=float(comprehension_score),
+                    document_id=payload.get("document_id"),
+                    document_name=payload.get("document_name"),
+                    behavior_events=get_behavior_events(user_id_for_tracking, limit=500),
                 )
             except Exception:
                 logger.exception("Failed to persist learner comprehension profile")
