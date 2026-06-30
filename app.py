@@ -35,6 +35,8 @@ from database.db import (
     save_chat,
     save_document,
     save_learning_session,
+    create_login_session,
+    close_login_session,
     save_learning_support_log,
     save_quiz_question_responses,
     save_quiz_score,
@@ -180,6 +182,7 @@ def initialize_session_state() -> None:
         "current_user_id": None,
         "current_user_name": None,
         "login_timestamp": None,
+        "current_session_id": None,
         "authenticated": False,
     }
     for key, value in defaults.items():
@@ -204,10 +207,18 @@ def _handle_login(email: str, password: str) -> bool:
         st.error("Invalid email or password.")
         return False
 
+    login_time = datetime.utcnow()
     st.session_state.current_user_id = user.id
     st.session_state.current_user_name = user.name
-    st.session_state.login_timestamp = datetime.utcnow()
+    st.session_state.login_timestamp = login_time
     st.session_state.authenticated = True
+    try:
+        session_record = create_login_session(user.id)
+        st.session_state.current_session_id = session_record.id
+        update_user_last_login(user.id, login_time)
+    except Exception:
+        logger.exception("Failed to create login session record.")
+        st.session_state.current_session_id = None
     st.success(f"Welcome back, {user.name}!")
     st.rerun()
     return True
@@ -265,10 +276,18 @@ def _handle_registration(
         st.error(str(exc))
         return False
 
+    login_time = datetime.utcnow()
     st.session_state.current_user_id = user.id
     st.session_state.current_user_name = user.name
-    st.session_state.login_timestamp = datetime.utcnow()
+    st.session_state.login_timestamp = login_time
     st.session_state.authenticated = True
+    try:
+        session_record = create_login_session(user.id)
+        st.session_state.current_session_id = session_record.id
+        update_user_last_login(user.id, login_time)
+    except Exception:
+        logger.exception("Failed to create login session record after registration.")
+        st.session_state.current_session_id = None
     st.success(f"Account created. Welcome, {user.name}!")
     st.rerun()
     return True
@@ -344,23 +363,37 @@ def logout_user() -> None:
     if not st.session_state.authenticated or st.session_state.current_user_id is None:
         return
 
+    user_id = st.session_state.current_user_id
     login_time = st.session_state.login_timestamp or datetime.utcnow()
     logout_time = datetime.utcnow()
-    duration_minutes = max(
-        1,
-        int((logout_time - login_time).total_seconds() / 60),
-    )
+    session_id = st.session_state.get("current_session_id")
 
-    update_user_last_login(st.session_state.current_user_id, login_time)
-    update_user_logout(st.session_state.current_user_id, logout_time)
-    save_learning_session(
-        user_id=st.session_state.current_user_id,
-        mode_used="authentication",
-        duration=duration_minutes,
-        login_time=login_time,
-        logout_time=logout_time,
-        session_duration_minutes=duration_minutes,
-    )
+    update_user_logout(user_id, logout_time)
+    if session_id is not None:
+        try:
+            close_login_session(
+                session_id=session_id,
+                user_id=user_id,
+                login_time=login_time,
+                logout_time=logout_time,
+            )
+        except Exception:
+            logger.exception("Failed to close login session record on logout.")
+    else:
+        # Fallback: no open session row found — insert a completed one.
+        logger.warning("logout_user: no current_session_id found; inserting fallback session row.")
+        try:
+            duration_minutes = max(1, int((logout_time - login_time).total_seconds() / 60))
+            save_learning_session(
+                user_id=user_id,
+                mode_used="authentication",
+                duration=duration_minutes,
+                login_time=login_time,
+                logout_time=logout_time,
+                session_duration_minutes=duration_minutes,
+            )
+        except Exception:
+            logger.exception("Fallback save_learning_session also failed on logout.")
 
     st.session_state.clear()
     initialize_session_state()

@@ -165,7 +165,7 @@ def init_db() -> None:
                 unique_topics_studied INTEGER NOT NULL DEFAULT 0,
                 total_questions_asked INTEGER NOT NULL DEFAULT 0,
                 average_quiz_score REAL NOT NULL DEFAULT 0.0,
-                preferred_learning_mode TEXT NOT NULL DEFAULT 'Simplified Notes',
+                preferred_learning_mode TEXT,
                 learning_frequency TEXT NOT NULL DEFAULT 'occasional',
                 confidence_level REAL NOT NULL DEFAULT 0.5,
                 explanation_complexity TEXT NOT NULL DEFAULT 'medium',
@@ -355,6 +355,24 @@ def _migrate_database_schema(connection: Connection) -> None:
         connection.execute("ALTER TABLE learning_sessions ADD COLUMN logout_time TIMESTAMP")
     if "session_duration_minutes" not in learning_columns:
         connection.execute("ALTER TABLE learning_sessions ADD COLUMN session_duration_minutes INTEGER NOT NULL DEFAULT 0")
+
+    # Nullify the hardcoded 'Simplified Notes' default that was previously
+    # written into learner_profile rows that have never had a real mode set.
+    # A NULL value tells the dashboard that no mode has been chosen yet.
+    try:
+        connection.execute(
+            """
+            UPDATE learner_profile
+            SET preferred_learning_mode = NULL
+            WHERE preferred_learning_mode = 'Simplified Notes'
+              AND user_id NOT IN (
+                  SELECT DISTINCT user_id FROM behavior_events
+                  WHERE event_type = 'MODE_ENTERED'
+              )
+            """
+        )
+    except Exception:
+        pass
 
     learner_profile_columns = _get_table_columns(connection, "learner_profile")
     learner_profile_additions = {
@@ -1058,6 +1076,72 @@ def save_learning_session(
     )
 
 
+def create_login_session(user_id: int) -> LearningSessionRecord:
+    """Insert a new learning session row at login time.
+
+    logout_time is NULL and session_duration_minutes is 0 until the user logs
+    out.  The returned record's id should be stored in
+    st.session_state.current_session_id so it can be updated at logout.
+    """
+    now = datetime.utcnow()
+    query = """
+        INSERT INTO learning_sessions (
+            user_id, mode_used, duration, login_time, logout_time,
+            session_duration_minutes, timestamp
+        )
+        VALUES (?, ?, ?, ?, NULL, ?, ?)
+    """
+    with _get_connection() as connection:
+        cursor = connection.execute(
+            query,
+            (
+                user_id,
+                "authentication",
+                0,
+                now,
+                0,
+                now,
+            ),
+        )
+        session_id = cursor.lastrowid
+    return LearningSessionRecord(
+        id=session_id,
+        user_id=user_id,
+        mode_used="authentication",
+        duration=0,
+        login_time=now,
+        logout_time=None,
+        session_duration_minutes=0,
+        timestamp=now,
+    )
+
+
+def close_login_session(
+    session_id: int,
+    user_id: int,
+    login_time: datetime,
+    logout_time: datetime,
+) -> None:
+    """Update the existing session row created at login with logout details.
+
+    This must be called instead of save_learning_session on logout so that
+    exactly one row exists per login/logout pair.
+    """
+    duration_minutes = max(1, int((logout_time - login_time).total_seconds() / 60))
+    query = """
+        UPDATE learning_sessions
+        SET logout_time = ?,
+            session_duration_minutes = ?,
+            duration = ?
+        WHERE id = ? AND user_id = ?
+    """
+    with _get_connection() as connection:
+        connection.execute(
+            query,
+            (logout_time, duration_minutes, duration_minutes, session_id, user_id),
+        )
+
+
 def get_learning_sessions(user_id: int, limit: int = 100) -> list[LearningSessionRecord]:
     """Return recent learning sessions for a user."""
     query = """
@@ -1132,7 +1216,7 @@ def save_learner_profile(
     unique_topics_studied: int = 0,
     total_questions_asked: int = 0,
     average_quiz_score: float = 0.0,
-    preferred_learning_mode: str = "Simplified Notes",
+    preferred_learning_mode: str | None = None,
     learning_frequency: str = "occasional",
     confidence_level: float = 0.5,
     explanation_complexity: str = "medium",
@@ -1326,7 +1410,7 @@ def save_learner_comprehension_profile(
         unique_topics_studied=profile.unique_topics_studied if profile else 0,
         total_questions_asked=profile.total_questions_asked if profile else 0,
         average_quiz_score=profile.average_quiz_score if profile else 0.0,
-        preferred_learning_mode=profile.preferred_learning_mode if profile else "Simplified Notes",
+        preferred_learning_mode=profile.preferred_learning_mode if profile else None,
         learning_frequency=profile.learning_frequency if profile else "occasional",
         confidence_level=profile.confidence_level if profile else 0.5,
         explanation_complexity=profile.explanation_complexity if profile else "medium",
@@ -1369,7 +1453,7 @@ def save_learning_mode_effectiveness_profile(
         unique_topics_studied=profile.unique_topics_studied if profile else 0,
         total_questions_asked=profile.total_questions_asked if profile else 0,
         average_quiz_score=profile.average_quiz_score if profile else 0.0,
-        preferred_learning_mode=profile.preferred_learning_mode if profile else "Simplified Notes",
+        preferred_learning_mode=profile.preferred_learning_mode if profile else None,
         learning_frequency=profile.learning_frequency if profile else "occasional",
         confidence_level=profile.confidence_level if profile else 0.5,
         explanation_complexity=profile.explanation_complexity if profile else "medium",
