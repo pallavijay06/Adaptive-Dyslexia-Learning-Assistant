@@ -191,6 +191,7 @@ def init_db() -> None:
                 post_mode_improvement_score REAL,
                 mode_retention_score REAL,
                 learning_behaviour_analytics_metric_breakdown TEXT,
+                difficulty_profile TEXT,
                 last_updated TIMESTAMP,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -384,9 +385,9 @@ def _migrate_database_schema(connection: Connection) -> None:
 
     learner_profile_columns = _get_table_columns(connection, "learner_profile")
     behaviour_analytics_renames = {
-        "learning_mode_effectiveness_score": "learning_behaviour_analytics_score",
-        "learning_mode_effectiveness_level": "learning_behaviour_analytics_level",
-        "learning_mode_metric_breakdown": "learning_behaviour_analytics_metric_breakdown",
+        "learning_behaviour_analytics_score": "learning_behaviour_analytics_score",
+        "learning_behaviour_analytics_level": "learning_behaviour_analytics_level",
+        "learning_behaviour_analytics_metric_breakdown": "learning_behaviour_analytics_metric_breakdown",
     }
     for old_name, new_name in behaviour_analytics_renames.items():
         if old_name in learner_profile_columns and new_name not in learner_profile_columns:
@@ -415,6 +416,7 @@ def _migrate_database_schema(connection: Connection) -> None:
         "post_mode_improvement_score": "REAL",
         "mode_retention_score": "REAL",
         "learning_behaviour_analytics_metric_breakdown": "TEXT",
+        "difficulty_profile": "TEXT",
     }
     for column_name, column_type in learner_profile_additions.items():
         if column_name not in learner_profile_columns:
@@ -1280,6 +1282,7 @@ def save_learner_profile(
     post_mode_improvement_score: float | None = None,
     mode_retention_score: float | None = None,
     learning_behaviour_analytics_metric_breakdown: dict[str, object] | None = None,
+    difficulty_profile: dict[str, object] | None = None,
 ) -> LearnerProfileRecord:
     """Save or update a learner profile."""
     query = """
@@ -1295,9 +1298,9 @@ def save_learner_profile(
             learning_behaviour_analytics_level, mode_engagement_score,
             mode_switching_score, feature_utilization_score,
             post_mode_improvement_score, mode_retention_score,
-            learning_behaviour_analytics_metric_breakdown, last_updated
+            learning_behaviour_analytics_metric_breakdown, difficulty_profile, last_updated
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             total_study_time_minutes = excluded.total_study_time_minutes,
             documents_uploaded = excluded.documents_uploaded,
@@ -1329,12 +1332,14 @@ def save_learner_profile(
             post_mode_improvement_score = COALESCE(excluded.post_mode_improvement_score, learner_profile.post_mode_improvement_score),
             mode_retention_score = COALESCE(excluded.mode_retention_score, learner_profile.mode_retention_score),
             learning_behaviour_analytics_metric_breakdown = COALESCE(excluded.learning_behaviour_analytics_metric_breakdown, learner_profile.learning_behaviour_analytics_metric_breakdown),
+            difficulty_profile = COALESCE(excluded.difficulty_profile, learner_profile.difficulty_profile),
             last_updated = excluded.last_updated
     """
     now = datetime.utcnow()
     metric_breakdown_json = _json_dumps_or_none(metric_breakdown)
     learner_model_metadata_json = _json_dumps_or_none(learner_model_metadata)
     learning_behaviour_analytics_metric_breakdown_json = _json_dumps_or_none(learning_behaviour_analytics_metric_breakdown)
+    difficulty_profile_json = _json_dumps_or_none(difficulty_profile)
     with _get_connection() as connection:
         connection.execute(
             query,
@@ -1370,6 +1375,7 @@ def save_learner_profile(
                 post_mode_improvement_score,
                 mode_retention_score,
                 learning_behaviour_analytics_metric_breakdown_json,
+                difficulty_profile_json,
                 now,
             ),
         )
@@ -1417,16 +1423,17 @@ def _learner_profile_from_row(row: sqlite3.Row) -> LearnerProfileRecord:
         response_efficiency_score=row["response_efficiency_score"],
         metric_breakdown=_json_loads_or_none(row["metric_breakdown"]),
         learner_model_metadata=_json_loads_or_none(row["learner_model_metadata"]),
-        learning_behaviour_analytics_score=_profile_column(row, "learning_behaviour_analytics_score", "learning_mode_effectiveness_score"),
-        learning_behaviour_analytics_level=_profile_column(row, "learning_behaviour_analytics_level", "learning_mode_effectiveness_level"),
+        learning_behaviour_analytics_score=_profile_column(row, "learning_behaviour_analytics_score", "learning_behaviour_analytics_score"),
+        learning_behaviour_analytics_level=_profile_column(row, "learning_behaviour_analytics_level", "learning_behaviour_analytics_level"),
         mode_engagement_score=row["mode_engagement_score"],
         mode_switching_score=row["mode_switching_score"],
         feature_utilization_score=row["feature_utilization_score"],
         post_mode_improvement_score=row["post_mode_improvement_score"],
         mode_retention_score=row["mode_retention_score"],
         learning_behaviour_analytics_metric_breakdown=_json_loads_or_none(
-            _profile_column(row, "learning_behaviour_analytics_metric_breakdown", "learning_mode_metric_breakdown")
+            _profile_column(row, "learning_behaviour_analytics_metric_breakdown", "learning_behaviour_analytics_metric_breakdown")
         ),
+        difficulty_profile=_json_loads_or_none(row["difficulty_profile"]) if "difficulty_profile" in row.keys() else None,
         last_updated=row["last_updated"],
         created_at=row["created_at"],
     )
@@ -1510,6 +1517,43 @@ def save_learning_behaviour_analytics_profile(
         post_mode_improvement_score=analytics_result.get("post_mode_improvement_score"),
         mode_retention_score=analytics_result.get("mode_retention_score"),
         learning_behaviour_analytics_metric_breakdown=metric_breakdown if isinstance(metric_breakdown, dict) else {},
+    )
+
+
+def get_difficulty_profile(user_id: int) -> dict[str, object] | None:
+    """Return the stored difficulty profile for a learner."""
+    profile = get_learner_profile(user_id)
+    if profile is None or profile.difficulty_profile is None:
+        return None
+    stored = profile.difficulty_profile
+    return stored if isinstance(stored, dict) else None
+
+
+def save_difficulty_profile(
+    user_id: int,
+    difficulty_profile: dict[str, object],
+) -> LearnerProfileRecord:
+    """Persist the latest difficulty profile on the learner profile."""
+    from services.learner_profile_service import LearnerProfileService
+
+    profile = LearnerProfileService.get_or_create_profile(user_id)
+
+    return save_learner_profile(
+        user_id=user_id,
+        total_study_time_minutes=profile.total_study_time_minutes,
+        documents_uploaded=profile.documents_uploaded,
+        unique_topics_studied=profile.unique_topics_studied,
+        total_questions_asked=profile.total_questions_asked,
+        average_quiz_score=profile.average_quiz_score,
+        preferred_learning_mode=profile.preferred_learning_mode,
+        learning_frequency=profile.learning_frequency,
+        confidence_level=profile.confidence_level,
+        explanation_complexity=profile.explanation_complexity,
+        prefers_examples=profile.prefers_examples,
+        prefers_analogies=profile.prefers_analogies,
+        prefers_bullet_points=profile.prefers_bullet_points,
+        avg_response_length_preference=profile.avg_response_length_preference,
+        difficulty_profile=difficulty_profile if isinstance(difficulty_profile, dict) else {},
     )
 
 

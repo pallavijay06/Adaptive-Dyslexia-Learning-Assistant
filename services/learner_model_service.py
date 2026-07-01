@@ -381,8 +381,17 @@ def refresh_learner_profiles_from_quiz(
     save_learner_comprehension_profile(user_id, learner_model_result)
     behaviour_analytics_result = calculate_learning_behaviour_analytics(behavior_events)
     save_learning_behaviour_analytics_profile(user_id, behaviour_analytics_result)
+
+    from services.difficulty_profile_service import refresh_difficulty_profile_from_quiz
+
+    difficulty_profile_result = refresh_difficulty_profile_from_quiz(
+        user_id,
+        quiz_evaluation=quiz_evaluation,
+    )
+
     return {
         "comprehension": learner_model_result,
         "learning_behaviour_analytics": behaviour_analytics_result,
         "learning_mode": behaviour_analytics_result,
+        "difficulty_profile": difficulty_profile_result,
     }

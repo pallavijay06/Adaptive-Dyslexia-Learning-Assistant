@@ -147,6 +147,7 @@ class LearnerProfileRecord:
     post_mode_improvement_score: float | None = None
     mode_retention_score: float | None = None
     learning_behaviour_analytics_metric_breakdown: dict[str, Any] | None = None
+    difficulty_profile: dict[str, Any] | None = None
     last_updated: datetime | None = None
     created_at: datetime | None = None
 

@@ -89,17 +89,17 @@ def _render_comprehension_profile(profile: Any, progress: dict[str, Any]) -> Non
 
 
 def _render_learning_mode(profile: Any, mode_usage: list[dict], favorite_mode: str) -> None:
-    with st.expander("🎯 Learning Mode", expanded=True):
+    with st.expander("📊 Learning Behaviour Analytics", expanded=True):
         c = st.columns(2)
         c[0].metric("Favorite Mode", favorite_mode)
 
-        if profile and profile.learning_mode_effectiveness_score is not None:
+        if profile and profile.learning_behaviour_analytics_score is not None:
             c[1].metric(
-                "Mode Effectiveness",
-                f"{profile.learning_mode_effectiveness_score:.1f}%",
+                "Behaviour Analytics",
+                f"{profile.learning_behaviour_analytics_score:.1f}%",
             )
         else:
-            c[1].metric("Mode Effectiveness", "N/A")
+            c[1].metric("Behaviour Analytics", "N/A")
 
         if mode_usage:
             st.caption("How often you use each learning mode:")
@@ -111,7 +111,7 @@ def _render_learning_mode(profile: Any, mode_usage: list[dict], favorite_mode: s
         else:
             st.info("No learning mode usage recorded yet. Select a mode in the Learning Hub to get started.")
 
-        if profile and profile.learning_mode_effectiveness_score is not None:
+        if profile and profile.learning_behaviour_analytics_score is not None:
             with st.expander("View mode effectiveness details", expanded=False):
                 eff_cols = st.columns(4)
                 eff_cols[0].metric("Engagement", _fmt_pct(profile.mode_engagement_score))
@@ -119,7 +119,7 @@ def _render_learning_mode(profile: Any, mode_usage: list[dict], favorite_mode: s
                 eff_cols[2].metric("Post-Mode Improvement", _fmt_pct(profile.post_mode_improvement_score))
                 eff_cols[3].metric("Mode Retention", _fmt_pct(profile.mode_retention_score))
 
-                breakdown = profile.learning_mode_metric_breakdown or {}
+                breakdown = profile.learning_behaviour_analytics_metric_breakdown or {}
                 if breakdown:
                     for metric_name, detail in breakdown.items():
                         if not isinstance(detail, dict):
@@ -130,6 +130,165 @@ def _render_learning_mode(profile: Any, mode_usage: list[dict], favorite_mode: s
                         col_a.caption(label)
                         col_b.caption(f"{raw_val:.1f}%")
                         _pct_bar(raw_val)
+
+
+def _difficulty_score_html(score: float, band: str, color: str) -> str:
+    return (
+        f"<span style='color:{color};font-weight:600'>"
+        f"{score:.1f} — {band}</span>"
+    )
+
+
+def _render_difficulty_summary_card(label: str, item: dict[str, Any] | None, name_key: str) -> None:
+    if not item:
+        st.metric(label, "N/A")
+        return
+    name = item.get(name_key, "N/A")
+    score = float(item.get("Difficulty Score") or 0.0)
+    band = item.get("Band", "")
+    color = item.get("Band Color", "#64748b")
+    st.metric(label, name)
+    st.markdown(
+        _difficulty_score_html(score, band, color),
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"Attempts: {item.get('Attempts', 0)} · "
+        f"Accuracy: {float(item.get('Accuracy', 0.0)):.1f}%"
+    )
+
+
+def _render_difficulty_accuracy_table(rows: list[dict[str, Any]], name_key: str) -> None:
+    if not rows:
+        st.info("No data yet.")
+        return
+
+    header = st.columns([3, 1, 1, 2])
+    header[0].markdown(f"**{name_key}**")
+    header[1].markdown("**Attempts**")
+    header[2].markdown("**Accuracy**")
+    header[3].markdown("**Difficulty Score**")
+
+    for row in rows:
+        cols = st.columns([3, 1, 1, 2])
+        cols[0].markdown(f"**{row[name_key]}**")
+        cols[1].caption(str(row["Attempts"]))
+        cols[2].caption(f"{float(row['Accuracy']):.1f}%")
+        score = float(row["Difficulty Score"])
+        cols[3].markdown(
+            _difficulty_score_html(score, row["Band"], row["Band Color"]),
+            unsafe_allow_html=True,
+        )
+        st.divider()
+
+
+def _render_difficulty_profile(difficulty_data: dict[str, Any]) -> None:
+    with st.expander("🎯 Difficulty Profile", expanded=True):
+        if not difficulty_data.get("has_data"):
+            st.info("Complete at least one quiz to unlock your Difficulty Profile.")
+            return
+
+        st.markdown("**Overall Difficulty Summary**")
+        summary = difficulty_data.get("summary") or {}
+
+        summary_cols = st.columns(5)
+        with summary_cols[0]:
+            _render_difficulty_summary_card(
+                "Most Difficult Concept",
+                summary.get("most_difficult_concept"),
+                "Concept",
+            )
+        with summary_cols[1]:
+            _render_difficulty_summary_card(
+                "Most Difficult Question Type",
+                summary.get("most_difficult_question_type"),
+                "Question Type",
+            )
+        with summary_cols[2]:
+            _render_difficulty_summary_card(
+                "Most Difficult Skill",
+                summary.get("most_difficult_skill"),
+                "Skill",
+            )
+        with summary_cols[3]:
+            _render_difficulty_summary_card(
+                "Most Difficult Level",
+                summary.get("most_difficult_level"),
+                "Level",
+            )
+        with summary_cols[4]:
+            top_error = summary.get("highest_error_frequency")
+            if top_error:
+                st.metric("Highest Error Frequency", top_error["Category"])
+                st.markdown(
+                    f"<span style='color:#ef4444;font-weight:600'>"
+                    f"{float(top_error['Error Frequency']):.1f}%</span>",
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    f"Type: {top_error['Type']} · "
+                    f"Attempts: {top_error['Attempts']} · "
+                    f"Incorrect: {top_error['Incorrect']}"
+                )
+            else:
+                st.metric("Highest Error Frequency", "N/A")
+
+        st.caption(
+            "Difficulty score = 100 − accuracy. "
+            "Green (0–25) Low · Yellow (26–50) Moderate · "
+            "Orange (51–75) High · Red (76–100) Very High"
+        )
+
+        st.divider()
+
+        st.markdown("**Concept Difficulty**")
+        _render_difficulty_accuracy_table(
+            difficulty_data.get("concept_difficulty") or [],
+            "Concept",
+        )
+
+        st.markdown("**Question Type Difficulty**")
+        _render_difficulty_accuracy_table(
+            difficulty_data.get("question_type_difficulty") or [],
+            "Question Type",
+        )
+
+        st.markdown("**Skill Difficulty**")
+        _render_difficulty_accuracy_table(
+            difficulty_data.get("skill_difficulty") or [],
+            "Skill",
+        )
+
+        st.markdown("**Difficulty Level Analysis**")
+        _render_difficulty_accuracy_table(
+            difficulty_data.get("difficulty_level_analysis") or [],
+            "Level",
+        )
+
+        st.markdown("**Error Frequency**")
+        error_rows = difficulty_data.get("error_frequency") or []
+        if not error_rows:
+            st.info("No error frequency data yet.")
+        else:
+            header = st.columns([3, 2, 1, 1, 2])
+            header[0].markdown("**Category**")
+            header[1].markdown("**Type**")
+            header[2].markdown("**Attempts**")
+            header[3].markdown("**Incorrect**")
+            header[4].markdown("**Error Frequency**")
+            for row in error_rows:
+                cols = st.columns([3, 2, 1, 1, 2])
+                cols[0].markdown(f"**{row['Category']}**")
+                cols[1].caption(row["Type"])
+                cols[2].caption(str(row["Attempts"]))
+                cols[3].caption(str(row["Incorrect"]))
+                freq = float(row["Error Frequency"])
+                freq_color = "#ef4444" if freq > 50 else "#f97316" if freq > 25 else "#64748b"
+                cols[4].markdown(
+                    f"<span style='color:{freq_color};font-weight:600'>{freq:.1f}%</span>",
+                    unsafe_allow_html=True,
+                )
+                st.divider()
 
 
 def _render_learning_progress(progress: dict[str, Any], quiz_performance: dict[str, Any], study_activity: dict[str, Any], favorite_mode: str) -> None:
@@ -216,6 +375,51 @@ def _render_weak_concepts(weak: list[dict]) -> None:
             col_c.caption(f"Mastery: {row['Mastery Score']}% · {row['Revisions']} revision(s)")
             _pct_bar(row["Mastery Score"])
             st.divider()
+
+
+def _render_learning_mode_effectiveness(mode_effectiveness: dict[str, Any]) -> None:
+    with st.expander("🏆 Learning Mode Effectiveness", expanded=True):
+        rankings = mode_effectiveness.get("mode_rankings", [])
+        recommended_mode = mode_effectiveness.get("recommended_mode")
+
+        if recommended_mode:
+            st.markdown("**Overall Recommended Learning Mode**")
+            st.markdown(
+                f"<div style='"
+                f"display:inline-block;"
+                f"background:#1d4ed8;color:#fff;"
+                f"padding:6px 18px;border-radius:8px;"
+                f"font-size:1rem;font-weight:700;"
+                f"margin-bottom:1rem;"
+                f"'>{recommended_mode}</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info(
+                "Complete at least one quiz after a learning session to see "
+                "your mode effectiveness rankings."
+            )
+            return
+
+        if not rankings:
+            return
+
+        st.divider()
+
+        header_cols = st.columns([3, 2, 3, 3, 2])
+        header_cols[0].markdown("**Learning Mode**")
+        header_cols[1].markdown("**Sessions Used**")
+        header_cols[2].markdown("**Avg Quiz Accuracy**")
+        header_cols[3].markdown("**Avg Comprehension Score**")
+        header_cols[4].markdown("**Effectiveness Score**")
+
+        for rank in rankings:
+            row_cols = st.columns([3, 2, 3, 3, 2])
+            row_cols[0].markdown(rank["mode"])
+            row_cols[1].markdown(str(rank["sessions"]))
+            row_cols[2].markdown(f"{rank['average_quiz']}%")
+            row_cols[3].markdown(f"{rank['average_comprehension']}%")
+            row_cols[4].markdown(f"{rank['effectiveness']}%")
 
 
 def _render_timeline(timeline_days: list[dict]) -> None:
@@ -561,9 +765,14 @@ def render_dashboard(user_id: int) -> None:
     favorite_mode   = dashboard["favorite_mode"]
     badges          = dashboard.get("badges", [])
 
+    mode_effectiveness      = dashboard.get("learning_mode_effectiveness", {})
+    difficulty_profile_data = dashboard.get("difficulty_profile", {})
+
     _render_learner_overview(overview)
     _render_comprehension_profile(profile, progress)
     _render_learning_mode(profile, mode_usage, favorite_mode)
+    _render_learning_mode_effectiveness(mode_effectiveness)
+    _render_difficulty_profile(difficulty_profile_data)
     _render_learning_progress(progress, quiz_performance, study_activity, favorite_mode)
     _render_concept_mastery(mastery)
     _render_weak_concepts(weak)
