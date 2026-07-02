@@ -22,41 +22,13 @@ from database.db import (
 )
 from services.learning_mode_effectiveness_service import compute_mode_effectiveness
 from services.difficulty_profile_service import build_difficulty_dashboard_data
-
-
-def _normalize_datetime(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value)
-        except ValueError:
-            try:
-                return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                return None
-    return None
-
-
-def _extract_date(value: Any) -> datetime.date | None:
-    dt = _normalize_datetime(value)
-    if dt is None:
-        return None
-    return dt.date()
-
-
-def _calculate_streak(dates: list[datetime.date]) -> int:
-    if not dates:
-        return 0
-
-    unique_days = sorted(set(dates), reverse=True)
-    streak = 0
-    current = unique_days[0]
-
-    while streak < len(unique_days) and unique_days[streak] == current - timedelta(days=streak):
-        streak += 1
-
-    return streak
+from services.study_activity_service import (
+    build_daily_study_time,
+    calculate_current_streak,
+    collect_active_dates_from_sessions_and_history,
+    extract_date as _extract_date,
+    normalize_datetime as _normalize_datetime,
+)
 
 
 def _parse_mode(activity_type: str) -> str:
@@ -275,18 +247,8 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
             _extract_date(event.timestamp) for event in history if _extract_date(event.timestamp)
         })
 
-    active_dates = [
-        _extract_date(session.timestamp)
-        for session in sessions
-        if _extract_date(session.timestamp) is not None
-    ]
-    active_dates += [
-        _extract_date(event.timestamp)
-        for event in history
-        if _extract_date(event.timestamp) is not None
-    ]
-    active_dates = [d for d in active_dates if d is not None]
-    streak = _calculate_streak(active_dates)
+    active_dates = collect_active_dates_from_sessions_and_history(sessions, history)
+    streak = calculate_current_streak(active_dates)
 
     # Progress metrics
     documents_studied = len(documents)
@@ -402,21 +364,10 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
     else:
         mode_usage = []
 
-    # Study activity trends
-    daily_study: dict[str, float] = defaultdict(float)
-    weekly_study: dict[str, float] = defaultdict(float)
-    monthly_study: dict[str, float] = defaultdict(float)
-    for session in sessions:
-        timestamp = _normalize_datetime(session.timestamp)
-        duration = float(session.session_duration_minutes or session.duration or 0)
-        if not timestamp or duration <= 0:
-            continue
-        day_key = timestamp.strftime("%Y-%m-%d")
-        week_key = f"{timestamp.isocalendar()[0]}-W{timestamp.isocalendar()[1]:02d}"
-        month_key = timestamp.strftime("%Y-%m")
-        daily_study[day_key] += duration
-        weekly_study[week_key] += duration
-        monthly_study[month_key] += duration
+    study_time_data = build_daily_study_time(sessions)
+    daily_study = study_time_data["daily"]
+    weekly_study = study_time_data["weekly"]
+    monthly_study = study_time_data["monthly"]
 
     # --- Day-grouped summarized timeline ---
     _day_uploads: dict[str, list[str]] = defaultdict(list)

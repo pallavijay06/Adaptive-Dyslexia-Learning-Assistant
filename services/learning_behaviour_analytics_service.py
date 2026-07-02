@@ -4,16 +4,23 @@ This module mirrors the comprehension score service: it is pure calculation
 logic over stored behaviour events and does not depend on UI, API, or LLM code.
 
 Tracks Feature Utilization, Mode Engagement, Mode Switching, Mode Retention,
-and Post Mode Improvement as behavioural analytics metrics.
+Post Mode Improvement, Session Duration, Return Frequency, Daily Study Time,
+Completion Rate, and Consecutive Learning Days as behavioural analytics metrics.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from database.models import BehaviorEventRecord
+from database.models import BehaviorEventRecord, LearningHistoryRecord, LearningSessionRecord
+from services.study_activity_service import (
+    build_daily_study_time,
+    calculate_streak_metrics,
+    collect_active_dates_from_sessions_and_history,
+    normalize_datetime,
+)
 
 
 LEARNING_BEHAVIOUR_ANALYTICS_WEIGHTS: dict[str, float] = {
@@ -28,6 +35,8 @@ MODE_ENTERED = "MODE_ENTERED"
 MODE_EXITED = "MODE_EXITED"
 MODE_SWITCHED = "MODE_SWITCHED"
 QUIZ_COMPLETED = "QUIZ_COMPLETED"
+DOCUMENT_OPENED = "DOCUMENT_OPENED"
+SESSION_COMPLETED = "SESSION_COMPLETED"
 
 FEATURE_EVENT_TYPES = {
     "VOCABULARY_CLICKED",
@@ -72,6 +81,9 @@ MetricValue = float | None
 
 def calculate_learning_behaviour_analytics(
     behavior_events: list[BehaviorEventRecord],
+    *,
+    learning_sessions: list[LearningSessionRecord] | None = None,
+    learning_history: list[LearningHistoryRecord] | None = None,
 ) -> dict[str, Any]:
     """Calculate the learner's overall learning behaviour analytics score."""
     events = _sort_events(behavior_events)
@@ -86,6 +98,16 @@ def calculate_learning_behaviour_analytics(
     score = _weighted_score(metric_scores, active_weights)
     metric_breakdown = _metric_breakdown(metric_scores, active_weights)
 
+    document_sessions = extract_document_learning_sessions(events)
+    session_duration = calculate_session_duration_metrics(document_sessions)
+    return_frequency = calculate_return_frequency_metrics(document_sessions)
+    daily_study_time = calculate_daily_study_time_metrics(learning_sessions or [])
+    completion_rate = calculate_completion_rate_metrics(document_sessions)
+    consecutive_learning_days = calculate_consecutive_learning_days_metrics(
+        learning_sessions or [],
+        learning_history or [],
+    )
+
     return {
         "learning_behaviour_analytics_score": score,
         "learning_behaviour_analytics_level": _behaviour_analytics_level(score),
@@ -95,6 +117,177 @@ def calculate_learning_behaviour_analytics(
         "post_mode_improvement_score": metric_scores["post_mode_improvement"],
         "mode_retention_score": metric_scores["mode_retention"],
         "learning_behaviour_analytics_metric_breakdown": metric_breakdown,
+        "session_duration": session_duration,
+        "return_frequency": return_frequency,
+        "daily_study_time": daily_study_time,
+        "completion_rate": completion_rate,
+        "consecutive_learning_days": consecutive_learning_days,
+        "document_learning_sessions": document_sessions,
+    }
+
+
+def extract_document_learning_sessions(
+    events: list[BehaviorEventRecord],
+) -> list[dict[str, Any]]:
+    """Derive document-to-quiz learning sessions from behaviour events."""
+    sessions: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    for event in events:
+        event_type = (event.event_type or "").upper()
+        timestamp = _event_timestamp(event)
+        metadata = event.metadata or {}
+
+        if event_type == DOCUMENT_OPENED:
+            if current is not None:
+                sessions.append(_finalize_document_session(current, completed=False))
+            current = {
+                "session_start": timestamp.isoformat(),
+                "document_id": metadata.get("document_id"),
+                "document_name": metadata.get("file_name") or metadata.get("document_name"),
+                "session_end": None,
+                "duration_minutes": None,
+                "completed": False,
+            }
+            continue
+
+        if current is None:
+            continue
+
+        if event_type == QUIZ_COMPLETED:
+            current["session_end"] = timestamp.isoformat()
+            current["completed"] = True
+            sessions.append(_finalize_document_session(current, completed=True))
+            current = None
+            continue
+
+        if event_type == SESSION_COMPLETED:
+            current["session_end"] = timestamp.isoformat()
+            current["completed"] = bool(metadata.get("completed", False))
+            sessions.append(_finalize_document_session(current, completed=current["completed"]))
+            current = None
+
+    if current is not None:
+        sessions.append(_finalize_document_session(current, completed=False))
+
+    return sessions
+
+
+def calculate_session_duration_metrics(
+    document_sessions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Aggregate average, longest, and total session duration in minutes."""
+    durations = [
+        float(session["duration_minutes"])
+        for session in document_sessions
+        if session.get("duration_minutes") is not None
+    ]
+    if not durations:
+        return {
+            "average_session_duration_minutes": 0.0,
+            "longest_session_minutes": 0.0,
+            "total_learning_time_minutes": 0.0,
+            "session_count": 0,
+        }
+
+    return {
+        "average_session_duration_minutes": round(sum(durations) / len(durations), 1),
+        "longest_session_minutes": round(max(durations), 1),
+        "total_learning_time_minutes": round(sum(durations), 1),
+        "session_count": len(durations),
+    }
+
+
+def calculate_return_frequency_metrics(
+    document_sessions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Measure how frequently the learner returns to study."""
+    now = datetime.utcnow()
+    week_start = now - timedelta(days=7)
+    month_start = now - timedelta(days=30)
+
+    session_dates: list[date] = []
+    sessions_this_week = 0
+    sessions_this_month = 0
+
+    for session in document_sessions:
+        start = normalize_datetime(session.get("session_start"))
+        if start is None:
+            continue
+        session_dates.append(start.date())
+        if start >= week_start:
+            sessions_this_week += 1
+        if start >= month_start:
+            sessions_this_month += 1
+
+    unique_dates = sorted(set(session_dates))
+    average_gap_days: float | None = None
+    if len(unique_dates) >= 2:
+        gaps = [(unique_dates[index] - unique_dates[index - 1]).days for index in range(1, len(unique_dates))]
+        average_gap_days = round(sum(gaps) / len(gaps), 1)
+
+    total_weeks = max((now.date() - unique_dates[0]).days / 7.0, 1.0) if unique_dates else 1.0
+    average_sessions_per_week = round(len(document_sessions) / total_weeks, 1) if document_sessions else 0.0
+
+    return {
+        "sessions_this_week": sessions_this_week,
+        "sessions_this_month": sessions_this_month,
+        "average_sessions_per_week": average_sessions_per_week,
+        "average_days_between_sessions": average_gap_days,
+    }
+
+
+def calculate_daily_study_time_metrics(
+    learning_sessions: list[LearningSessionRecord],
+) -> dict[str, Any]:
+    """Reuse Progress Dashboard daily study time aggregation."""
+    return build_daily_study_time(learning_sessions)
+
+
+def calculate_completion_rate_metrics(
+    document_sessions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Measure the ratio of quiz-completed sessions to started sessions."""
+    started_sessions = len(document_sessions)
+    completed_sessions = sum(1 for session in document_sessions if session.get("completed"))
+    completion_rate = round((completed_sessions / started_sessions) * 100.0, 1) if started_sessions else 0.0
+    return {
+        "started_sessions": started_sessions,
+        "completed_sessions": completed_sessions,
+        "completion_rate": completion_rate,
+    }
+
+
+def calculate_consecutive_learning_days_metrics(
+    learning_sessions: list[LearningSessionRecord],
+    learning_history: list[LearningHistoryRecord],
+) -> dict[str, Any]:
+    """Reuse Progress Dashboard streak logic and expose longest streak."""
+    active_dates = collect_active_dates_from_sessions_and_history(learning_sessions, learning_history)
+    return calculate_streak_metrics(active_dates)
+
+
+def _finalize_document_session(
+    session: dict[str, Any],
+    *,
+    completed: bool,
+) -> dict[str, Any]:
+    start = normalize_datetime(session.get("session_start"))
+    end = normalize_datetime(session.get("session_end"))
+    duration_minutes: float | None = None
+
+    if start is not None and end is not None:
+        duration_minutes = round(max(0.0, (end - start).total_seconds()) / 60.0, 1)
+    elif start is not None:
+        duration_minutes = round(max(0.0, (datetime.utcnow() - start).total_seconds()) / 60.0, 1)
+
+    return {
+        "session_start": session.get("session_start"),
+        "session_end": session.get("session_end"),
+        "duration_minutes": duration_minutes,
+        "document_id": session.get("document_id"),
+        "document_name": session.get("document_name"),
+        "completed": completed,
     }
 
 

@@ -50,14 +50,6 @@ def _render_learner_overview(overview: dict[str, Any]) -> None:
         c[3].metric("Institution", overview["institution"])
         c[4].metric("Field of Study", overview["field_of_study"])
 
-        st.divider()
-
-        c2 = st.columns(4)
-        c2[0].metric("⏱ Total Study Time", f"{overview['total_study_time']} mins")
-        c2[1].metric("📅 Learning Sessions", overview["total_learning_sessions"])
-        c2[2].metric("🗓 Days Active", overview["days_active"])
-        c2[3].metric("🔥 Current Streak", f"{overview['current_streak']} day(s)")
-
 
 def _render_comprehension_profile(profile: Any, progress: dict[str, Any]) -> None:
     with st.expander("🧠 Comprehension Profile", expanded=True):
@@ -90,18 +82,61 @@ def _render_comprehension_profile(profile: Any, progress: dict[str, Any]) -> Non
 
 def _render_learning_mode(profile: Any, mode_usage: list[dict], favorite_mode: str) -> None:
     with st.expander("📊 Learning Behaviour Analytics", expanded=True):
-        c = st.columns(2)
-        c[0].metric("Favorite Mode", favorite_mode)
+        extended: dict[str, Any] = {}
+        if profile and profile.learner_model_metadata:
+            metadata = profile.learner_model_metadata
+            if isinstance(metadata, dict):
+                extended = metadata.get("learning_behaviour_analytics") or {}
+                if not isinstance(extended, dict):
+                    extended = {}
 
+        session_duration = extended.get("session_duration") or {}
+        return_frequency = extended.get("return_frequency") or {}
+        daily_study_time = extended.get("daily_study_time") or {}
+        completion_rate = extended.get("completion_rate") or {}
+        consecutive_days = extended.get("consecutive_learning_days") or {}
+
+        st.markdown("**Behaviour Score**")
+        score_cols = st.columns(2)
         if profile and profile.learning_behaviour_analytics_score is not None:
-            c[1].metric(
-                "Behaviour Analytics",
+            score_cols[0].metric(
+                "Behaviour Score",
                 f"{profile.learning_behaviour_analytics_score:.1f}%",
             )
+            score_cols[1].metric(
+                "Behaviour Level",
+                profile.learning_behaviour_analytics_level or "N/A",
+            )
+            _pct_bar(profile.learning_behaviour_analytics_score)
         else:
-            c[1].metric("Behaviour Analytics", "N/A")
+            score_cols[0].metric("Behaviour Score", "N/A")
+            score_cols[1].metric("Behaviour Level", "N/A")
+            st.info("Use learning modes and complete a quiz to unlock behaviour analytics.")
 
-        if mode_usage:
+        st.divider()
+        st.markdown("**Current Metrics**")
+        st.caption(f"Favorite mode: **{favorite_mode}**")
+
+        if profile and profile.learning_behaviour_analytics_score is not None:
+            metric_cols = st.columns(5)
+            metric_cols[0].metric("Feature Utilization", _fmt_pct(profile.feature_utilization_score))
+            metric_cols[1].metric("Mode Engagement", _fmt_pct(profile.mode_engagement_score))
+            metric_cols[2].metric("Mode Switching", _fmt_pct(profile.mode_switching_score))
+            metric_cols[3].metric("Mode Retention", _fmt_pct(profile.mode_retention_score))
+            metric_cols[4].metric("Post Mode Improvement", _fmt_pct(profile.post_mode_improvement_score))
+
+            breakdown = profile.learning_behaviour_analytics_metric_breakdown or {}
+            if breakdown:
+                for metric_name, detail in breakdown.items():
+                    if not isinstance(detail, dict):
+                        continue
+                    raw_val = float(detail.get("value") or 0.0)
+                    label = metric_name.replace("_", " ").title()
+                    col_a, col_b = st.columns([3, 1])
+                    col_a.caption(label)
+                    col_b.caption(f"{raw_val:.1f}%")
+                    _pct_bar(raw_val)
+        elif mode_usage:
             st.caption("How often you use each learning mode:")
             for item in mode_usage:
                 col_l, col_r = st.columns([4, 1])
@@ -111,25 +146,60 @@ def _render_learning_mode(profile: Any, mode_usage: list[dict], favorite_mode: s
         else:
             st.info("No learning mode usage recorded yet. Select a mode in the Learning Hub to get started.")
 
-        if profile and profile.learning_behaviour_analytics_score is not None:
-            with st.expander("View mode effectiveness details", expanded=False):
-                eff_cols = st.columns(4)
-                eff_cols[0].metric("Engagement", _fmt_pct(profile.mode_engagement_score))
-                eff_cols[1].metric("Feature Utilisation", _fmt_pct(profile.feature_utilization_score))
-                eff_cols[2].metric("Post-Mode Improvement", _fmt_pct(profile.post_mode_improvement_score))
-                eff_cols[3].metric("Mode Retention", _fmt_pct(profile.mode_retention_score))
+        st.divider()
+        st.markdown("**Session Analytics**")
+        session_cols = st.columns(4)
+        session_cols[0].metric(
+            "Average Session Duration",
+            f"{session_duration.get('average_session_duration_minutes', 0)} mins",
+        )
+        session_cols[1].metric(
+            "Total Learning Time",
+            f"{session_duration.get('total_learning_time_minutes', 0)} mins",
+        )
+        session_cols[2].metric(
+            "Daily Study Time",
+            f"{daily_study_time.get('today_minutes', 0)} mins today",
+        )
+        completion_pct = float(completion_rate.get("completion_rate") or 0.0)
+        session_cols[3].metric("Completion Rate", _fmt_pct(completion_pct))
+        _pct_bar(completion_pct)
+        st.caption(
+            f"Completed {completion_rate.get('completed_sessions', 0)} of "
+            f"{completion_rate.get('started_sessions', 0)} started sessions."
+        )
 
-                breakdown = profile.learning_behaviour_analytics_metric_breakdown or {}
-                if breakdown:
-                    for metric_name, detail in breakdown.items():
-                        if not isinstance(detail, dict):
-                            continue
-                        raw_val = float(detail.get("value") or 0.0)
-                        label = metric_name.replace("_", " ").title()
-                        col_a, col_b = st.columns([3, 1])
-                        col_a.caption(label)
-                        col_b.caption(f"{raw_val:.1f}%")
-                        _pct_bar(raw_val)
+        freq_cols = st.columns(2)
+        freq_cols[0].metric(
+            "Sessions Per Week",
+            return_frequency.get("average_sessions_per_week", 0),
+        )
+        avg_gap = return_frequency.get("average_days_between_sessions")
+        freq_cols[1].metric(
+            "Average Gap Between Sessions",
+            f"{avg_gap} day(s)" if avg_gap is not None else "N/A",
+        )
+
+        st.divider()
+        st.markdown("**Learning Consistency**")
+        consistency_cols = st.columns(3)
+        consistency_cols[0].metric(
+            "Current Streak",
+            f"{consecutive_days.get('current_streak', 0)} day(s)",
+        )
+        consistency_cols[1].metric(
+            "Longest Streak",
+            f"{consecutive_days.get('longest_streak', 0)} day(s)",
+        )
+        last_active = consecutive_days.get("last_active_date")
+        consistency_cols[2].metric(
+            "Last Active Date",
+            last_active or "N/A",
+        )
+
+        if daily_study_time.get("daily"):
+            with st.expander("Daily study time trend", expanded=False):
+                st.line_chart({"Daily minutes": dict(daily_study_time["daily"])})
 
 
 def _difficulty_score_html(score: float, band: str, color: str) -> str:

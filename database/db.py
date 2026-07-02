@@ -1493,6 +1493,22 @@ def save_learning_behaviour_analytics_profile(
     """Store the latest learning behaviour analytics result on the profile."""
     profile = get_learner_profile(user_id)
     metric_breakdown = analytics_result.get("learning_behaviour_analytics_metric_breakdown")
+    existing_metadata = profile.learner_model_metadata if profile and profile.learner_model_metadata else {}
+    if not isinstance(existing_metadata, dict):
+        existing_metadata = {}
+
+    extended_metrics = {
+        "session_duration": analytics_result.get("session_duration"),
+        "return_frequency": analytics_result.get("return_frequency"),
+        "daily_study_time": analytics_result.get("daily_study_time"),
+        "completion_rate": analytics_result.get("completion_rate"),
+        "consecutive_learning_days": analytics_result.get("consecutive_learning_days"),
+        "document_learning_sessions": analytics_result.get("document_learning_sessions"),
+    }
+    learner_model_metadata = {
+        **existing_metadata,
+        "learning_behaviour_analytics": extended_metrics,
+    }
 
     return save_learner_profile(
         user_id=user_id,
@@ -1509,6 +1525,15 @@ def save_learning_behaviour_analytics_profile(
         prefers_analogies=profile.prefers_analogies if profile else True,
         prefers_bullet_points=profile.prefers_bullet_points if profile else True,
         avg_response_length_preference=profile.avg_response_length_preference if profile else 200,
+        comprehension_score=profile.comprehension_score if profile else None,
+        comprehension_level=profile.comprehension_level if profile else None,
+        quiz_accuracy_score=profile.quiz_accuracy_score if profile else None,
+        conceptual_answer_score=profile.conceptual_answer_score if profile else None,
+        learning_support_score=profile.learning_support_score if profile else None,
+        first_attempt_score=profile.first_attempt_score if profile else None,
+        response_efficiency_score=profile.response_efficiency_score if profile else None,
+        metric_breakdown=profile.metric_breakdown if profile else None,
+        learner_model_metadata=learner_model_metadata,
         learning_behaviour_analytics_score=analytics_result.get("learning_behaviour_analytics_score"),
         learning_behaviour_analytics_level=analytics_result.get("learning_behaviour_analytics_level"),
         mode_engagement_score=analytics_result.get("mode_engagement_score"),
@@ -1517,6 +1542,7 @@ def save_learning_behaviour_analytics_profile(
         post_mode_improvement_score=analytics_result.get("post_mode_improvement_score"),
         mode_retention_score=analytics_result.get("mode_retention_score"),
         learning_behaviour_analytics_metric_breakdown=metric_breakdown if isinstance(metric_breakdown, dict) else {},
+        difficulty_profile=profile.difficulty_profile if profile else None,
     )
 
 

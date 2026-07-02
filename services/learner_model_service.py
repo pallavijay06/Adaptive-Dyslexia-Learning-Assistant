@@ -357,6 +357,32 @@ def _clamp(value: float, minimum: float = 0.0, maximum: float = 100.0) -> float:
     return max(minimum, min(maximum, value))
 
 
+def refresh_learning_behaviour_analytics(
+    user_id: int,
+    *,
+    behavior_event_limit: int = 500,
+) -> dict[str, Any]:
+    """Recompute and persist learning behaviour analytics from stored events."""
+    from database.db import (
+        get_behavior_events,
+        get_learning_history,
+        get_learning_sessions,
+        save_learning_behaviour_analytics_profile,
+    )
+    from services.learning_behaviour_analytics_service import calculate_learning_behaviour_analytics
+
+    behavior_events = get_behavior_events(user_id, limit=behavior_event_limit)
+    learning_sessions = get_learning_sessions(user_id, limit=200)
+    learning_history = get_learning_history(user_id, limit=500)
+    behaviour_analytics_result = calculate_learning_behaviour_analytics(
+        behavior_events,
+        learning_sessions=learning_sessions,
+        learning_history=learning_history,
+    )
+    save_learning_behaviour_analytics_profile(user_id, behaviour_analytics_result)
+    return behaviour_analytics_result
+
+
 def refresh_learner_profiles_from_quiz(
     user_id: int,
     *,
@@ -367,19 +393,27 @@ def refresh_learner_profiles_from_quiz(
     """Recompute and persist comprehension and learning-mode profiles from stored events."""
     from database.db import (
         get_behavior_events,
+        get_learning_history,
+        get_learning_sessions,
         save_learner_comprehension_profile,
         save_learning_behaviour_analytics_profile,
     )
     from services.learning_behaviour_analytics_service import calculate_learning_behaviour_analytics
 
     behavior_events = get_behavior_events(user_id, limit=behavior_event_limit)
+    learning_sessions = get_learning_sessions(user_id, limit=200)
+    learning_history = get_learning_history(user_id, limit=500)
     learner_model_result = calculate_comprehension_score(
         quiz_evaluation=quiz_evaluation,
         short_answer_evaluations=short_answer_evaluations,
         behavior_events=behavior_events,
     )
     save_learner_comprehension_profile(user_id, learner_model_result)
-    behaviour_analytics_result = calculate_learning_behaviour_analytics(behavior_events)
+    behaviour_analytics_result = calculate_learning_behaviour_analytics(
+        behavior_events,
+        learning_sessions=learning_sessions,
+        learning_history=learning_history,
+    )
     save_learning_behaviour_analytics_profile(user_id, behaviour_analytics_result)
 
     from services.difficulty_profile_service import refresh_difficulty_profile_from_quiz

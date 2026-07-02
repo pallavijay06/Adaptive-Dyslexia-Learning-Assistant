@@ -56,6 +56,7 @@ def begin_learning_session(
         "document_id": document_id,
         "document_name": document_name,
         "modes_used": set(),
+        "session_start": datetime.utcnow(),
     }
     _active_learning_sessions[user_id] = context
     return context
@@ -69,6 +70,37 @@ def get_active_learning_session(user_id: int) -> dict[str, Any] | None:
 def clear_active_learning_session(user_id: int) -> None:
     """Clear the active learning session after it has been persisted."""
     _active_learning_sessions.pop(user_id, None)
+
+
+def _finalize_active_session(user_id: int, *, completed: bool) -> BehaviorEventRecord | None:
+    """Record session end when a learner exits or starts a new document session."""
+    session = _active_learning_sessions.get(user_id)
+    if session is None:
+        return None
+
+    session_start = session.get("session_start")
+    if not isinstance(session_start, datetime):
+        session_start = datetime.utcnow()
+
+    session_end = datetime.utcnow()
+    duration_minutes = round(max(0.0, (session_end - session_start).total_seconds()) / 60.0, 1)
+    return track_session_completed(
+        user_id,
+        session_start=session_start,
+        session_end=session_end,
+        duration_minutes=duration_minutes,
+        document_id=session.get("document_id"),
+        document_name=session.get("document_name"),
+        completed=completed,
+        session_uuid=session.get("session_id"),
+    )
+
+
+def end_learning_session(user_id: int, *, completed: bool = False) -> BehaviorEventRecord | None:
+    """End the active document learning session and clear in-memory state."""
+    record = _finalize_active_session(user_id, completed=completed)
+    clear_active_learning_session(user_id)
+    return record
 
 
 def record_session_mode(user_id: int, mode: str) -> None:
@@ -239,6 +271,10 @@ def track_document_opened(
 ) -> BehaviorEventRecord:
     """Record that a document was opened or selected by a learner."""
     payload = _normalize_metadata(metadata)
+    had_active_session = get_active_learning_session(user_id) is not None
+    if had_active_session:
+        end_learning_session(user_id, completed=False)
+
     record = track_event(
         user_id=user_id,
         event_type=DOCUMENT_OPENED,
@@ -250,6 +286,13 @@ def track_document_opened(
         document_id=payload.get("document_id"),
         document_name=str(payload.get("file_name") or payload.get("document_name") or ""),
     )
+    if had_active_session:
+        try:
+            from services.learner_model_service import refresh_learning_behaviour_analytics
+
+            refresh_learning_behaviour_analytics(user_id)
+        except Exception:
+            logger.exception("Failed to refresh learning behaviour analytics after session switch")
     return record
 
 
@@ -533,11 +576,59 @@ def track_quiz_completed(
     payload = _normalize_metadata(metadata)
     payload.setdefault("mode", "Quiz")
     payload.setdefault("feature", "quiz_completed")
+    active = get_active_learning_session(user_id)
+    if active is not None:
+        session_start = active.get("session_start")
+        if isinstance(session_start, datetime):
+            session_end = datetime.utcnow()
+            payload.setdefault("session_start", session_start.isoformat())
+            payload.setdefault("session_end", session_end.isoformat())
+            payload.setdefault(
+                "duration_minutes",
+                round(max(0.0, (session_end - session_start).total_seconds()) / 60.0, 1),
+            )
     return track_event(
         user_id=user_id,
         event_type=QUIZ_COMPLETED,
         session_id=session_id,
         metadata=payload,
+    )
+
+
+def track_session_completed(
+    user_id: int,
+    *,
+    session_start: datetime | None = None,
+    session_end: datetime | None = None,
+    duration_minutes: float | None = None,
+    document_id: int | None = None,
+    document_name: str | None = None,
+    completed: bool = False,
+    session_uuid: str | None = None,
+    session_id: int | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> BehaviorEventRecord:
+    """Record that a document learning session ended without or after quiz completion."""
+    payload = _normalize_metadata(metadata)
+    start_time = session_start or datetime.utcnow()
+    end_time = session_end or datetime.utcnow()
+    payload.update({
+        "session_start": start_time.isoformat(),
+        "session_end": end_time.isoformat(),
+        "duration_minutes": duration_minutes if duration_minutes is not None else round(
+            max(0.0, (end_time - start_time).total_seconds()) / 60.0, 1
+        ),
+        "document_id": document_id,
+        "document_name": document_name,
+        "completed": completed,
+        "learning_session_id": session_uuid,
+    })
+    return track_event(
+        user_id=user_id,
+        event_type=SESSION_COMPLETED,
+        session_id=session_id,
+        metadata=payload,
+        event_timestamp=end_time,
     )
 
 
