@@ -1131,6 +1131,7 @@ def _render_visual_mode_legacy() -> None:
 
 def render_visual_mode() -> None:
     """Render Visual Learn mode with an explicit selected visual type."""
+    logger.info("ENTER: render_visual_mode at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
     st.subheader("Visual Learning")
 
     selected_visual = st.selectbox(
@@ -1167,11 +1168,13 @@ def render_visual_mode() -> None:
 
         with st.spinner("Generating your visual..."):
             try:
+                logger.info("ENTER: generate_visual_content call from render_visual_mode at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
                 visual_content = generate_visual_content(
                     st.session_state.document_text or "",
                     theme=visual_theme,
                     visual_type=visual_type_map[selected_visual],
                 )
+                logger.info("EXIT: generate_visual_content call from render_visual_mode at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
                 st.session_state.visual_content = visual_content
                 st.session_state.selected_visual = selected_visual
                 st.success("Visual generated.")
@@ -1206,6 +1209,7 @@ def render_visual_mode() -> None:
         st.write(visual_content["description"])
 
     st.image(image_path, use_container_width=True)
+    logger.info("EXIT: render_visual_mode at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
     try:
         with open(image_path, "rb") as visual_file:
             st.download_button(

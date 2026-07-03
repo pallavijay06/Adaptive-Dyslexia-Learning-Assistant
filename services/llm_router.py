@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from services.cache_service import get_cache_value, make_chat_cache_key, set_cache_value
 from services.openrouter_service import (
@@ -98,6 +99,7 @@ def generate_content(prompt: str, max_tokens: int | None = None) -> str:
     Used for content generation tasks like simplification, vocabulary extraction,
     visual learning generation, etc. Does NOT use chat history.
     """
+    logger.info("ENTER: generate_content (llm_router) at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
     if not prompt or not prompt.strip():
         raise ValueError("Prompt cannot be empty.")
 
@@ -105,6 +107,7 @@ def generate_content(prompt: str, max_tokens: int | None = None) -> str:
     try:
         resp = openrouter_generate_content(prompt, max_tokens=max_tokens)
         logger.info("[LLM Router] OpenRouter succeeded")
+        logger.info("EXIT: generate_content (llm_router) at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
         return _clean_model_response(resp)
     except Exception as open_exc:
         logger.error("[LLM Router] OpenRouter failed: %s", str(open_exc))
@@ -113,6 +116,7 @@ def generate_content(prompt: str, max_tokens: int | None = None) -> str:
     try:
         resp = gemini_generate_content(prompt)
         logger.info("[LLM Router] Gemini succeeded")
+        logger.info("EXIT: generate_content (llm_router) at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
         return _clean_model_response(resp)
     except Exception as gem_exc:
         logger.error("[LLM Router] Gemini failed: %s", str(gem_exc))
@@ -120,6 +124,7 @@ def generate_content(prompt: str, max_tokens: int | None = None) -> str:
         try:
             resp = ollama_generate_content(prompt)
             logger.info("[LLM Router] Ollama succeeded")
+            logger.info("EXIT: generate_content (llm_router) at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
             return _clean_model_response(resp)
         except Exception as ollama_exc:
             logger.error("[LLM Router] Ollama failed: %s", str(ollama_exc))
