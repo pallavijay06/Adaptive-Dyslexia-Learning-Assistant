@@ -15,6 +15,7 @@ from database.db import (
     save_quiz_question_responses,
     save_quiz_score,
 )
+from services.behavior_tracker import BehaviorTracker
 from services.behavior_tracking_service import track_quiz_completed
 from services.document_context import DocumentError, get_document_text
 from services.llm_router import LLMRouterError
@@ -171,6 +172,21 @@ def _persist_api_question_timings(
             quiz_id=quiz_attempt.id,
             question_ids=[record["question_id"] for record in records],
         )
+
+        # Track concept mastery for each question answered
+        for record in records:
+            try:
+                concept = str(record.get("topic", "")).strip()
+                if concept:
+                    is_correct = bool(record.get("is_correct", False))
+                    BehaviorTracker.track_concept_question(
+                        user_id=user_id,
+                        topic=topic,
+                        concept=concept,
+                        is_correct=is_correct,
+                    )
+            except Exception:
+                logger.exception("Failed to update concept mastery for record: %s", record.get("question_id"))
 
 
 @quiz_bp.get("/quiz/health")

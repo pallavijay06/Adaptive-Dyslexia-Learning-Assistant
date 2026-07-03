@@ -53,7 +53,7 @@ class ContentInstruction:
     content_complexity: str          # Very Simple / Simple / Moderate / Advanced
     reading_level: str               # Easy / Standard / Advanced
     worked_examples: str             # Few / Moderate / Many
-    analogy_required: bool
+    analogy_required: bool 
     step_by_step: bool
     revision_required: bool
     high_priority_concepts: list[str]

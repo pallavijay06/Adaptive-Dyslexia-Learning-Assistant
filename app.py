@@ -98,6 +98,7 @@ from services.learning_mode_effectiveness_service import finalize_learning_sessi
 from services.progress_dashboard_service import calculate_quiz_comprehension_score
 from services.quiz_hint_service import generate_quiz_hint, generate_short_answer_hint
 from services.adaptive_tutor import AdaptiveAITutor
+from services.behavior_tracker import BehaviorTracker
 from services.behavior_tracking_service import (
     track_ai_tutor_used,
     track_audio_completed,
@@ -1860,6 +1861,21 @@ def _persist_interactive_quiz_timings(
 
     if records:
         save_quiz_question_responses(records)
+
+    # Track concept mastery for each question answered
+    for record in records:
+        try:
+            concept = str(record.get("topic", "")).strip()
+            if concept:
+                is_correct = bool(record.get("is_correct", False))
+                BehaviorTracker.track_concept_question(
+                    user_id=user_id,
+                    topic=topic,
+                    concept=concept,
+                    is_correct=is_correct,
+                )
+        except Exception:
+            logger.exception("Failed to update concept mastery for record: %s", record.get("question_id"))
 
     behavior_events = []
     for question_index, hint_count in hint_used.items():
