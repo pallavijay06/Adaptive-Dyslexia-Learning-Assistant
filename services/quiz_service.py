@@ -20,6 +20,8 @@ from services.cache_service import (
     set_cache_value,
 )
 from services.llm_router import LLMRouterError, generate_content
+from services.prompt_builder import build_prompt, PromptContext, PromptType
+from services.master_decision_engine import get_adaptive_learning_plan
 import traceback
 import inspect
 
@@ -118,7 +120,7 @@ _ALLOWED_SKILLS = (
 )
 
 
-def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]]:
+def generate_mcq_quiz(text: str, num_questions: int = 10, user_id: int | None = None) -> list[dict[str, str]]:
     """Generate high-quality multiple choice questions from document content."""
     global _QUIZ_GENERATION_FALLBACK_USED
     if not text or not text.strip():
@@ -133,7 +135,13 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
         return _ensure_quiz_metadata(copy.deepcopy(cached_mcqs), "MCQ")
     logger.info("[CACHE MISS] Quiz MCQ")
 
-    prompt = _build_mcq_generation_prompt(num_questions)
+    original_prompt = _build_mcq_generation_prompt(num_questions)
+    prompt = _build_personalized_quiz_prompt(original_prompt, user_id)
+    print("\n" + "=" * 80)
+    print("QUIZ PROMPT")
+    print("=" * 80)
+    print(prompt)
+    print("=" * 80 + "\n")
 
     requested_questions = num_questions
     retry_attempted = False
@@ -158,7 +166,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
             retry_num = max(1, requested_questions // 2)
             logger.info("Retry: Requested MCQs: %d", retry_num)
             # build new prompt for retry
-            retry_prompt = _build_mcq_generation_prompt(retry_num)
+            retry_prompt = _build_personalized_quiz_prompt(_build_mcq_generation_prompt(retry_num), user_id)
             try:
                 retry_response = _run_quiz_prompt(retry_prompt, text)
                 logger.info("[Quiz Gen] Raw LLM response (retry len=%s)", len(retry_response) if retry_response is not None else 0)
@@ -222,7 +230,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
     return final_return
 
 
-def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str, str]]:
+def generate_short_questions(text: str, num_questions: int = 5, user_id: int | None = None) -> list[dict[str, str]]:
     """Generate short answer questions from document content."""
     global _QUIZ_GENERATION_FALLBACK_USED
     if not text or not text.strip():
@@ -235,7 +243,8 @@ def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str
         logger.info("[CACHE HIT] Quiz Short")
         return _ensure_quiz_metadata(copy.deepcopy(cached_questions), "Short Answer")
 
-    prompt = _build_short_answer_generation_prompt(num_questions)
+    original_prompt = _build_short_answer_generation_prompt(num_questions)
+    prompt = _build_personalized_quiz_prompt(original_prompt, user_id)
 
     try:
         response = _run_quiz_prompt(prompt, text)
@@ -1250,6 +1259,37 @@ def quiz_generation_used_fallback() -> bool:
     used = _QUIZ_GENERATION_FALLBACK_USED
     _QUIZ_GENERATION_FALLBACK_USED = False
     return used
+
+
+def _build_personalized_quiz_prompt(original_prompt: str, user_id: int | None) -> str:
+    """Prepend Prompt Builder personalization to a quiz generation prompt.
+
+    Returns the personalized prompt on success, or original_prompt on any
+    failure — quiz generation must never be blocked by personalization.
+    """
+    if user_id is None:
+        return original_prompt
+    try:
+        plan = get_adaptive_learning_plan(user_id, document_concepts=[])
+        context = PromptContext(
+            prompt_type=PromptType.QUIZ,
+            plan=plan,
+            original_prompt=original_prompt,
+        )
+        personalized = build_prompt(context)
+        logger.info(
+            "[Quiz] Personalization succeeded for user_id=%s (teaching_style=%s)",
+            user_id,
+            plan.decision_summary.teaching_style,
+        )
+        return personalized
+    except Exception as exc:
+        logger.warning(
+            "[Quiz] Personalization failed for user_id=%s — falling back to original prompt. Reason: %s",
+            user_id,
+            exc,
+        )
+        return original_prompt
 
 
 def _build_mcq_generation_prompt(num_questions: int) -> str:

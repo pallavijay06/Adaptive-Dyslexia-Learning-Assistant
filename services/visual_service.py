@@ -21,6 +21,8 @@ from services.educational_visuals import (
 )
 from services.llm_router import generate_content, LLMRouterError
 from services.ollama_service import clean_ollama_response
+from services.prompt_builder import build_prompt, PromptContext, PromptType
+from services.master_decision_engine import get_adaptive_learning_plan
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ class VisualError(RuntimeError):
     """Raised when visual content generation fails."""
 
 
-def generate_visual_content(text: str, theme: str = "light", visual_type: str | None = None) -> dict[str, Any]:
+def generate_visual_content(text: str, theme: str = "light", visual_type: str | None = None, user_id: int | None = None) -> dict[str, Any]:
     """Generate visual learning content for one or both supported visual types.
 
     Args:
@@ -41,6 +43,7 @@ def generate_visual_content(text: str, theme: str = "light", visual_type: str | 
     `topic`, and short `description`.
     """
     logger.info("ENTER: generate_visual_content at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
+    _visual_user_id = user_id
 
     if not text or not text.strip():
         raise VisualError("Text cannot be empty.")
@@ -230,10 +233,16 @@ Document:
 """
 
 
-def _stage1_extract_concepts(text: str) -> list[dict]:
+def _stage1_extract_concepts(text: str, user_id: int | None = None) -> list[dict]:
     """LLM call 1: extract topic, description, and educational nodes from document."""
     logger.info("[Stage1] Extracting concepts from document")
-    prompt = _STAGE1_PROMPT + text.strip()[:3000]
+    original_prompt = _STAGE1_PROMPT + text.strip()[:3000]
+    prompt = _build_personalized_visual_prompt(original_prompt, user_id)
+    print("\n" + "=" * 80)
+    print("VISUAL PROMPT")
+    print("=" * 80)
+    print(prompt)
+    print("=" * 80 + "\n")
     response = generate_content(prompt, max_tokens=1400)
     cleaned = clean_ollama_response(response or "")
     cleaned = re.sub(r'```(?:json)?\s*([\s\S]*?)```', r'\1', cleaned).strip()
@@ -371,6 +380,7 @@ def _stage3_build_mindmap_json(title: str, concepts: list[dict]) -> dict:
     )
     topic_block = f"Topic: {title}\nDescription: {description}\n\nNodes:\n"
     prompt = _STAGE3_PROMPT + topic_block + concept_lines
+    # Stage 3 is a strict JSON formatting pass — no personalization injected
     response = generate_content(prompt, max_tokens=1400)
     cleaned = clean_ollama_response(response or "")
     cleaned = re.sub(r'```(?:json)?\s*([\s\S]*?)```', r'\1', cleaned).strip()
@@ -436,7 +446,7 @@ def _extract_visual_structure(text: str) -> dict[str, Any]:
 
     try:
         # ── Stage 1: extract concepts ────────────────────────────────────────
-        raw_concepts = _stage1_extract_concepts(text)
+        raw_concepts = _stage1_extract_concepts(text, user_id=_visual_user_id)
         if not raw_concepts:
             logger.warning("[Stage1] No concepts extracted, using fallback")
             return _fallback_visual_structure(text)
@@ -500,6 +510,37 @@ def _fallback_steps_from_text(text: str) -> list[str]:
     
     # Take first 5-6 sentences as steps
     return [s[:80] for s in sentences[:6] if s]
+
+
+def _build_personalized_visual_prompt(original_prompt: str, user_id: int | None) -> str:
+    """Prepend Prompt Builder personalization to the visual extraction prompt.
+
+    Returns the personalized prompt on success, or original_prompt on any
+    failure — visual generation must never be blocked by personalization.
+    """
+    if user_id is None:
+        return original_prompt
+    try:
+        plan = get_adaptive_learning_plan(user_id, document_concepts=[])
+        context = PromptContext(
+            prompt_type=PromptType.VISUAL,
+            plan=plan,
+            original_prompt=original_prompt,
+        )
+        personalized = build_prompt(context)
+        logger.info(
+            "[Visual] Personalization succeeded for user_id=%s (teaching_style=%s)",
+            user_id,
+            plan.decision_summary.teaching_style,
+        )
+        return personalized
+    except Exception as exc:
+        logger.warning(
+            "[Visual] Personalization failed for user_id=%s — falling back to original prompt. Reason: %s",
+            user_id,
+            exc,
+        )
+        return original_prompt
 
 
 def _fallback_visual_structure(text: str) -> dict[str, Any]:
