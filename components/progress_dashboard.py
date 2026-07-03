@@ -291,49 +291,220 @@ def _render_difficulty_profile(difficulty_data: dict[str, Any]) -> None:
                 st.divider()
 
 
-def _render_learning_progress(progress: dict[str, Any], quiz_performance: dict[str, Any], study_activity: dict[str, Any], favorite_mode: str) -> None:
+def _trend_color(status: str) -> str:
+    if status == "Improving":
+        return "#10b981"
+    if status == "Declining":
+        return "#ef4444"
+    return "#64748b"
+
+
+def _render_mini_history(values: list[float], arrow: str = "→") -> None:
+    if not values:
+        st.caption("No history yet.")
+        return
+    parts = [f"**{value:.0f}**" for value in values]
+    st.markdown(f" {arrow} ".join(parts))
+
+
+def _compact_line_chart(data: list[tuple[str, float]], y_label: str) -> None:
+    """Render a compact ~200px Vega-Lite line chart with tight axis scaling."""
+    if not data:
+        return
+    values = [v for _, v in data]
+    y_min = max(0.0, min(values) - 10)
+    y_max = min(100.0, max(values) + 10) if max(values) <= 100 else max(values) * 1.1
+    records = [{"x": label, "y": val} for label, val in data]
+    st.vega_lite_chart(
+        {"values": records},
+        {
+            "height": 200,
+            "mark": {"type": "line", "point": True, "interpolate": "monotone"},
+            "encoding": {
+                "x": {"field": "x", "type": "ordinal", "axis": {"labelAngle": -30, "title": None}},
+                "y": {
+                    "field": "y",
+                    "type": "quantitative",
+                    "scale": {"domain": [y_min, y_max]},
+                    "axis": {"title": y_label},
+                },
+            },
+            "config": {"view": {"stroke": "transparent"}},
+        },
+        use_container_width=True,
+    )
+
+
+def _render_learning_progress(
+    progress: dict[str, Any],
+    quiz_performance: dict[str, Any],
+    study_activity: dict[str, Any],
+    learning_analytics: dict[str, Any],
+) -> None:
     with st.expander("📊 Learning Progress", expanded=True):
-        # --- Row 1: content engagement ---
+        st.caption("Evidence of learner improvement over time.")
+
+        # --- Core metrics ---
         c = st.columns(4)
         c[0].metric("📄 Documents Studied", progress["documents_studied"])
-        c[1].metric("📚 Topics Covered", progress["topics_covered"])
-        c[2].metric("💡 Concepts Learned", progress["concepts_learned"])
-        c[3].metric("🤖 AI Tutor Questions", progress["questions_asked"])
+        c[1].metric("📝 Quiz Attempts", progress["quiz_attempts"])
+        c[2].metric("🎯 Quiz Accuracy", _fmt_pct(progress["quiz_accuracy"]))
+        c[3].metric("🏆 Highest Score", f"{quiz_performance['highest_score']}%")
+
+        c2 = st.columns(3)
+        c2[0].metric("⬇ Lowest Score", f"{quiz_performance['lowest_score']}%")
+        c2[1].metric("⏱ Avg Session Duration", f"{int(progress['avg_session_duration'])} mins")
+        c2[2].metric("⚡ Avg Time / Question", f"{int(progress['avg_time_per_question'])}s")
 
         st.divider()
 
-        # --- Row 2: quiz performance ---
-        c2 = st.columns(4)
-        c2[0].metric("📝 Quiz Attempts", progress["quiz_attempts"])
-        c2[1].metric("🎯 Quiz Accuracy", _fmt_pct(progress["quiz_accuracy"]))
-        c2[2].metric("🏆 Highest Score", f"{quiz_performance['highest_score']}%")
-        c2[3].metric("⬇ Lowest Score", f"{quiz_performance['lowest_score']}%")
+        improvement = learning_analytics.get("learning_improvement_trend") or {}
+        comprehension = learning_analytics.get("comprehension_trend") or {}
+        difficulty = learning_analytics.get("difficulty_reduction") or {}
+        retention = learning_analytics.get("retention_score") or {}
+        most_improved = learning_analytics.get("most_improved_concept") or {}
+        needs_practice = learning_analytics.get("needs_more_practice") or {}
+        weekly_goal = learning_analytics.get("weekly_goal") or {}
 
-        _pct_bar(progress["quiz_accuracy"])
-        st.caption("Quiz accuracy across all attempts.")
+        # --- Learning Trend ---
+        st.markdown("**Learning Trend**")
+        trend_cols = st.columns(2)
+        trend_status = improvement.get("status", "Stable")
+        trend_color = _trend_color(trend_status)
+        trend_cols[0].markdown(
+            f"<span style='color:{trend_color};font-size:1.4rem;font-weight:700'>"
+            f"{trend_status}</span>",
+            unsafe_allow_html=True,
+        )
+        trend_cols[1].metric(
+            "Overall Improvement",
+            f"{improvement.get('overall_improvement_pct', 0.0):+.1f}%",
+        )
+        if improvement.get("history"):
+            history_labels = [f"{label}: {pct:.0f}%" for label, pct in improvement["history"]]
+            st.caption(" · ".join(history_labels))
 
         st.divider()
 
-        # --- Row 3: session metrics ---
-        c3 = st.columns(3)
-        c3[0].metric("⏱ Avg Session Duration", f"{int(progress['avg_session_duration'])} mins")
-        c3[1].metric("⚡ Avg Time / Question", f"{int(progress['avg_time_per_question'])}s")
-        c3[2].metric("💬 Hints Used", progress["hint_usage"])
+        # --- Comprehension Trend ---
+        st.markdown("**Comprehension Trend**")
+        comp_trend = comprehension.get("current_trend", "Stable")
+        comp_color = _trend_color(comp_trend)
+        st.markdown(
+            f"<span style='color:{comp_color};font-weight:600'>"
+            f"Current Trend: {comp_trend}</span>",
+            unsafe_allow_html=True,
+        )
+        st.caption("See the Comprehension Trend chart below for historical values.")
 
-        # --- Quiz score trend ---
-        if quiz_performance["improvement"]:
-            with st.expander("Quiz score trend", expanded=False):
-                st.line_chart({"Score": dict(quiz_performance["improvement"])})
+        st.divider()
 
-        # --- Study time charts ---
-        if study_activity["daily"] or study_activity["weekly"]:
-            with st.expander("Study time over time", expanded=False):
-                if study_activity["daily"]:
-                    st.caption("Daily study time (minutes)")
-                    st.line_chart({"Daily": dict(study_activity["daily"])})
-                if study_activity["weekly"]:
-                    st.caption("Weekly study time (minutes)")
-                    st.line_chart({"Weekly": dict(study_activity["weekly"])})
+        # --- Difficulty Reduction ---
+        st.markdown("**Difficulty Reduction**")
+        diff_cols = st.columns(2)
+        diff_status = difficulty.get("status", "Needs More Practice")
+        diff_color = _trend_color(diff_status if diff_status == "Improving" else "Declining")
+        diff_cols[0].markdown(
+            f"<span style='color:{diff_color};font-weight:600'>{diff_status}</span>",
+            unsafe_allow_html=True,
+        )
+        diff_cols[1].metric(
+            "Difficulty Reduction",
+            f"{difficulty.get('reduction_pct', 0.0):.1f}%",
+        )
+        if difficulty.get("weekly_history"):
+            weekly_labels = [f"{week}: {score:.0f}" for week, score in difficulty["weekly_history"]]
+            st.caption(" → ".join(weekly_labels))
+
+        st.divider()
+
+        # --- Retention, Most Improved, Needs Practice ---
+        insight_cols = st.columns(3)
+
+        with insight_cols[0]:
+            st.markdown("**Retention Score**")
+            if retention.get("has_data"):
+                st.metric("", f"{retention.get('score', 0.0):.1f}%")
+                _pct_bar(retention.get("score", 0.0))
+                repeated = retention.get("repeated_concepts", 0)
+                avg_acc = retention.get("avg_retained_accuracy", 0.0)
+                st.caption(f"Based on {repeated} repeated concept{'s' if repeated != 1 else ''}")
+                st.caption(f"Average retained accuracy: {avg_acc:.1f}%")
+            else:
+                st.info("Complete more quizzes to measure retention.")
+
+        with insight_cols[1]:
+            st.markdown("**Most Improved Concept**")
+            if most_improved.get("has_data") and most_improved.get("concept"):
+                st.markdown(f"**{most_improved['concept']}**")
+                prev = most_improved.get('earliest_difficulty', 0)
+                curr = most_improved.get('latest_difficulty', 0)
+                imp = most_improved.get('improvement_pct', 0.0)
+                st.markdown(
+                    f"<div style='line-height:1.9;font-size:0.95rem;'>"
+                    f"<span style='font-weight:600'>{prev:.0f}</span><br>"
+                    f"<span style='color:#64748b'>↓</span><br>"
+                    f"<span style='font-weight:600'>{curr:.0f}</span><br>"
+                    f"<span style='color:#64748b'>↓</span><br>"
+                    f"<span style='color:#10b981;font-weight:700'>{imp:.1f}% Improvement</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info("Needs 2+ quizzes on the same concept.")
+
+        with insight_cols[2]:
+            st.markdown("**Needs More Practice**")
+            if needs_practice.get("has_data") and needs_practice.get("concept"):
+                concept_name = needs_practice["concept"]
+                st.markdown(f"**{concept_name}**")
+                # Pull detail from difficulty profile concept rows
+                concept_rows = (learning_analytics.get("_difficulty_concept_rows") or [])
+                matched = next(
+                    (r for r in concept_rows if r.get("Concept") == concept_name),
+                    None,
+                )
+                if matched:
+                    st.caption(f"Difficulty: {float(matched.get('Difficulty Score', 0)):.0f}")
+                    st.caption(f"Attempts: {matched.get('Attempts', 0)}")
+                    st.caption(f"Accuracy: {float(matched.get('Accuracy', 0)):.1f}%")
+                else:
+                    st.caption(needs_practice.get("reason", ""))
+            else:
+                st.info("Complete a quiz to identify weak areas.")
+
+        st.divider()
+
+        # --- Weekly Goal ---
+        st.markdown("**Weekly Learning Goal**")
+        goal_cols = st.columns(3)
+        completed = weekly_goal.get("completed_sessions", 0)
+        goal = weekly_goal.get("goal", 5)
+        goal_cols[0].metric("Completed Sessions", completed)
+        goal_cols[1].metric("Goal", goal)
+        goal_cols[2].metric("Progress", f"{weekly_goal.get('progress_pct', 0.0):.0f}%")
+        st.caption(f"{completed} / {goal} Sessions")
+        _pct_bar(weekly_goal.get("progress_pct", 0.0))
+
+        st.divider()
+
+        # --- Charts ---
+        if quiz_performance.get("improvement"):
+            st.markdown("**Quiz Trend**")
+            _compact_line_chart(quiz_performance["improvement"], "Quiz Accuracy (%)")
+
+        if study_activity.get("daily") or study_activity.get("weekly"):
+            st.markdown("**Study Time**")
+            if study_activity.get("daily"):
+                st.caption("Daily study time (minutes)")
+                _compact_line_chart(study_activity["daily"], "Minutes")
+            if study_activity.get("weekly"):
+                st.caption("Weekly study time (minutes)")
+                _compact_line_chart(study_activity["weekly"], "Minutes")
+
+        if comprehension.get("chart_data"):
+            st.markdown("**Comprehension Trend**")
+            _compact_line_chart(comprehension["chart_data"], "Comprehension Score")
 
 
 def _render_concept_mastery(mastery: list[dict]) -> None:
@@ -738,6 +909,110 @@ def _render_insights_and_recommendations(
             st.info("Start learning to receive personalised recommendations.")
 
 
+def _generate_learning_summary(
+    learning_analytics: dict[str, Any],
+    progress: dict[str, Any],
+) -> str:
+    """Generate a rule-based learning summary from existing learner metrics. No LLM."""
+    sentences: list[str] = []
+
+    # Quiz trend
+    improvement = learning_analytics.get("learning_improvement_trend") or {}
+    trend_status = improvement.get("status", "Stable")
+    improvement_pct = improvement.get("overall_improvement_pct", 0.0)
+    if trend_status == "Improving":
+        sentences.append(
+            f"Quiz performance has improved by {improvement_pct:.1f}% over recent sessions."
+        )
+    elif trend_status == "Declining":
+        sentences.append(
+            f"Quiz performance has slightly declined by {abs(improvement_pct):.1f}% over recent sessions."
+        )
+    else:
+        sentences.append("Quiz performance has remained stable across recent sessions.")
+
+    # Comprehension trend
+    comp = learning_analytics.get("comprehension_trend") or {}
+    comp_trend = comp.get("current_trend", "Stable")
+    if comp_trend == "Improving":
+        sentences.append("Comprehension is trending upward.")
+    elif comp_trend == "Declining":
+        sentences.append("Comprehension has shown a recent decline — revisiting core material is recommended.")
+    else:
+        sentences.append("Comprehension remains consistent.")
+
+    # Retention
+    retention = learning_analytics.get("retention_score") or {}
+    if retention.get("has_data"):
+        score = retention.get("score", 0.0)
+        repeated = retention.get("repeated_concepts", 0)
+        if score >= 75:
+            sentences.append(
+                f"Retention remains strong at {score:.1f}% across {repeated} repeated concept{'s' if repeated != 1 else ''}."
+            )
+        elif score >= 50:
+            sentences.append(
+                f"Retention is moderate at {score:.1f}% — continued practice on repeated concepts is advised."
+            )
+        else:
+            sentences.append(
+                f"Retention is low at {score:.1f}% — revisiting previously studied concepts is strongly recommended."
+            )
+
+    # Needs more practice
+    needs_practice = learning_analytics.get("needs_more_practice") or {}
+    if needs_practice.get("has_data") and needs_practice.get("concept"):
+        sentences.append(
+            f"{needs_practice['concept']} still requires additional practice."
+        )
+
+    # Most improved concept
+    most_improved = learning_analytics.get("most_improved_concept") or {}
+    if most_improved.get("has_data") and most_improved.get("concept") and most_improved.get("improvement_pct", 0) > 0:
+        sentences.append(
+            f"{most_improved['concept']} has shown the highest improvement "
+            f"({most_improved['improvement_pct']:.1f}%)."
+        )
+
+    # Difficulty reduction
+    difficulty = learning_analytics.get("difficulty_reduction") or {}
+    diff_status = difficulty.get("status", "")
+    if diff_status == "Improving":
+        sentences.append(
+            f"Overall difficulty is reducing — keep practising to consolidate this progress."
+        )
+    elif diff_status == "Needs More Practice":
+        sentences.append(
+            "Overall difficulty has not yet reduced — focus on weaker concepts before attempting new material."
+        )
+
+    return " ".join(sentences) if sentences else ""
+
+
+def _render_learning_summary(
+    learning_analytics: dict[str, Any],
+    progress: dict[str, Any],
+) -> None:
+    with st.expander("📝 Learning Summary", expanded=True):
+        if not progress.get("quiz_attempts"):
+            st.info("Complete at least one quiz to generate your Learning Summary.")
+            return
+
+        summary = _generate_learning_summary(learning_analytics, progress)
+        if not summary:
+            st.info("Not enough data yet to generate a summary.")
+            return
+
+        st.markdown(
+            f"<div style='"
+            f"background:#f8fafc;border-left:4px solid #1d4ed8;"
+            f"border-radius:6px;padding:1rem 1.2rem;"
+            f"line-height:1.8;color:#1e293b;font-size:0.95rem;"
+            f"'>{summary}</div>",
+            unsafe_allow_html=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Main render entry point
 # ---------------------------------------------------------------------------
@@ -767,13 +1042,14 @@ def render_dashboard(user_id: int) -> None:
 
     mode_effectiveness      = dashboard.get("learning_mode_effectiveness", {})
     difficulty_profile_data = dashboard.get("difficulty_profile", {})
+    learning_analytics      = dashboard.get("learning_progress_analytics", {})
 
     _render_learner_overview(overview)
     _render_comprehension_profile(profile, progress)
     _render_learning_mode(profile, mode_usage, favorite_mode)
     _render_learning_mode_effectiveness(mode_effectiveness)
     _render_difficulty_profile(difficulty_profile_data)
-    _render_learning_progress(progress, quiz_performance, study_activity, favorite_mode)
+    _render_learning_progress(progress, quiz_performance, study_activity, learning_analytics)
     _render_concept_mastery(mastery)
     _render_weak_concepts(weak)
     _render_timeline(timeline_days)
@@ -782,3 +1058,4 @@ def render_dashboard(user_id: int) -> None:
         progress, weak, mastery, mode_usage,
         favorite_mode, profile, quiz_performance, overview,
     )
+    _render_learning_summary(learning_analytics, progress)
