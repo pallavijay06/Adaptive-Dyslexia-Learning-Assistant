@@ -12,6 +12,7 @@ from database.db import (
     get_quiz_history,
     get_quiz_question_responses,
     get_learning_sessions,
+    get_learning_mode_sessions,
     get_learning_history,
     get_learning_support_logs,
     get_topic_progress,
@@ -29,6 +30,42 @@ from services.study_activity_service import (
     extract_date as _extract_date,
     normalize_datetime as _normalize_datetime,
 )
+from services.learning_progress_analytics_service import build_learning_progress_analytics
+
+
+def _normalize_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            try:
+                return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return None
+    return None
+
+
+def _extract_date(value: Any) -> datetime.date | None:
+    dt = _normalize_datetime(value)
+    if dt is None:
+        return None
+    return dt.date()
+
+
+def _calculate_streak(dates: list[datetime.date]) -> int:
+    if not dates:
+        return 0
+
+    unique_days = sorted(set(dates), reverse=True)
+    streak = 0
+    current = unique_days[0]
+
+    while streak < len(unique_days) and unique_days[streak] == current - timedelta(days=streak):
+        streak += 1
+
+    return streak
 
 
 def _parse_mode(activity_type: str) -> str:
@@ -301,10 +338,6 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
     quiz_percentages_sorted = sorted(quiz_percentages)
     highest_score = max(quiz_percentages_sorted, default=0)
     lowest_score = min(quiz_percentages_sorted, default=0)
-    quiz_line = [
-        (quiz.timestamp.strftime("%Y-%m-%d"), round((quiz.score / quiz.total_questions) * 100.0, 1))
-        for quiz in sorted(quizzes, key=lambda q: q.timestamp)
-    ]
 
     improvement_amount = 0.0
     if len(quiz_percentages_sorted) >= 2:
@@ -680,9 +713,28 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
     weekly_line = _build_chart_series(dict(sorted(weekly_study.items())))
     monthly_line = _build_chart_series(dict(sorted(monthly_study.items())))
     quiz_line = [
-        (quiz.timestamp.strftime("%Y-%m-%d"), quiz.score)
-        for quiz in sorted(quizzes, key=lambda q: q.timestamp)
+        (quiz.timestamp.strftime("%Y-%m-%d %H:%M"), pct)
+        for quiz, pct in zip(
+            sorted(quizzes, key=lambda q: q.timestamp),
+            [
+                round((quiz.score / quiz.total_questions) * 100.0, 1)
+                if quiz.total_questions else 0.0
+                for quiz in sorted(quizzes, key=lambda q: q.timestamp)
+            ],
+        )
     ]
+
+    difficulty_profile_data = build_difficulty_dashboard_data(
+        profile.difficulty_profile if profile else None
+    )
+    mode_sessions = get_learning_mode_sessions(user_id, limit=200)
+    learning_progress_analytics = build_learning_progress_analytics(
+        quizzes=quizzes,
+        responses=all_responses,
+        difficulty_data=difficulty_profile_data,
+        mode_sessions=mode_sessions,
+        login_sessions=sessions,
+    )
 
     return {
         "user": user,
@@ -734,7 +786,6 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         "recommendations": recommendations,
         "favorite_mode": favorite_mode,
         "learning_mode_effectiveness": compute_mode_effectiveness(user_id),
-        "difficulty_profile": build_difficulty_dashboard_data(
-            profile.difficulty_profile if profile else None
-        ),
+        "difficulty_profile": difficulty_profile_data,
+        "learning_progress_analytics": learning_progress_analytics,
     }
