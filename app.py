@@ -773,7 +773,7 @@ def render_read_mode() -> None:
             _log_learning_support_event("simplify")
             with st.spinner("Simplifying text..."):
                 try:
-                    content = simplify_text(st.session_state.document_text)
+                    content = simplify_text(st.session_state.document_text, user_id=st.session_state.get("current_user_id"))
                     st.session_state.simplified_content = content
                     if st.session_state.get("current_user_id") is not None:
                         track_simplify_clicked(
@@ -1174,6 +1174,7 @@ def render_visual_mode() -> None:
                     st.session_state.document_text or "",
                     theme=visual_theme,
                     visual_type=visual_type_map[selected_visual],
+                    user_id=st.session_state.get("current_user_id"),
                 )
                 logger.info("EXIT: generate_visual_content call from render_visual_mode at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
                 st.session_state.visual_content = visual_content
@@ -1518,8 +1519,8 @@ def render_quiz_section() -> None:
         with st.spinner("Generating quiz from your document..."):
             try:
                 document_text = st.session_state.document_text or ""
-                mcqs = generate_mcq_quiz(document_text, num_questions=4)
-                short_questions = generate_short_questions(document_text, num_questions=4)
+                mcqs = generate_mcq_quiz(document_text, num_questions=4, user_id=st.session_state.get("current_user_id"))
+                short_questions = generate_short_questions(document_text, num_questions=4, user_id=st.session_state.get("current_user_id"))
                 st.session_state.quiz_mcqs = mcqs
                 st.session_state.quiz_short_questions = short_questions
                 st.session_state.quiz_report = None
@@ -2131,6 +2132,39 @@ def _render_quiz_summary_results() -> None:
             st.rerun()
 
 
+def _build_personalized_tutor_prompt(original_prompt: str, user_id: int | None) -> str:
+    """Prepend Prompt Builder personalization to the AI Tutor system prompt.
+
+    Returns the personalized prompt on success, or original_prompt on any
+    failure — the AI Tutor must never be blocked by personalization.
+    """
+    if user_id is None:
+        return original_prompt
+    try:
+        from services.master_decision_engine import get_adaptive_learning_plan
+        from services.prompt_builder import build_prompt, PromptContext, PromptType
+        plan = get_adaptive_learning_plan(user_id, document_concepts=[])
+        context = PromptContext(
+            prompt_type=PromptType.AI_TUTOR,
+            plan=plan,
+            original_prompt=original_prompt,
+        )
+        personalized = build_prompt(context)
+        logger.info(
+            "[AI Tutor] Personalization succeeded for user_id=%s (teaching_style=%s)",
+            user_id,
+            plan.decision_summary.teaching_style,
+        )
+        return personalized
+    except Exception as exc:
+        logger.warning(
+            "[AI Tutor] Personalization failed for user_id=%s — falling back to original prompt. Reason: %s",
+            user_id,
+            exc,
+        )
+        return original_prompt
+
+
 def render_chat_section() -> None:
     """Render the adaptive AI Tutor chat with document context."""
     if not st.session_state.document_text:
@@ -2175,6 +2209,12 @@ def render_chat_section() -> None:
                 )
                 context = "\n\n".join(chunk["text"] for chunk in relevant_chunks)
                 adaptive_prompt = tutor.generate_adaptive_system_prompt()
+                adaptive_prompt = _build_personalized_tutor_prompt(adaptive_prompt, user_id)
+                print("\n" + "=" * 80)
+                print("AI TUTOR PROMPT")
+                print("=" * 80)
+                print(adaptive_prompt)
+                print("=" * 80 + "\n")
                 full_context = f"{adaptive_prompt}\n\nDOCUMENT CONTEXT:\n{context}"
                 answer = generate_answer(user_question, full_context)
                 if user_id is not None:
