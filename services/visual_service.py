@@ -62,7 +62,7 @@ def generate_visual_content(text: str, theme: str = "light", visual_type: str | 
         logger.info("[MindMap] Step 0 - generate_visual_content started")
         start_time = time.perf_counter()
         topic = detect_topic(text)
-        structure = _extract_visual_structure(text)
+        structure = _extract_visual_structure(text, user_id=user_id)
 
         flowchart_path = None
         mindmap_path = None
@@ -239,7 +239,7 @@ def _stage1_extract_concepts(text: str, user_id: int | None = None) -> list[dict
     original_prompt = _STAGE1_PROMPT + text.strip()[:3000]
     prompt = _build_personalized_visual_prompt(original_prompt, user_id)
     print("\n" + "=" * 80)
-    print("VISUAL PROMPT")
+    print("VISUAL LEARNING PERSONALIZED PROMPT")
     print("=" * 80)
     print(prompt)
     print("=" * 80 + "\n")
@@ -439,14 +439,14 @@ def _extract_flowchart_structure(text: str) -> dict:
 # Orchestrator — replaces the old monolithic _extract_visual_structure
 # ---------------------------------------------------------------------------
 
-def _extract_visual_structure(text: str) -> dict[str, Any]:
+def _extract_visual_structure(text: str, user_id: int | None = None) -> dict[str, Any]:
     """Three-stage mind map pipeline + single-stage flowchart extraction."""
     logger.info("ENTER: _extract_visual_structure at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
     logger.info("[MindMap] Step 0.1 - _extract_visual_structure started")
 
     try:
         # ── Stage 1: extract concepts ────────────────────────────────────────
-        raw_concepts = _stage1_extract_concepts(text, user_id=_visual_user_id)
+        raw_concepts = _stage1_extract_concepts(text, user_id=user_id)
         if not raw_concepts:
             logger.warning("[Stage1] No concepts extracted, using fallback")
             return _fallback_visual_structure(text)

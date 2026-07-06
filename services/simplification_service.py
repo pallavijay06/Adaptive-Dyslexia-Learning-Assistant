@@ -76,7 +76,7 @@ def simplify_text(text: str, user_id: int | None = None) -> str:
         len(prompt_to_send),
     )
     print("\n" + "=" * 80)
-    print("PERSONALIZED PROMPT SENT TO LLM")
+    print("SIMPLIFIED NOTES PERSONALIZED PROMPT")
     print("=" * 80)
     print(prompt_to_send)
     print("=" * 80 + "\n")

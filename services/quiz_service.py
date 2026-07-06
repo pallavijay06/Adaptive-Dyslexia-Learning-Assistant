@@ -138,7 +138,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10, user_id: int | None = 
     original_prompt = _build_mcq_generation_prompt(num_questions)
     prompt = _build_personalized_quiz_prompt(original_prompt, user_id)
     print("\n" + "=" * 80)
-    print("QUIZ PROMPT")
+    print("QUIZ PERSONALIZED PROMPT")
     print("=" * 80)
     print(prompt)
     print("=" * 80 + "\n")
@@ -245,6 +245,11 @@ def generate_short_questions(text: str, num_questions: int = 5, user_id: int | N
 
     original_prompt = _build_short_answer_generation_prompt(num_questions)
     prompt = _build_personalized_quiz_prompt(original_prompt, user_id)
+    print("\n" + "=" * 80)
+    print("QUIZ PERSONALIZED PROMPT")
+    print("=" * 80)
+    print(prompt)
+    print("=" * 80 + "\n")
 
     try:
         response = _run_quiz_prompt(prompt, text)

@@ -94,6 +94,8 @@ from services.quiz_service import (
     generate_short_questions,
 )
 from services.learner_model_service import refresh_learner_profiles_from_quiz
+from services.master_decision_engine import get_adaptive_learning_plan
+from services.recommended_learning_path_service import get_recommended_learning_path
 from services.learning_mode_effectiveness_service import finalize_learning_session_on_quiz
 from services.progress_dashboard_service import calculate_quiz_comprehension_score
 from services.quiz_hint_service import generate_quiz_hint, generate_short_answer_hint
@@ -186,6 +188,15 @@ def initialize_session_state() -> None:
         "login_timestamp": None,
         "current_session_id": None,
         "authenticated": False,
+
+        # Adaptive learning journey state
+        "adaptive_journey_view": "home",
+        "adaptive_journey_active": False,
+        "adaptive_learning_path": None,
+        "adaptive_journey_current_step_index": 0,
+        "adaptive_journey_completed_steps": [],
+        "adaptive_journey_open_module": None,
+        "adaptive_journey_state": "journey",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -490,23 +501,158 @@ def render_accessibility_settings() -> None:
     pass
 
 
+def _reset_adaptive_journey_state() -> None:
+    """Reset the adaptive journey session state without touching backend logic."""
+    st.session_state.adaptive_journey_view = "home"
+    st.session_state.adaptive_journey_active = False
+    st.session_state.adaptive_learning_path = None
+    st.session_state.adaptive_journey_current_step_index = 0
+    st.session_state.adaptive_journey_completed_steps = []
+    st.session_state.adaptive_journey_open_module = None
+    st.session_state.adaptive_journey_state = "journey"
+
+
+def _start_adaptive_journey() -> None:
+    """Retrieve the backend RecommendedLearningPath and begin the guided journey."""
+    user_id = st.session_state.get("current_user_id")
+    if user_id is None:
+        st.error("Please log in to start a personalized journey.")
+        return
+
+    if not st.session_state.get("document_text"):
+        st.warning("Upload a document first to generate a personalized learning journey.")
+        return
+
+    try:
+        plan = get_adaptive_learning_plan(user_id, document_concepts=[])
+        path = get_recommended_learning_path(plan)
+    except Exception as exc:
+        logger.exception("Adaptive journey retrieval failed")
+        st.error("The personalized learning journey is currently unavailable. Please try again.")
+        return
+
+    st.session_state.adaptive_learning_path = path
+    st.session_state.adaptive_journey_active = True
+    st.session_state.adaptive_journey_view = "journey"
+    st.session_state.adaptive_journey_current_step_index = 0
+    st.session_state.adaptive_journey_completed_steps = []
+    st.session_state.adaptive_journey_open_module = None
+    st.session_state.adaptive_journey_state = "journey"
+
+
+def _browse_manual_learning_modes() -> None:
+    """Switch to the existing manual learning mode experience."""
+    st.session_state.adaptive_journey_view = "manual"
+    st.session_state.adaptive_journey_active = False
+    st.session_state.adaptive_journey_open_module = None
+    st.session_state.adaptive_journey_state = "journey"
+
+
+def _get_current_journey_step() -> Any | None:
+    """Return the current step from the active RecommendedLearningPath."""
+    path = st.session_state.get("adaptive_learning_path")
+    if not path or not getattr(path, "recommended_steps", None):
+        return None
+
+    index = int(st.session_state.get("adaptive_journey_current_step_index", 0))
+    steps = list(path.recommended_steps)
+    if index < 0:
+        index = 0
+    if index >= len(steps):
+        index = len(steps) - 1
+    return steps[index]
+
+
+def _render_module_for_step(step: Any) -> None:
+    """Open the relevant learning module for the current journey step."""
+    mode_id = getattr(step, "mode_id", "")
+    if mode_id == "visual":
+        render_visual_mode()
+    elif mode_id in {"notes", "revision"}:
+        render_read_mode()
+    elif mode_id == "quiz":
+        render_quiz_section()
+    elif mode_id == "ai_tutor":
+        render_chat_section()
+    elif mode_id == "auditory":
+        render_listen_mode()
+    else:
+        st.info(f"Opening {getattr(step, 'mode', 'this module')}.")
+
+
+def _complete_current_journey_step(step: Any) -> None:
+    """Mark the current step as completed and show the transition state."""
+    completed = list(st.session_state.get("adaptive_journey_completed_steps", []))
+    current_index = int(st.session_state.get("adaptive_journey_current_step_index", 0))
+    if current_index not in completed:
+        completed.append(current_index)
+    st.session_state.adaptive_journey_completed_steps = completed
+    st.session_state.adaptive_journey_open_module = None
+    st.session_state.adaptive_journey_state = "transition"
+
+
+def _continue_journey() -> None:
+    """Advance to the next step or finish the journey."""
+    path = st.session_state.get("adaptive_learning_path")
+    steps = list(getattr(path, "recommended_steps", []) or [])
+    current_index = int(st.session_state.get("adaptive_journey_current_step_index", 0))
+    if current_index + 1 < len(steps):
+        st.session_state.adaptive_journey_current_step_index = current_index + 1
+        st.session_state.adaptive_journey_state = "journey"
+    else:
+        st.session_state.adaptive_journey_state = "completed"
+
+
+def _exit_journey() -> None:
+    """Leave the personalized journey and return to the home experience."""
+    _reset_adaptive_journey_state()
+
+
 def render_home() -> None:
-    """Render welcome and instructions."""
+    """Render a modern home experience with personalized and manual learning options."""
     st.title("🎓 Dyslexic Learning Assistant")
-    st.subheader("Learn in your favorite way: Read, Listen, or Visualize")
-    
-    st.write(
+    st.subheader("Choose how you want to learn today")
+
+    st.markdown(
         """
-        Welcome! This assistant helps you learn better by:
-        
-        📄 **Upload Documents** - PDF, PPTX, DOCX, or Images  
-        ✨ **Simplified Notes** - Short sentences and bullet points  
-        🔤 **Learn Words** - See difficult words with simple meanings  
-        🎵 **Listen** - Generate audio of content  
-        📊 **Visualize** - See flowcharts and concept maps  
-        🔍 **Explore Words** - Get meanings of any word
+        Pick a guided path for today's session or explore learning modes at your own pace.
         """
     )
+
+    path = st.session_state.get("adaptive_learning_path")
+    path_steps = list(getattr(path, "recommended_steps", []) or []) if path else []
+
+    col1, col2 = st.columns(2)
+    with col1:
+        with st.container():
+            st.markdown(
+                f"""
+                <div style="border: 1px solid #93C5FD; border-radius: 14px; padding: 1.2rem; background: linear-gradient(135deg, #eff6ff, #f8fafc); min-height: 220px;">
+                <h3 style="margin-top: 0;">🌟 Today's Personalized Learning Journey</h3>
+                <p>A personalized learning journey created specifically for today's learning session based on your learning behaviour and progress.</p>
+                <p><strong>Estimated total duration:</strong> {getattr(path, 'estimated_total_duration', 'Based on the recommended path')} minutes</p>
+                <p><strong>Recommended steps:</strong> {len(path_steps) if path_steps else 'Provided by the adaptive backend'}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("Start Journey", type="primary", key="start_adaptive_journey"):
+                _start_adaptive_journey()
+
+    with col2:
+        with st.container():
+            st.markdown(
+                """
+                <div style="border: 1px solid #CBD5E1; border-radius: 14px; padding: 1.2rem; background: #ffffff; min-height: 220px;">
+                <h3 style="margin-top: 0;">📚 Choose Learning Mode</h3>
+                <p>Explore any learning mode in your preferred order and continue using the existing manual experience.</p>
+                <p>Use the familiar interface for Simplified Notes, Visual Learning, Listen Mode, Quiz, AI Tutor, and Vocabulary.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("Browse Learning Modes", key="browse_manual_learning_modes"):
+                _browse_manual_learning_modes()
 
 
 def render_upload_section() -> None:
@@ -759,6 +905,97 @@ def render_learning_modes() -> None:
         else:
             diagram_images: list[str] = st.session_state.document_diagram_images or []
             render_stem_mode(document_text=document_text, diagram_images=diagram_images)
+
+
+def render_adaptive_learning_journey() -> None:
+    """Render the guided adaptive learning journey from the backend object."""
+    path = st.session_state.get("adaptive_learning_path")
+    if not path:
+        st.info("Start the personalized journey to begin.")
+        if st.button("Start Journey", key="start_journey_when_empty"):
+            _start_adaptive_journey()
+        return
+
+    steps = list(getattr(path, "recommended_steps", []) or [])
+    if not steps:
+        st.info("No recommended steps are available yet.")
+        return
+
+    current_index = int(st.session_state.get("adaptive_journey_current_step_index", 0))
+    total_steps = len(steps)
+    if current_index >= total_steps:
+        current_index = total_steps - 1
+
+    journey_state = st.session_state.get("adaptive_journey_state", "journey")
+    if journey_state == "transition":
+        current_step = steps[current_index]
+        completed_steps = list(st.session_state.get("adaptive_journey_completed_steps", []))
+        st.success("Great Job!")
+        st.header("🎉 Step Complete")
+        st.subheader(f"You completed {getattr(current_step, 'mode', 'this step')}")
+        st.write(getattr(current_step, "completion_message", "Excellent work. Keep going.") or "Excellent work. Keep going.")
+
+        next_index = current_index + 1
+        if next_index < total_steps:
+            next_step = steps[next_index]
+            st.markdown("---")
+            st.markdown("### ⭐ Recommended Next Step")
+            st.write(f"**{getattr(next_step, 'mode', 'Next Step')}**")
+            st.write(getattr(next_step, "description", ""))
+            st.write(f"**Estimated Time:** {getattr(next_step, 'estimated_duration', 0)} minutes")
+            st.write(f"**Reason:** {getattr(next_step, 'reason', '')}")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Continue Journey", type="primary", key="continue_journey"):
+                    _continue_journey()
+            with col2:
+                if st.button("Exit Journey", key="exit_journey"):
+                    _exit_journey()
+        else:
+            st.markdown("---")
+            st.info("You have reached the end of today's personalized journey.")
+            if st.button("Return Home", type="primary", key="return_home_from_journey"):
+                _exit_journey()
+        return
+
+    if journey_state == "completed":
+        st.balloons()
+        st.header("🎉 Journey Completed")
+        st.subheader("Congratulations!")
+        st.write("You completed today's personalized learning journey.")
+        st.metric("Total Time", f"{getattr(path, 'estimated_total_duration', 0)} minutes")
+        st.metric("Completed Steps", f"{len(st.session_state.get('adaptive_journey_completed_steps', []))}/{total_steps}")
+        st.write("You did a fantastic job following the recommended path today.")
+        if st.button("Return Home", type="primary", key="return_home_completed"):
+            _exit_journey()
+        return
+
+    current_step = steps[current_index]
+    st.header("🌟 Today's Personalized Learning Journey")
+    st.caption(f"Current recommendation: {getattr(path, 'current_recommendation', getattr(current_step, 'mode', ''))}")
+    st.progress((current_index + 1) / total_steps if total_steps else 0.0)
+    st.markdown(f"**Step {current_index + 1} of {total_steps}**")
+
+    st.markdown(f"### {getattr(current_step, 'icon', '📚')} {getattr(current_step, 'mode', 'Learning Step')}")
+    st.write(getattr(current_step, 'title', ''))
+    st.write(getattr(current_step, 'description', ''))
+    st.markdown(f"**Why this step?** {getattr(current_step, 'reason', '')}")
+    st.write(f"**Estimated Time:** {getattr(current_step, 'estimated_duration', 0)} minutes")
+    st.write(f"**Status:** {getattr(current_step, 'status', 'RECOMMENDED')}")
+
+    if st.button(getattr(current_step, 'action_button_text', 'Continue'), key=f"journey_action_{current_index}"):
+        st.session_state.adaptive_journey_open_module = getattr(current_step, 'mode_id', '')
+        st.session_state.adaptive_journey_state = "journey"
+        st.rerun()
+
+    if st.session_state.get("adaptive_journey_open_module") == getattr(current_step, "mode_id", ""):
+        st.markdown("---")
+        st.subheader("Open Module")
+        _render_module_for_step(current_step)
+        st.markdown("---")
+        if st.button("✓ Mark Step Complete", type="primary", key=f"complete_journey_step_{current_index}"):
+            _complete_current_journey_step(current_step)
+            st.rerun()
 
 
 def render_read_mode() -> None:
@@ -2195,7 +2432,7 @@ def render_chat_section() -> None:
                 adaptive_prompt = tutor.generate_adaptive_system_prompt()
                 adaptive_prompt = _build_personalized_tutor_prompt(adaptive_prompt, user_id)
                 print("\n" + "=" * 80)
-                print("AI TUTOR PROMPT")
+                print("AI TUTOR PERSONALIZED PROMPT")
                 print("=" * 80)
                 print(adaptive_prompt)
                 print("=" * 80 + "\n")
@@ -2374,15 +2611,26 @@ def main() -> None:
     if page == "Dashboard":
         render_dashboard(st.session_state.current_user_id)
     else:
-        render_home()
-        st.divider()
-        render_upload_section()
-        st.divider()
-        render_learning_modes()
-        st.divider()
-        render_word_explorer()
-        st.divider()
-        render_chat_section()
+        if st.session_state.get("adaptive_journey_active"):
+            render_adaptive_learning_journey()
+        elif st.session_state.get("adaptive_journey_view") == "manual":
+            render_home()
+            st.divider()
+            render_upload_section()
+            st.divider()
+            render_learning_modes()
+            st.divider()
+            render_word_explorer()
+            st.divider()
+            render_chat_section()
+        else:
+            render_home()
+            st.divider()
+            render_upload_section()
+            st.divider()
+            render_word_explorer()
+            st.divider()
+            render_chat_section()
 
 
 if __name__ == "__main__":
