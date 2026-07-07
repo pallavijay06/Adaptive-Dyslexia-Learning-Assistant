@@ -177,8 +177,10 @@ def audio():
         audio_path = generate_audio(text, lang=lang, slow=slow)
         if user_id is not None:
             track_audio_started(user_id=int(user_id), metadata={"text_length": len(text)})
+        filename = Path(audio_path).name
         return jsonify({
             "audio_file": audio_path,
+            "audio_url": f"/audio/{filename}",
             "success": True
         }), 200
 
@@ -216,6 +218,11 @@ def visualize():
         visual_content = generate_visual_content(text, visual_type=visual_type)
         if user_id is not None:
             track_visual_viewed(user_id=int(user_id), metadata={"visual_type": visual_type or "generic"})
+        # Convert filesystem paths to serving URLs
+        if visual_content.get("flowchart_path"):
+            visual_content["flowchart_url"] = f"/diagrams/{Path(visual_content['flowchart_path']).name}"
+        if visual_content.get("mindmap_path"):
+            visual_content["mindmap_url"] = f"/diagrams/{Path(visual_content['mindmap_path']).name}"
         return jsonify({
             "visual": visual_content,
             "success": True

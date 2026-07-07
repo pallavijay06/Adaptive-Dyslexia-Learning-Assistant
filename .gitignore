@@ -51,3 +51,7 @@ dist/
 # Temporary Files
 temp/
 tmp/
+
+# Node
+frontend/node_modules/
+frontend/dist/
