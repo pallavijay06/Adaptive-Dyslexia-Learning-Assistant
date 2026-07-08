@@ -441,3 +441,997 @@ main {
     flex-direction: column;
   }
 }
+
+/* ── Workspace layout ───────────────────────────────────────────────────── */
+
+.workspace-layout {
+  padding: 2rem;
+}
+
+/* ── Workspace ───────────────────────────────────────────────────────────── */
+
+.workspace-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 1100px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.workspace-header {
+  padding: 1.25rem 1.5rem;
+}
+
+.workspace-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.workspace-back-btn {
+  flex-shrink: 0;
+  font-size: 0.875rem;
+  padding: 0.5rem 1rem;
+}
+
+.workspace-doc-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.workspace-doc-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #14213d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-doc-badges {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.workspace-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.workspace-badge--type {
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+.workspace-badge--time {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+/* Tab navigation */
+.workspace-nav {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(20, 33, 61, 0.08);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.workspace-tab-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  gap: 0.25rem;
+  min-width: max-content;
+}
+
+.workspace-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: none;
+  border: none;
+  border-radius: 10px;
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+  color: #475569;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.workspace-tab:hover {
+  background: #f1f5f9;
+  color: #14213d;
+}
+
+.workspace-tab--active {
+  background: #eef2ff;
+  color: #4f46e5;
+  font-weight: 700;
+}
+
+.workspace-tab-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+/* Content area */
+.workspace-content {
+  min-height: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.workspace-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: center;
+  padding: 2rem;
+}
+
+.workspace-placeholder-icon {
+  font-size: 3rem;
+  line-height: 1;
+}
+
+.workspace-placeholder-title {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #14213d;
+}
+
+.workspace-placeholder-text {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+@media (max-width: 640px) {
+  .workspace-header-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .workspace-doc-title {
+    white-space: normal;
+  }
+}
+
+/* ── Simplified Notes Panel ──────────────────────────────────────────────── */
+
+.notes-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Controls bar */
+.notes-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.notes-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.notes-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.notes-control-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.notes-select {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.45rem 0.65rem;
+  background: #f8fafc;
+  color: #14213d;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.notes-select:focus {
+  outline: 2px solid #4f46e5;
+  outline-offset: 1px;
+  border-color: #4f46e5;
+}
+
+.notes-controls-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+/* States */
+.notes-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.9rem;
+  padding: 0.75rem 1rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+}
+
+.notes-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #4f46e5;
+  font-size: 0.95rem;
+  padding: 1.5rem;
+}
+
+.notes-loading-spinner {
+  display: inline-block;
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 2px solid #c7d2fe;
+  border-top-color: #4f46e5;
+  border-radius: 50%;
+  animation: notes-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes notes-spin {
+  to { transform: rotate(360deg); }
+}
+
+.notes-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: center;
+  padding: 3rem 2rem;
+  color: #64748b;
+}
+
+.notes-empty-icon {
+  font-size: 2.5rem;
+  line-height: 1;
+}
+
+/* Reading area */
+.notes-reading-area {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(20, 33, 61, 0.08);
+}
+
+.notes-section-card {
+  border: 1px solid;
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+}
+
+.notes-heading {
+  margin: 0;
+  font-size: 1.15em;
+  line-height: 1.35;
+  font-weight: 700;
+}
+
+.notes-paragraph {
+  margin: 0;
+  max-width: 72ch;
+}
+
+.notes-bullet-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  max-width: 72ch;
+}
+
+.notes-bullet-list li {
+  margin-bottom: 0.35rem;
+}
+
+.notes-bullet-list li:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 860px) {
+  .notes-controls-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .notes-controls-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .notes-controls-actions {
+    flex-direction: column;
+  }
+}
+
+/* ── Visual Learning Panel ───────────────────────────────────────────────── */
+
+.visual-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.visual-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.visual-controls-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.visual-controls-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+/* Meta */
+.visual-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.visual-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #14213d;
+}
+
+.visual-description {
+  margin: 0;
+  color: #475569;
+  font-size: 0.95rem;
+}
+
+/* Results grid */
+.visual-results {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.visual-diagrams-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+}
+
+/* Diagram card */
+.visual-diagram-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.25rem;
+}
+
+.visual-diagram-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.visual-diagram-label {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #14213d;
+}
+
+.visual-diagram-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.visual-diagram-btn {
+  font-size: 0.8rem;
+  padding: 0.4rem 0.75rem;
+}
+
+/* Image viewer */
+.visual-diagram-viewer {
+  overflow: auto;
+  border-radius: 10px;
+  background: #f8f9fb;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.visual-diagram-img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 8px;
+}
+
+/* Fullscreen overlay */
+.visual-fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.88);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.visual-fullscreen-close {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  color: white;
+  font-size: 1.25rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.visual-fullscreen-close:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.visual-fullscreen-img {
+  max-width: 100%;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+@media (max-width: 640px) {
+  .visual-diagrams-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .visual-controls-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .visual-diagram-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* ── Inline Vocabulary ───────────────────────────────────────────────────── */
+
+.vocab-word {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 0.12em;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+  display: inline;
+  line-height: inherit;
+}
+
+.vocab-word:hover,
+.vocab-word:focus {
+  text-decoration-thickness: 0.2em;
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.notes-vocab-hint {
+  margin: 0 0 0.5rem;
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+
+/* Popover */
+.vocab-popover {
+  position: absolute;
+  z-index: 9999;
+  width: 300px;
+  background: #fff;
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  padding: 1rem;
+  box-shadow: 0 8px 32px rgba(20, 33, 61, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.vocab-popover-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.6rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #64748b;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.vocab-popover-close:hover {
+  background: #f1f5f9;
+  color: #14213d;
+}
+
+.vocab-popover-word {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: #4f46e5;
+  padding-right: 1.5rem;
+}
+
+.vocab-popover-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.875rem;
+  color: #1e293b;
+  line-height: 1.5;
+}
+
+.vocab-popover-label {
+  font-weight: 700;
+  color: #475569;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.vocab-popover-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: #4f46e5;
+  font-size: 0.9rem;
+}
+
+.vocab-popover-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.875rem;
+}
+
+/* ── Listen Mode Panel ───────────────────────────────────────────────────── */
+
+.listen-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.listen-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.listen-controls-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+}
+
+.listen-icon {
+  font-size: 2rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.listen-title {
+  margin: 0 0 0.2rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #14213d;
+}
+
+.listen-subtitle {
+  margin: 0;
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.listen-player {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.listen-audio {
+  width: 100%;
+  border-radius: 8px;
+}
+
+.listen-download {
+  align-self: flex-start;
+  font-size: 0.875rem;
+  padding: 0.5rem 1rem;
+  text-decoration: none;
+}
+
+/* ── Listen Mode source selector ────────────────────────────────────────── */
+
+.listen-source-fieldset {
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.listen-source-options {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+}
+
+.listen-source-option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: #14213d;
+}
+
+.listen-source-option--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.listen-source-hint {
+  font-size: 0.78rem;
+  color: #64748b;
+  font-style: italic;
+}
+
+/* ── Word Explorer Panel ─────────────────────────────────────────────────── */
+
+.word-explorer-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.word-explorer-header {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Input row: text field + Explore button (mirrors Streamlit col1/col2) */
+.word-explorer-input-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.word-explorer-input {
+  flex: 1;
+  min-width: 200px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.55rem 0.85rem;
+  font-size: 0.95rem;
+  color: #14213d;
+  background: #f8fafc;
+  transition: border-color 0.15s;
+}
+
+.word-explorer-input:focus {
+  outline: 2px solid #4f46e5;
+  outline-offset: 1px;
+  border-color: #4f46e5;
+}
+
+.word-explorer-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.word-explorer-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+}
+
+.word-explorer-icon {
+  font-size: 2rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.word-explorer-title {
+  margin: 0 0 0.2rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #14213d;
+}
+
+.word-explorer-subtitle {
+  margin: 0;
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.word-explorer-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.9rem;
+  padding: 0.75rem 1rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+}
+
+.word-explorer-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #4f46e5;
+  font-size: 0.95rem;
+  padding: 1.5rem;
+}
+
+.word-explorer-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: center;
+  padding: 3rem 2rem;
+  color: #64748b;
+}
+
+.word-explorer-empty-icon {
+  font-size: 2.5rem;
+  line-height: 1;
+}
+
+/* Two-column layout: word list left, definition right */
+.word-explorer-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+/* Word list */
+.word-explorer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.word-explorer-list-hint {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #64748b;
+}
+
+.word-explorer-chips {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.word-explorer-chip {
+  width: 100%;
+  text-align: left;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 0.65rem 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.word-explorer-chip:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+.word-explorer-chip--active {
+  background: #eef2ff;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
+}
+
+.word-explorer-chip-word {
+  font-weight: 700;
+  color: #14213d;
+  font-size: 0.95rem;
+}
+
+.word-explorer-chip--active .word-explorer-chip-word {
+  color: #4f46e5;
+}
+
+.word-explorer-chip-meaning {
+  font-size: 0.82rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+/* Definition panel */
+.word-explorer-definition {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  position: sticky;
+  top: 1rem;
+}
+
+.word-explorer-def-word {
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #4f46e5;
+}
+
+.word-explorer-def-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.9rem;
+  color: #1e293b;
+  line-height: 1.55;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid #eef2ff;
+}
+
+.word-explorer-def-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.word-explorer-def-label {
+  font-weight: 700;
+  color: #475569;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.word-explorer-def-value {
+  color: #1e293b;
+}
+
+@media (max-width: 700px) {
+  .word-explorer-body {
+    grid-template-columns: 1fr;
+  }
+
+  .word-explorer-definition {
+    position: static;
+  }
+
+  .word-explorer-header {
+    flex-direction: column;
+  }
+}
+
+/* ── Listen Mode sentence transcript ────────────────────────────────────── */
+
+.listen-transcript {
+  margin-top: 0.5rem;
+  padding: 1.125rem 1.125rem;
+  border-radius: 18px;
+  background-color: rgba(15, 23, 42, 0.97);
+  color: #f8fafc;
+  line-height: 1.9;
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+  word-break: break-word;
+}
+
+.listen-transcript-label {
+  margin: 0 0 1rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.listen-transcript-text {
+  margin: 0;
+  text-align: left;
+}
+
+/* Mirrors Streamlit .listen-sentence */
+.listen-sentence {
+  display: inline;
+  padding: 0;
+  margin: 0;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+  background-color: transparent;
+}
+
+/* Mirrors Streamlit .listen-sentence.active */
+.listen-sentence--active {
+  background-color: rgba(255, 214, 88, 0.28);
+  box-shadow: 0 0 0 2px rgba(255, 214, 88, 0.4), inset 0 0 0 1px rgba(255, 214, 88, 0.2);
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+@media (max-width: 768px) {
+  .listen-transcript {
+    padding: 1rem;
+    font-size: 1rem;
+    line-height: 1.8;
+  }
+}
+
+/* ── Word Explorer divider inside Simplified Notes ──────────────────────── */
+
+.notes-word-explorer-divider {
+  height: 2px;
+  background: #e2e8f0;
+  border-radius: 1px;
+  margin: 0.5rem 0;
+}

@@ -18,6 +18,7 @@ import LearningSelectionRoute from './routes/LearningSelectionRoute';
 import JourneyRoute from './routes/JourneyRoute';
 import ManualLearningRoute from './routes/ManualLearningRoute';
 import ProgressRoute from './routes/ProgressRoute';
+import WorkspacePage from './pages/WorkspacePage';
 
 function AppRoutes() {
   const { restoreSession, loading } = useAuth();
@@ -52,6 +53,7 @@ function AppRoutes() {
           <Route element={<WorkspaceLayout />}>
             <Route path="/journey" element={<ProtectedRoute><JourneyRoute /></ProtectedRoute>} />
             <Route path="/manual-learning" element={<ProtectedRoute><ManualLearningRoute /></ProtectedRoute>} />
+            <Route path="/workspace" element={<ProtectedRoute><WorkspacePage /></ProtectedRoute>} />
           </Route>
         </Route>
       </Routes>

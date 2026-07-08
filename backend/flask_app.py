@@ -21,6 +21,7 @@ from backend.dashboard_routes import dashboard_bp
 from backend.stem_routes import stem_bp
 from backend.adaptive_routes import adaptive_bp
 from backend.tracking_routes import tracking_bp
+from backend.document_routes import document_bp
 from database import init_db
 
 # Absolute project root so static-file routes resolve correctly regardless
@@ -54,6 +55,7 @@ def create_app() -> Flask:
     app.register_blueprint(stem_bp)        # /stem/*
     app.register_blueprint(adaptive_bp)    # /adaptive-plan/*
     app.register_blueprint(tracking_bp)    # /track/*
+    app.register_blueprint(document_bp)    # /document/<id>/*  /quiz/hint  /vocabulary/explain
 
     # ── Static asset serving ──────────────────────────────────────────────────
 

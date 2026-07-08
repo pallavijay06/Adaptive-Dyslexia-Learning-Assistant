@@ -177,10 +177,13 @@ def audio():
         audio_path = generate_audio(text, lang=lang, slow=slow)
         if user_id is not None:
             track_audio_started(user_id=int(user_id), metadata={"text_length": len(text)})
+        from services.tts_service import split_text_into_sentences
+        sentences = split_text_into_sentences(text)
         filename = Path(audio_path).name
         return jsonify({
             "audio_file": audio_path,
             "audio_url": f"/audio/{filename}",
+            "sentences": sentences,
             "success": True
         }), 200
 

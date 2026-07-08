@@ -60,7 +60,7 @@ export default function UploadRoute() {
     setError('');
     try {
       const data = await uploadService.uploadDocument(selectedFile);
-      setActiveDocument(data.document);
+      setActiveDocument({ ...data.document, document_id: data.document_id });
       setUploadResult(data);
     } catch (err) {
       setError(err.message || 'Upload failed. Please try again.');
