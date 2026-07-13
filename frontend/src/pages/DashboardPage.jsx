@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardService } from '../services/dashboardService';
 
@@ -24,7 +24,6 @@ function formatValue(value) {
 
 export default function DashboardPage() {
   const { user } = useAuth();
-  const navigate = useNavigate();
   const [dashboard, setDashboard] = useState(defaultDashboard);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -81,19 +80,9 @@ export default function DashboardPage() {
   return (
     <div className="dashboard-page">
       <section className="card hero-card" aria-labelledby="dashboard-welcome">
-        <div>
-          <p className="eyebrow">Welcome back</p>
-          <h2 id="dashboard-welcome">Hello, {welcomeName}</h2>
-          <p className="hero-copy">
-            Your dashboard is powered by the latest backend data for your learning activity.
-          </p>
-        </div>
-        <div className="hero-actions">
-          <Link className="button button-primary" to="/upload">Upload</Link>
-          <button type="button" className="button button-secondary" onClick={() => navigate('/progress')}>
-            Progress
-          </button>
-        </div>
+        <p className="eyebrow">Welcome Back</p>
+        <h2 id="dashboard-welcome">Hello, {welcomeName} 👋</h2>
+        <p className="hero-copy">Ready for today's learning session?</p>
       </section>
 
       {loading && <div className="card loading-card">Loading your dashboard…</div>}

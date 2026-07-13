@@ -164,25 +164,52 @@ def get_quiz_submission_attempt_metadata(quiz_attempt_number: int, is_correct: b
 
 
 def render_quiz_progress_indicator(current_index: int, total: int) -> None:
-    """Render the progress indicator based on COMPLETED questions, not current question.
-    
-    A question is completed when the learner has:
-    1. Provided an answer (MCQ selection OR short answer text)
-    2. Clicked Next or Submit Quiz (moved away from the question)
-    """
+    """Render the progress indicator based on COMPLETED questions, not current question."""
     quiz_state = st.session_state.quiz_state
     completed = len(quiz_state.get("completed_questions", set()))
     progress = (completed / total) if total > 0 else 0
     progress_pct = int(progress * 100)
-    
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        st.markdown(f"### Question {current_index + 1} of {total}")
-    
-    with col2:
-        st.progress(progress)
-        st.markdown(f"**{completed} / {total} Questions - {progress_pct}%**")
+
+    st.markdown(
+        f"""
+        <style>
+        .quiz-progress-wrap {{
+            display: flex; align-items: center; gap: 1rem;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid #334155; border-radius: 14px;
+            padding: 1rem 1.4rem; margin-bottom: 0.5rem;
+        }}
+        .quiz-q-label {{
+            font-size: 1rem; font-weight: 700; color: #f8fafc;
+            white-space: nowrap; min-width: 130px;
+        }}
+        .quiz-bar-wrap {{ flex: 1; }}
+        .quiz-bar-bg {{
+            background: #1e293b; border-radius: 999px; height: 10px;
+            border: 1px solid #334155; overflow: hidden;
+        }}
+        .quiz-bar-fill {{
+            height: 100%; border-radius: 999px;
+            background: linear-gradient(90deg, #6366f1, #8b5cf6);
+            transition: width 0.4s ease;
+        }}
+        .quiz-pct {{
+            font-size: 0.82rem; color: #94a3b8; margin-top: 4px;
+            text-align: right;
+        }}
+        </style>
+        <div class="quiz-progress-wrap">
+            <div class="quiz-q-label">Question {current_index + 1} / {total}</div>
+            <div class="quiz-bar-wrap">
+                <div class="quiz-bar-bg">
+                    <div class="quiz-bar-fill" style="width:{progress_pct}%"></div>
+                </div>
+                <div class="quiz-pct">{completed} answered &nbsp;·&nbsp; {progress_pct}% complete</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_quiz_question(
@@ -192,35 +219,57 @@ def render_quiz_question(
 ) -> str:
     """
     Render a single quiz question with appropriate input based on type.
-    
-    Detects first interaction and starts the timer.
-    
-    Args:
-        question: Question data dict
-        question_index: Index in the quiz
-        stored_answer: The previously stored answer for this question
-    
+
     Returns:
         The selected/entered answer
     """
     question_text = question.get("question", "")
     options = question.get("options", [])
     original_type = question.get("original_type", "MCQ")
-    
-    st.markdown("---")
-    st.markdown(f"**Question:**\n\n{question_text}")
-    st.markdown("---")
-    
+    badge_color = "#6366f1" if original_type == "MCQ" else "#0ea5e9"
+    badge_label = "Multiple Choice" if original_type == "MCQ" else "Short Answer"
+
+    st.markdown(
+        f"""
+        <style>
+        .quiz-card {{
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid #334155; border-radius: 16px;
+            padding: 1.6rem 1.8rem; margin: 0.8rem 0 1rem;
+        }}
+        .quiz-type-badge {{
+            display: inline-block;
+            background: {badge_color}22; color: {badge_color};
+            border: 1px solid {badge_color}55;
+            border-radius: 999px; padding: 2px 12px;
+            font-size: 0.75rem; font-weight: 700;
+            letter-spacing: 0.05em; text-transform: uppercase;
+            margin-bottom: 0.75rem;
+        }}
+        .quiz-question-text {{
+            font-size: 1.08rem; font-weight: 600;
+            color: #f1f5f9; line-height: 1.7;
+        }}
+        </style>
+        <div class="quiz-card">
+            <div class="quiz-type-badge">{badge_label}</div>
+            <div class="quiz-question-text">{question_text}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     if original_type == "MCQ" and options:
-        # Multiple choice question
-        st.markdown("**Choose the best answer:**")
         options_with_placeholder = ["-- Select Answer --"] + options
-        
-        if stored_answer and stored_answer in options:
-            selected_index = options_with_placeholder.index(stored_answer)
-        else:
-            selected_index = 0
-        
+        selected_index = (
+            options_with_placeholder.index(stored_answer)
+            if stored_answer and stored_answer in options
+            else 0
+        )
+        st.markdown(
+            "<p style='color:#94a3b8;font-size:0.9rem;margin:0 0 6px;'>Choose the best answer:</p>",
+            unsafe_allow_html=True,
+        )
         selected = st.radio(
             "Options:",
             options=options_with_placeholder,
@@ -228,51 +277,49 @@ def render_quiz_question(
             key=f"question_{question_index}_answer",
             label_visibility="collapsed",
         )
-        
-        # Start timer ONLY on first selection of this visit (when changing from placeholder)
-        if selected != "-- Select Answer --" and selected != stored_answer:
-            # User made a new selection (not just displaying stored answer)
+        if selected != "-- Select Answer --" and (selected != stored_answer or not stored_answer):
             _start_question_timer(question_index)
-        elif selected != "-- Select Answer --" and not stored_answer:
-            # First time selecting an answer on fresh load of this question
-            _start_question_timer(question_index)
-        
         return selected if selected != "-- Select Answer --" else (stored_answer or "")
     else:
-        # Short answer question
-        st.markdown("**Your answer:**")
+        st.markdown(
+            "<p style='color:#94a3b8;font-size:0.9rem;margin:0 0 6px;'>Write your answer below:</p>",
+            unsafe_allow_html=True,
+        )
         answer = st.text_area(
             "Enter your answer:",
             value=stored_answer,
             key=f"question_{question_index}_answer",
-            height=120,
+            height=130,
             label_visibility="collapsed",
+            placeholder="Type your answer here…",
         )
-        
-        # Start timer on first interaction (when user types)
         if answer and not stored_answer:
-            # First time user has typed something (was empty, now has text)
             _start_question_timer(question_index)
         elif answer and answer != stored_answer:
-            # User has changed the answer (was answered, now changed)
             timer_data = st.session_state.quiz_state["question_timers"].get(question_index)
             if timer_data and not timer_data.get("timer_started", False):
-                # Timer not started yet for this visit, start it now
                 _start_question_timer(question_index)
-        
         return answer or ""
 
 
 def render_question_timer(question_index: int) -> None:
-    """Render a live updating timer for the current question.
-    
-    Timer only shows time after first interaction.
-    Timer updates on each rerun (which happens on user interaction).
-    """
+    """Render a styled timer for the current question."""
     seconds = get_current_question_time_seconds(question_index)
-    st.metric(
-        label="⏱ Time on this question",
-        value=format_time_seconds(seconds),
+    formatted = format_time_seconds(seconds)
+    st.markdown(
+        f"""
+        <div style="
+            background: linear-gradient(135deg,#1e293b,#0f172a);
+            border:1px solid #334155; border-radius:12px;
+            padding:0.7rem 1rem; text-align:center;
+        ">
+            <div style="font-size:0.72rem;color:#64748b;letter-spacing:0.08em;
+                        text-transform:uppercase;margin-bottom:2px;">⏱ Time</div>
+            <div style="font-size:1.5rem;font-weight:800;color:#a5b4fc;
+                        font-variant-numeric:tabular-nums;">{formatted}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
@@ -301,14 +348,13 @@ def render_hint_button(question_index: int, question: dict[str, Any]) -> str | N
     if generating_flag not in st.session_state:
         st.session_state[generating_flag] = False
     
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
+    _, col2, _ = st.columns([1, 2, 1])
     with col2:
-        # Button to request hint
         if st.button(
             "💡 Show Hint",
             key=f"hint_btn_{question_index}",
             help="Get a helpful hint for this question",
+            use_container_width=True,
         ):
             st.session_state[want_hint_flag] = True
     
@@ -350,9 +396,20 @@ def render_hint_button(question_index: int, question: dict[str, Any]) -> str | N
             if hint_used[question_index] == 0:  # Only increment if first time showing cached hint
                 hint_used[question_index] += 1
     
-    # Display cached hint if available
     if question_index in hints:
-        st.info(f"💡 **Hint:** {hints[question_index]}")
+        st.markdown(
+            f"""
+            <div style="
+                background:#1e3a5f22; border:1px solid #3b82f655;
+                border-left:4px solid #3b82f6; border-radius:10px;
+                padding:0.9rem 1.1rem; margin-top:0.5rem;
+                color:#93c5fd; font-size:0.95rem; line-height:1.6;
+            ">
+                💡 <strong>Hint:</strong> {hints[question_index]}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         return hints[question_index]
     
     return None

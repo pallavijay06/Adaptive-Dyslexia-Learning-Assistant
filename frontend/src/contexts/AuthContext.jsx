@@ -38,10 +38,27 @@ export function AuthProvider({ children }) {
         return true;
       }
 
-      setError(response.data?.error || 'Login failed.');
+      const msg = response.data?.error || '';
+      if (msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('no account')) {
+        setError('No account found. Please sign up first.');
+      } else if (msg.toLowerCase().includes('invalid') || msg.toLowerCase().includes('password')) {
+        setError('Incorrect email or password. Please try again.');
+      } else {
+        setError(msg || 'Login failed.');
+      }
       return false;
     } catch (axiosError) {
-      setError(axiosError?.response?.data?.error || 'Login failed.');
+      const msg = axiosError?.response?.data?.error || '';
+      const status = axiosError?.response?.status;
+      if (status === 401) {
+        setError('Incorrect email or password. Please try again.');
+      } else if (status === 404 || msg.toLowerCase().includes('not found')) {
+        setError('No account found. Please sign up first.');
+      } else if (msg) {
+        setError(msg);
+      } else {
+        setError('Login failed. Please check your connection and try again.');
+      }
       return false;
     } finally {
       setLoading(false);
@@ -53,10 +70,10 @@ export function AuthProvider({ children }) {
     setError('');
     try {
       const response = await api.post('/auth/register', {
-        full_name,
-        email,
-        password,
-        confirm_password,
+        full_name: values.full_name,
+        email: values.email,
+        password: values.password,
+        confirm_password: values.confirm_password,
         age: values.age,
         grade: values.grade,
         institution: values.institution,
@@ -68,10 +85,22 @@ export function AuthProvider({ children }) {
         return true;
       }
 
-      setError(response.data?.error || 'Signup failed.');
+      const msg = response.data?.error || '';
+      if (msg.toLowerCase().includes('already')) {
+        setError('An account with this email already exists. Please log in.');
+      } else {
+        setError(msg || 'Registration failed.');
+      }
       return false;
     } catch (axiosError) {
-      setError(axiosError?.response?.data?.error || 'Signup failed.');
+      const msg = axiosError?.response?.data?.error || '';
+      if (axiosError?.response?.status === 409 || msg.toLowerCase().includes('already')) {
+        setError('An account with this email already exists. Please log in.');
+      } else if (msg) {
+        setError(msg);
+      } else {
+        setError('Registration failed. Please check your connection and try again.');
+      }
       return false;
     } finally {
       setLoading(false);

@@ -1566,79 +1566,64 @@ def _sanitize_incorrect_feedback(feedback: str) -> str:
 
 
 def _render_interactive_quiz() -> None:
-    """Render the interactive one-question-at-a-time quiz experience with retry support.
-    
-    Layout:
-    - Top: Progress indicator (Question X of Y + progress bar + timer)
-    - Middle: Question + options/text area + hint
-    - Evaluation: If submitted, show result (Correct/Incorrect + feedback)
-    - Bottom: Navigation (Previous/Next/Try Again/Submit)
-    """
-    # Ensure quiz state is initialized
+    """Render the interactive one-question-at-a-time quiz experience with retry support."""
     if "quiz_state" not in st.session_state:
         initialize_quiz_session_state(
             st.session_state.quiz_mcqs,
             st.session_state.quiz_short_questions,
         )
-    
+
     quiz_state = st.session_state.quiz_state
     current_index = quiz_state["current_question_index"]
     questions = quiz_state["questions"]
     answers = quiz_state["answers"]
-    
-    # Start viewing the current question (tracks time from when they navigate to it)
+
     _start_question_viewing(current_index)
-    
-    # TOP: Progress and timer
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
+
+    # Header row: progress + timer
+    col_prog, col_timer = st.columns([3, 1])
+    with col_prog:
         render_quiz_progress_indicator(current_index, len(questions))
-    
-    with col2:
+    with col_timer:
         render_question_timer(current_index)
-    
-    st.markdown("---")
-    
-    # MIDDLE: Question, options, and hints
+
+    # Question card + answer input
     current_question = questions[current_index]
     stored_answer = answers[current_index] if current_index < len(answers) else ""
-    
-    # Render the question and get the answer
     answer = render_quiz_question(current_question, current_index, stored_answer)
     answers[current_index] = answer
-    
-    st.markdown("---")
-    
-    # Hint area
+
+    # Hint
     render_hint_button(current_index, current_question)
-    
-    st.markdown("---")
-    st.info("🧭 Answer each question in any order, then submit the full quiz once when you are ready.")
-    st.markdown("---")
-    
-    # BOTTOM: Navigation that never blocks progress
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
+
+    st.markdown(
+        "<p style='color:#64748b;font-size:0.82rem;text-align:center;margin:1rem 0 0.5rem;'>"
+        "Answer each question in any order, then submit when ready."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    # Navigation buttons
+    col_prev, col_next = st.columns(2)
+    with col_prev:
         if current_index > 0:
-            if st.button("◀ Previous", key="nav_prev", use_container_width=True):
+            if st.button("◀  Previous", key="nav_prev", use_container_width=True):
                 mark_question_completed(current_index)
                 persist_question_timing(current_index)
                 quiz_state["current_question_index"] = current_index - 1
                 st.rerun()
         else:
-            st.button("◀ Previous", key="nav_prev", disabled=True, use_container_width=True)
-    
-    with col2:
+            st.button("◀  Previous", key="nav_prev", disabled=True, use_container_width=True)
+
+    with col_next:
         if current_index < len(questions) - 1:
-            if st.button("Next ▶", key="nav_next", use_container_width=True):
+            if st.button("Next  ▶", key="nav_next", use_container_width=True, type="primary"):
                 mark_question_completed(current_index)
                 persist_question_timing(current_index)
                 quiz_state["current_question_index"] = current_index + 1
                 st.rerun()
         else:
-            if st.button("Submit Quiz", key="nav_submit", use_container_width=True):
+            if st.button("✅  Submit Quiz", key="nav_submit", use_container_width=True, type="primary"):
                 mark_question_completed(current_index)
                 persist_question_timing(current_index)
                 _submit_interactive_quiz()
@@ -1971,31 +1956,112 @@ def _render_quiz_summary_results() -> None:
     """Render the final quiz summary with results and timing analytics."""
     report = st.session_state.quiz_report
     quiz_state = st.session_state.get("quiz_state", {})
-    
-    st.header("✅ Quiz Completed")
-    
-    # Summary metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Score", f"{report.get('score', 0)}/{report.get('total', 0)}")
-    with col2:
-        st.metric("Percentage", f"{report.get('percentage', 0)}%")
-    with col3:
-        # Calculate total time
-        if quiz_state:
-            total_time = 0
-            for idx in range(len(quiz_state.get("questions", []))):
-                total_time += get_current_question_time_seconds(idx)
-            st.metric("Total Time", format_time_seconds(total_time))
-    
-    st.progress(report.get("percentage", 0) / 100 if report.get("total") else 0)
-    
+
+    score = report.get("score", 0)
+    total = report.get("total", 0)
+    pct = report.get("percentage", 0)
+    total_time = sum(
+        get_current_question_time_seconds(idx)
+        for idx in range(len(quiz_state.get("questions", [])))
+    ) if quiz_state else 0
+
+    if pct >= 80:
+        grade_color, grade_emoji = "#22c55e", "🏆"
+    elif pct >= 50:
+        grade_color, grade_emoji = "#f59e0b", "📈"
+    else:
+        grade_color, grade_emoji = "#ef4444", "📚"
+
+    st.markdown(
+        f"""
+        <style>
+        .quiz-result-hero {{
+            background: linear-gradient(135deg,#1e293b 0%,#0f172a 100%);
+            border:1px solid #334155; border-radius:18px;
+            padding:2rem 2.2rem; margin-bottom:1.4rem;
+            display:flex; align-items:center; gap:2rem; flex-wrap:wrap;
+        }}
+        .quiz-result-emoji {{ font-size:3rem; line-height:1; }}
+        .quiz-result-title {{
+            font-size:1.5rem; font-weight:800; color:#f1f5f9; margin:0 0 4px;
+        }}
+        .quiz-result-sub {{ font-size:0.9rem; color:#94a3b8; }}
+        .quiz-score-pill {{
+            margin-left:auto;
+            background:{grade_color}22; border:1px solid {grade_color}55;
+            border-radius:999px; padding:0.5rem 1.4rem;
+            font-size:2rem; font-weight:900; color:{grade_color};
+            white-space:nowrap;
+        }}
+        .quiz-metric-row {{
+            display:flex; gap:1rem; margin-bottom:1.2rem; flex-wrap:wrap;
+        }}
+        .quiz-metric-card {{
+            flex:1; min-width:120px;
+            background:linear-gradient(135deg,#1e293b,#0f172a);
+            border:1px solid #334155; border-radius:14px;
+            padding:1rem 1.2rem; text-align:center;
+        }}
+        .quiz-metric-label {{
+            font-size:0.72rem; color:#64748b;
+            text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px;
+        }}
+        .quiz-metric-value {{
+            font-size:1.6rem; font-weight:800; color:#f1f5f9;
+        }}
+        .quiz-section-title {{
+            font-size:1rem; font-weight:700; color:#a5b4fc;
+            margin:1.4rem 0 0.6rem; text-transform:uppercase;
+            letter-spacing:0.06em;
+        }}
+        .quiz-feedback-card {{
+            background:linear-gradient(135deg,#1e293b,#0f172a);
+            border:1px solid #334155; border-radius:14px;
+            padding:1.1rem 1.3rem; margin-bottom:0.8rem;
+        }}
+        .quiz-feedback-label {{
+            font-size:0.75rem; font-weight:700; color:#64748b;
+            text-transform:uppercase; letter-spacing:0.07em; margin-bottom:6px;
+        }}
+        .quiz-feedback-text {{ font-size:0.95rem; color:#cbd5e1; line-height:1.6; }}
+        .quiz-eval-correct {{
+            background:#14532d22; border:1px solid #22c55e44;
+            border-left:4px solid #22c55e; border-radius:10px;
+            padding:0.9rem 1.1rem; margin-bottom:0.6rem;
+        }}
+        .quiz-eval-partial {{
+            background:#78350f22; border:1px solid #f59e0b44;
+            border-left:4px solid #f59e0b; border-radius:10px;
+            padding:0.9rem 1.1rem; margin-bottom:0.6rem;
+        }}
+        .quiz-eval-wrong {{
+            background:#450a0a22; border:1px solid #ef444444;
+            border-left:4px solid #ef4444; border-radius:10px;
+            padding:0.9rem 1.1rem; margin-bottom:0.6rem;
+        }}
+        .quiz-eval-q {{ font-size:0.9rem; color:#94a3b8; margin-bottom:4px; }}
+        .quiz-eval-result {{ font-size:0.95rem; font-weight:700; color:#f1f5f9; }}
+        .quiz-eval-feedback {{ font-size:0.88rem; color:#cbd5e1; margin-top:4px; line-height:1.5; }}
+        </style>
+        <div class="quiz-result-hero">
+            <div class="quiz-result-emoji">{grade_emoji}</div>
+            <div>
+                <div class="quiz-result-title">Quiz Complete!</div>
+                <div class="quiz-result-sub">{score} correct out of {total} questions</div>
+            </div>
+            <div class="quiz-score-pill">{pct}%</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     total_questions = len(quiz_state.get("questions", []))
     hint_used = quiz_state.get("hint_used", {}) if isinstance(quiz_state.get("hint_used", {}), dict) else {}
-    support_count = sum(int(value) for value in hint_used.values() if isinstance(value, (int, float)))
+    support_count = sum(int(v) for v in hint_used.values() if isinstance(v, (int, float)))
     attempt_number = max(1, int(st.session_state.get("quiz_attempt_count", 1)))
     first_attempt_success_count = sum(
-        1 for result in report.get("question_results", []) if bool(result.get("is_correct", False)) and attempt_number == 1
+        1 for result in report.get("question_results", [])
+        if bool(result.get("is_correct", False)) and attempt_number == 1
     ) if total_questions else 0
     first_attempt_success_pct = round((first_attempt_success_count / total_questions) * 100) if total_questions else 0
     question_durations = [get_current_question_time_seconds(idx) for idx in range(total_questions)]
@@ -2007,105 +2073,112 @@ def _render_quiz_summary_results() -> None:
         first_attempt_success_count=first_attempt_success_count,
     )
 
-    st.markdown("### Quiz Comprehension")
-    st.metric("Comprehension Score", f"{comprehension_score}%")
-    st.write(
-        f"Based on accuracy, concept mastery, support dependency, first-attempt success, and response efficiency."
+    st.markdown(
+        f"""
+        <div class="quiz-metric-row">
+            <div class="quiz-metric-card">
+                <div class="quiz-metric-label">Score</div>
+                <div class="quiz-metric-value">{score}/{total}</div>
+            </div>
+            <div class="quiz-metric-card">
+                <div class="quiz-metric-label">Comprehension</div>
+                <div class="quiz-metric-value">{comprehension_score}%</div>
+            </div>
+            <div class="quiz-metric-card">
+                <div class="quiz-metric-label">1st Attempt</div>
+                <div class="quiz-metric-value">{first_attempt_success_pct}%</div>
+            </div>
+            <div class="quiz-metric-card">
+                <div class="quiz-metric-label">Total Time</div>
+                <div class="quiz-metric-value">{format_time_seconds(total_time)}</div>
+            </div>
+            <div class="quiz-metric-card">
+                <div class="quiz-metric-label">Hints Used</div>
+                <div class="quiz-metric-value">{support_count}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.markdown("### Personalized Feedback")
-    st.subheader("Focus Areas")
-    st.write(feedback_fields.get("feedback_strengths", "No strengths identified."))
-    st.write(feedback_fields.get("feedback_weaknesses", "No weaknesses identified."))
-    st.write("**Recommended concepts:**")
-    st.write(feedback_fields.get("feedback_recommended_concepts", "Review the concepts behind questions missed."))
-    st.write("**Suggested mode:**")
-    st.write(feedback_fields.get("feedback_suggested_learning_mode", "Simplified Notes"))
-    st.markdown("---")
+    strengths = feedback_fields.get("feedback_strengths") or report.get("strengths", "")
+    weaknesses = feedback_fields.get("feedback_weaknesses") or report.get("weaknesses", "")
+    recommendations = feedback_fields.get("feedback_recommended_concepts") or report.get("recommendations", "")
+    suggested_mode = feedback_fields.get("feedback_suggested_learning_mode", "Simplified Notes")
 
-    attempt_count = st.session_state.get("quiz_attempt_count", 1)
-    st.markdown(f"### Quiz Attempt {attempt_count}")
-    st.write(
-        "This quiz has been submitted as a separate attempt. You can retake the same questions to compare progress across attempts."
+    st.markdown("<div class='quiz-section-title'>Personalized Feedback</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class="quiz-feedback-card">
+            <div class="quiz-feedback-label">💪 Strengths</div>
+            <div class="quiz-feedback-text">{strengths or "No strengths data available."}</div>
+        </div>
+        <div class="quiz-feedback-card">
+            <div class="quiz-feedback-label">🎯 Areas to Improve</div>
+            <div class="quiz-feedback-text">{weaknesses or "No weaknesses data available."}</div>
+        </div>
+        <div class="quiz-feedback-card">
+            <div class="quiz-feedback-label">📚 Recommended Concepts</div>
+            <div class="quiz-feedback-text">{recommendations or "Review the concepts behind questions missed."}</div>
+        </div>
+        <div class="quiz-feedback-card">
+            <div class="quiz-feedback-label">💡 Suggested Learning Mode</div>
+            <div class="quiz-feedback-text">{suggested_mode}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    st.markdown("---")
 
-    st.markdown("### First Attempt Success")
-    st.metric("Score", f"{first_attempt_success_pct}%")
-    st.write(f"{first_attempt_success_count} / {total_questions} questions answered correctly on the first attempt.")
-    st.markdown("---")
-    
-    # Question-wise timing breakdown
-    if quiz_state:
-        st.subheader("Question-wise Time Breakdown")
-        summary = get_quiz_summary()
-        
-        timing_cols = st.columns([2, 1])
-        with timing_cols[0]:
-            st.markdown("**Question**")
-        with timing_cols[1]:
-            st.markdown("**Time**")
-        
-        for qt in summary["question_times"]:
-            timing_cols = st.columns([2, 1])
-            with timing_cols[0]:
-                st.write(f"Q{qt['question_number']}: {qt['question'][:60]}...")
-            with timing_cols[1]:
-                st.write(qt["time_formatted"])
-    
-    # Analysis
-    st.subheader("Performance Analysis")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Strengths**")
-        st.write(str(report.get("strengths", "No data")))
-    with col2:
-        st.markdown("**Weaknesses**")
-        st.write(str(report.get("weaknesses", "No data")))
-    
-    st.markdown("**Recommendations**")
-    st.write(str(report.get("recommendations", "No data")))
-    
-    # Detailed evaluation
     evaluations = report.get("evaluations", [])
     if evaluations:
-        st.subheader("Detailed Evaluation")
-        for index, evaluation in enumerate(evaluations, start=1):
-            with st.expander(f"Question {index} — View Evaluation"):
-                st.markdown("**Question:**")
-                st.write(evaluation.get("question", ""))
-                
-                st.markdown("**Your Answer:**")
-                st.write(evaluation.get("your_answer", ""))
-                
-                st.markdown("**Correct Answer:**")
-                st.write(evaluation.get("correct_answer", ""))
-                
-                st.markdown("**Result:**")
-                result = str(evaluation.get("result", "Incorrect"))
-                if result == "Correct":
-                    st.write("✅ Correct")
-                elif result in {"Partially Correct", "Partially"}:
-                    st.write("⚠️ Partially Correct")
-                else:
-                    st.write("❌ Incorrect")
-                
-                feedback = str(evaluation.get("feedback", "")).strip()
-                improvement_tip = str(evaluation.get("improvement_tip", "")).strip()
-                local_explanation = str(evaluation.get("local_explanation", "")).strip()
-                fallback_explanation = str(evaluation.get("explanation", "")).strip()
-                
-                st.markdown("**Feedback:**")
-                st.write(feedback or local_explanation or fallback_explanation or "No feedback available")
-    
-    retake_col, new_quiz_col = st.columns(2)
-    with retake_col:
-        if st.button("🔁 Retake This Quiz", type="secondary"):
+        st.markdown("<div class='quiz-section-title'>Question Breakdown</div>", unsafe_allow_html=True)
+        for idx, evaluation in enumerate(evaluations, start=1):
+            result = str(evaluation.get("result", "Incorrect"))
+            if result == "Correct":
+                card_cls, result_icon = "quiz-eval-correct", "✅ Correct"
+            elif result in {"Partially Correct", "Partially"}:
+                card_cls, result_icon = "quiz-eval-partial", "⚠️ Partially Correct"
+            else:
+                card_cls, result_icon = "quiz-eval-wrong", "❌ Incorrect"
+            feedback = str(
+                evaluation.get("feedback") or evaluation.get("local_explanation") or evaluation.get("explanation") or ""
+            ).strip()
+            q_text = str(evaluation.get("question", ""))[:120]
+            st.markdown(
+                f"""
+                <div class="{card_cls}">
+                    <div class="quiz-eval-q">Q{idx}: {q_text}</div>
+                    <div class="quiz-eval-result">{result_icon}</div>
+                    {f'<div class="quiz-eval-feedback">{feedback}</div>' if feedback else ''}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    if quiz_state:
+        st.markdown("<div class='quiz-section-title'>Time per Question</div>", unsafe_allow_html=True)
+        summary = get_quiz_summary()
+        timing_html = "".join(
+            f"<div style='display:flex;justify-content:space-between;padding:6px 0;"
+            f"border-bottom:1px solid #1e293b;font-size:0.88rem;color:#cbd5e1;'>"
+            f"<span>Q{qt['question_number']}: {qt['question'][:55]}…</span>"
+            f"<span style='color:#a5b4fc;font-weight:700;white-space:nowrap;margin-left:1rem;'>{qt['time_formatted']}</span></div>"
+            for qt in summary["question_times"]
+        )
+        st.markdown(
+            f"<div style='background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid #334155;"
+            f"border-radius:14px;padding:1rem 1.3rem;'>{timing_html}</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div style='margin-top:1.5rem'></div>", unsafe_allow_html=True)
+    col_retake, col_new = st.columns(2)
+    with col_retake:
+        if st.button("🔁  Retake This Quiz", use_container_width=True):
             _reset_quiz_for_retake()
             st.rerun()
-    with new_quiz_col:
-        if st.button("📝 Generate a New Quiz", type="secondary"):
+    with col_new:
+        if st.button("📝  Generate New Quiz", use_container_width=True, type="primary"):
             st.session_state.quiz_mcqs = None
             st.session_state.quiz_short_questions = None
             st.session_state.quiz_report = None

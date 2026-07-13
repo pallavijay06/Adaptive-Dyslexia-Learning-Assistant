@@ -59,7 +59,10 @@ def _current_user_id() -> int | None:
 @auth_bp.post("/register")
 def register():
     """Register a new learner account."""
+    print("[REGISTER] raw body  :", request.get_data(as_text=True))
+    print("[REGISTER] content-type:", request.content_type)
     data = request.get_json(silent=True) or {}
+    print("[REGISTER] parsed JSON:", data)
     full_name = (data.get("full_name") or data.get("name") or "").strip()
     email = (data.get("email") or "").strip()
     password = data.get("password") or ""
@@ -76,6 +79,7 @@ def register():
         full_name, email, password, confirm_password, age, grade, institution, field_of_study
     )
     if not valid:
+        print("[REGISTER 400] validation failed:", message, "| payload:", request.get_json())
         return jsonify({"success": False, "error": message}), 400
 
     try:
@@ -97,7 +101,15 @@ def register():
         logger.exception("Registration failed")
         return jsonify({"success": False, "error": "Registration failed."}), 500
 
-    return jsonify({"success": True, "user": _user_to_dict(user)}), 201
+    now = datetime.utcnow()
+    update_user_last_login(user.id, now)
+    db_session = create_login_session(user.id)
+    session[_SESSION_USER_KEY] = user.id
+    session[_SESSION_LOGIN_TIME_KEY] = now.isoformat()
+    session[_SESSION_SESSION_ID_KEY] = db_session.id
+    session.permanent = True
+
+    return jsonify({"success": True, "user": _user_to_dict(user), "session_id": db_session.id}), 201
 
 
 @auth_bp.post("/login")
@@ -114,7 +126,9 @@ def login():
         return jsonify({"success": False, "error": "Password is required."}), 400
 
     user = get_user(normalize_email(email))
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None:
+        return jsonify({"success": False, "error": "No account found."}), 404
+    if not verify_password(password, user.password_hash):
         return jsonify({"success": False, "error": "Invalid email or password."}), 401
 
     now = datetime.utcnow()

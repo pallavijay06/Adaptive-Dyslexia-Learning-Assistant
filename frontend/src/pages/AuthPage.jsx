@@ -33,13 +33,23 @@ export default function AuthPage() {
 
   return (
     <section>
-      <h2>{title}</h2>
-      <p>Use your account to continue learning.</p>
-      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
-        <button type="button" onClick={() => setMode('login')}>
+      <h2 className="auth-title">{title}</h2>
+      <p className="auth-caption">Use your account to continue learning with a calm, accessible experience.</p>
+      <div className="auth-pill-group" role="tablist" aria-label="Authentication mode">
+        <button
+          type="button"
+          className={`auth-pill-button ${mode === 'login' ? 'active' : ''}`}
+          onClick={() => setMode('login')}
+          aria-pressed={mode === 'login'}
+        >
           Log in
         </button>
-        <button type="button" onClick={() => setMode('signup')}>
+        <button
+          type="button"
+          className={`auth-pill-button ${mode === 'signup' ? 'active' : ''}`}
+          onClick={() => setMode('signup')}
+          aria-pressed={mode === 'signup'}
+        >
           Sign up
         </button>
       </div>

@@ -9,6 +9,7 @@ from typing import Optional
 from flask import Blueprint, jsonify, request
 
 from services.document_context import DocumentError, get_document_text
+from database.db import get_document as get_db_document
 from services.llm_router import (
     LLMRouterError,
     extract_vocabulary,
@@ -75,9 +76,11 @@ def chat() -> tuple[object, int]:
         try:
             document_id_for_db = int(document_id)
         except (TypeError, ValueError):
+            print("[CHAT 400] document_id not integer:", repr(document_id), "| payload:", payload)
             return jsonify({"error": "document_id must be an integer."}), 400
 
     if not message:
+        print("[CHAT 400] empty message | payload:", payload)
         return jsonify({"error": "Message cannot be empty."}), 400
 
     try:
@@ -98,6 +101,13 @@ def chat() -> tuple[object, int]:
             session_id=None,
         )
         
+        # Resolve document text: prefer explicit payload text, then DB lookup
+        # by integer ID, then fall back to the in-memory store via document_id.
+        if document_text is None and document_id_for_db is not None:
+            db_doc = get_db_document(document_id_for_db)
+            if db_doc is not None:
+                document_text = db_doc.document_text
+
         # Generate response using existing RAG system
         response = ask_document(
             message,
@@ -165,10 +175,12 @@ def chat() -> tuple[object, int]:
         }), 200
         
     except DocumentError as exc:
+        print("[CHAT 400] DocumentError:", str(exc), "| payload:", payload)
         return jsonify({"error": str(exc)}), 400
     except LLMRouterError as exc:
         return jsonify({"error": str(exc)}), 502
     except ValueError as exc:
+        print("[CHAT 400] ValueError:", str(exc), "| payload:", payload)
         return jsonify({"error": str(exc)}), 400
     except Exception as e:
         logger.exception("Unexpected error in chat endpoint: %s", str(e))

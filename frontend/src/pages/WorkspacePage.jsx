@@ -1,17 +1,21 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useDocument } from '../contexts/DocumentContext';
+import { useJourney } from '../contexts/JourneyContext';
 import SimplifiedNotesPanel from '../components/SimplifiedNotesPanel';
 import VisualLearningPanel from '../components/VisualLearningPanel';
 import ListenModePanel from '../components/ListenModePanel';
+import StemSupportPanel from '../components/StemSupportPanel';
+import ChatPanel from '../components/ChatPanel';
+import QuizPanel from '../components/QuizPanel';
 
 const TABS = [
   { id: 'notes',  label: 'Simplified Notes', icon: '📝' },
   { id: 'visual', label: 'Visual Learning',  icon: '🗺️' },
   { id: 'listen', label: 'Listen Mode',      icon: '🎧' },
-  { id: 'quiz',   label: 'Quiz',             icon: '✏️', sprint: 8 },
-  { id: 'stem',   label: 'STEM Support',     icon: '🔬', sprint: 8 },
-  { id: 'tutor',  label: 'AI Tutor',         icon: '🤖', sprint: 8 },
+  { id: 'quiz',   label: 'Quiz',             icon: '✏️' },
+  { id: 'stem',   label: 'STEM Support',     icon: '🔬' },
+  { id: 'tutor',  label: 'AI Tutor',         icon: '🤖' },
 ];
 
 function formatUploadTime(isoString) {
@@ -26,11 +30,37 @@ function formatUploadTime(isoString) {
   }
 }
 
+// Map mode names coming from the Decision Engine → workspace tab id
+const MODE_TO_TAB = {
+  'Simplified Notes':  'notes',
+  'Visual Learning':   'visual',
+  'Listen Mode':       'listen',
+  'Audio Learning':    'listen',
+  'Audio':             'listen',
+  'Quiz':              'quiz',
+  'STEM Support':      'stem',
+  'AI Tutor':          'tutor',
+  'Revision':          'notes',   // revision falls back to notes
+  'Extra Examples':    'notes',
+};
+
 export default function WorkspacePage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { activeDocument } = useDocument();
-  const [activeTab, setActiveTab] = useState(TABS[0].id);
+  const { adaptiveLearningPlan } = useJourney();
+
+  // If the journey navigated here with a target tab, honour it
+  const initialTab = (location.state?.tab && TABS.find(t => t.id === location.state.tab))
+    ? location.state.tab
+    : TABS[0].id;
+
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [simplifiedText, setSimplifiedText] = useState(null);
+
+  // True when the learner arrived here as part of a guided journey step
+  const journeyStepActive = Boolean(location.state?.journeyStep);
+  const journeyStep = location.state?.journeyStep ?? null;
 
   if (!activeDocument) {
     navigate('/upload', { replace: true });
@@ -46,14 +76,25 @@ export default function WorkspacePage() {
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <header className="workspace-header card">
         <div className="workspace-header-meta">
-          <button
-            type="button"
-            className="button button-secondary workspace-back-btn"
-            onClick={() => navigate('/dashboard')}
-            aria-label="Back to Dashboard"
-          >
-            ← Dashboard
-          </button>
+          {journeyStepActive ? (
+            <button
+              type="button"
+              className="button button-primary workspace-back-btn"
+              onClick={() => navigate('/journey', { state: { completedStep: journeyStep } })}
+              aria-label="Done — return to journey"
+            >
+              ✓ Done — Back to Journey
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="button button-secondary workspace-back-btn"
+              onClick={() => navigate('/dashboard')}
+              aria-label="Back to Dashboard"
+            >
+              ← Dashboard
+            </button>
+          )}
           <div className="workspace-doc-info">
             <h1 className="workspace-doc-title">{activeDocument.file_name}</h1>
             <div className="workspace-doc-badges">
@@ -109,18 +150,14 @@ export default function WorkspacePage() {
         {activeTab === 'listen' && (
           <ListenModePanel documentId={docId} simplifiedText={simplifiedText} />
         )}
-        {currentTab?.sprint && (
-          <div className="workspace-content card">
-            <div className="workspace-placeholder">
-              <span className="workspace-placeholder-icon" aria-hidden="true">
-                {currentTab?.icon}
-              </span>
-              <h2 className="workspace-placeholder-title">{currentTab?.label}</h2>
-              <p className="workspace-placeholder-text">
-                This learning mode will be implemented in Sprint {currentTab?.sprint}.
-              </p>
-            </div>
-          </div>
+        {activeTab === 'quiz' && (
+          <QuizPanel documentId={activeDocument.document_id} documentName={activeDocument.file_name} />
+        )}
+        {activeTab === 'stem' && (
+          <StemSupportPanel documentId={docId} />
+        )}
+        {activeTab === 'tutor' && (
+          <ChatPanel />
         )}
       </section>
     </div>

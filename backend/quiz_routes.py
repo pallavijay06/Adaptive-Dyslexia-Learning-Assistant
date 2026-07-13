@@ -26,6 +26,7 @@ from services.quiz_service import (
     generate_mcq_quiz,
     generate_personalized_quiz_feedback,
     generate_short_questions,
+    build_adaptive_quiz_context,
 )
 from services.learner_model_service import refresh_learner_profiles_from_quiz
 from services.learning_mode_effectiveness_service import finalize_learning_session_on_quiz
@@ -221,16 +222,35 @@ def generate_quiz() -> tuple[object, int]:
     document_id = payload.get("document_id")
     num_mcqs = payload.get("num_mcqs", 10)
     num_short_questions = payload.get("num_short_questions", 5)
+    user_id = payload.get("user_id")
+
+    try:
+        user_id_value = int(user_id) if user_id is not None else None
+    except (TypeError, ValueError):
+        user_id_value = None
 
     try:
         document_text = get_document_text(document_id)
         if not document_text:
             return jsonify({"success": False, "error": "Upload a document before generating a quiz."}), 400
 
+        # Invoke Decision Engine to personalise the quiz before generation
+        adaptive_ctx = build_adaptive_quiz_context(user_id_value)
+        logger.info(
+            "[AdaptiveQuiz] user=%s proficiency=%s weak=%s strong=%s",
+            user_id_value,
+            adaptive_ctx.get("proficiency_level"),
+            adaptive_ctx.get("weak_concepts"),
+            adaptive_ctx.get("strong_concepts"),
+        )
+
         question_start_time = datetime.utcnow()
-        mcqs = _stamp_question_start_times(generate_mcq_quiz(document_text, num_questions=num_mcqs), question_start_time)
+        mcqs = _stamp_question_start_times(
+            generate_mcq_quiz(document_text, num_questions=num_mcqs, adaptive_ctx=adaptive_ctx),
+            question_start_time,
+        )
         short_questions = _stamp_question_start_times(
-            generate_short_questions(document_text, num_questions=num_short_questions),
+            generate_short_questions(document_text, num_questions=num_short_questions, adaptive_ctx=adaptive_ctx),
             question_start_time,
         )
 

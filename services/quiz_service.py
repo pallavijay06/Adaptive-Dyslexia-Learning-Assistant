@@ -23,6 +23,91 @@ from services.llm_router import LLMRouterError, generate_content
 import traceback
 import inspect
 
+# ---------------------------------------------------------------------------
+# Adaptive Quiz Context — Decision Engine integration
+# ---------------------------------------------------------------------------
+
+_COMPLEXITY_TO_PROFICIENCY = {
+    "Very Simple": "Beginner",
+    "Simple": "Developing",
+    "Moderate": "Proficient",
+    "Advanced": "Advanced",
+}
+
+# Difficulty distributions keyed by proficiency level
+_DIFFICULTY_DISTRIBUTION = {
+    "Beginner":   {"Easy": 0.70, "Medium": 0.25, "Hard": 0.05},
+    "Developing": {"Easy": 0.40, "Medium": 0.40, "Hard": 0.20},
+    "Proficient": {"Easy": 0.20, "Medium": 0.40, "Hard": 0.40},
+    "Advanced":   {"Easy": 0.20, "Medium": 0.40, "Hard": 0.40},
+}
+
+
+def build_adaptive_quiz_context(user_id: int | None) -> dict:
+    """Invoke the Decision Engine and return a structured adaptive context dict.
+
+    Returns a safe default context when user_id is None or the engine fails.
+    This is the single integration point between quiz generation and the
+    Adaptive Learning pipeline — the learner profile is the single source of
+    truth for all quiz personalisation decisions.
+    """
+    default = {
+        "proficiency_level": "Developing",
+        "difficulty_distribution": _DIFFICULTY_DISTRIBUTION["Developing"],
+        "weak_concepts": [],
+        "strong_concepts": [],
+        "quiz_focus_concepts": [],
+        "revision_required": False,
+        "step_by_step": False,
+        "quiz_length": None,
+    }
+    if user_id is None:
+        return default
+
+    try:
+        from services.master_decision_engine import get_adaptive_learning_plan
+        from services.difficulty_profile_service import get_difficult_concepts
+        from database.db import get_learner_profile
+
+        # Fetch learner profile to extract document-level concept list
+        profile = get_learner_profile(user_id)
+        document_concepts: list[str] = []
+        if profile and profile.difficulty_profile:
+            dp = profile.difficulty_profile
+            concept_difficulty = dp.get("concept_difficulty") or {}
+            document_concepts = list(concept_difficulty.keys())
+
+        plan = get_adaptive_learning_plan(user_id, document_concepts)
+
+        # Map content_complexity → proficiency label
+        complexity = plan.content_instruction.content_complexity
+        proficiency = _COMPLEXITY_TO_PROFICIENCY.get(complexity, "Developing")
+
+        # Difficulty distribution from Decision Engine
+        dist = _DIFFICULTY_DISTRIBUTION[proficiency]
+
+        # Weak concepts: quiz_focus from plan + difficult concepts from profile
+        quiz_focus = list(plan.concept_instruction.quiz_focus or [])
+        difficult = [item["concept"] for item in get_difficult_concepts(user_id, limit=5)]
+        weak_concepts = _unique_preserving_order(quiz_focus + difficult)
+
+        # Strong concepts: low_priority_concepts (already mastered)
+        strong_concepts = list(plan.concept_instruction.low_priority_concepts or [])
+
+        return {
+            "proficiency_level": proficiency,
+            "difficulty_distribution": dist,
+            "weak_concepts": weak_concepts,
+            "strong_concepts": strong_concepts,
+            "quiz_focus_concepts": quiz_focus,
+            "revision_required": plan.content_instruction.revision_required,
+            "step_by_step": plan.content_instruction.step_by_step,
+            "quiz_length": plan.learning_strategy.quiz_length,
+        }
+    except Exception:
+        logger.warning("[AdaptiveQuiz] Decision Engine unavailable — using default context.", exc_info=True)
+        return default
+
 logger = logging.getLogger(__name__)
 
 _QUIZ_GENERATION_FALLBACK_USED = False
@@ -118,7 +203,7 @@ _ALLOWED_SKILLS = (
 )
 
 
-def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]]:
+def generate_mcq_quiz(text: str, num_questions: int = 10, adaptive_ctx: dict | None = None) -> list[dict[str, str]]:
     """Generate high-quality multiple choice questions from document content."""
     global _QUIZ_GENERATION_FALLBACK_USED
     if not text or not text.strip():
@@ -133,7 +218,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
         return _ensure_quiz_metadata(copy.deepcopy(cached_mcqs), "MCQ")
     logger.info("[CACHE MISS] Quiz MCQ")
 
-    prompt = _build_mcq_generation_prompt(num_questions)
+    prompt = _build_mcq_generation_prompt(num_questions, adaptive_ctx)
 
     requested_questions = num_questions
     retry_attempted = False
@@ -158,7 +243,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
             retry_num = max(1, requested_questions // 2)
             logger.info("Retry: Requested MCQs: %d", retry_num)
             # build new prompt for retry
-            retry_prompt = _build_mcq_generation_prompt(retry_num)
+            retry_prompt = _build_mcq_generation_prompt(retry_num, adaptive_ctx)
             try:
                 retry_response = _run_quiz_prompt(retry_prompt, text)
                 logger.info("[Quiz Gen] Raw LLM response (retry len=%s)", len(retry_response) if retry_response is not None else 0)
@@ -222,7 +307,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10) -> list[dict[str, str]
     return final_return
 
 
-def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str, str]]:
+def generate_short_questions(text: str, num_questions: int = 5, adaptive_ctx: dict | None = None) -> list[dict[str, str]]:
     """Generate short answer questions from document content."""
     global _QUIZ_GENERATION_FALLBACK_USED
     if not text or not text.strip():
@@ -235,7 +320,7 @@ def generate_short_questions(text: str, num_questions: int = 5) -> list[dict[str
         logger.info("[CACHE HIT] Quiz Short")
         return _ensure_quiz_metadata(copy.deepcopy(cached_questions), "Short Answer")
 
-    prompt = _build_short_answer_generation_prompt(num_questions)
+    prompt = _build_short_answer_generation_prompt(num_questions, adaptive_ctx)
 
     try:
         response = _run_quiz_prompt(prompt, text)
@@ -1252,14 +1337,79 @@ def quiz_generation_used_fallback() -> bool:
     return used
 
 
-def _build_mcq_generation_prompt(num_questions: int) -> str:
+def _build_mcq_generation_prompt(num_questions: int, adaptive_ctx: dict | None = None) -> str:
+    ctx = adaptive_ctx or {}
+    proficiency = ctx.get("proficiency_level", "Developing")
+    dist = ctx.get("difficulty_distribution") or _DIFFICULTY_DISTRIBUTION.get(proficiency, _DIFFICULTY_DISTRIBUTION["Developing"])
+    weak_concepts: list[str] = ctx.get("weak_concepts") or []
+    strong_concepts: list[str] = ctx.get("strong_concepts") or []
+    revision_required: bool = bool(ctx.get("revision_required"))
+    step_by_step: bool = bool(ctx.get("step_by_step"))
+
+    # Compute per-difficulty question counts from distribution
+    easy_n  = max(1, round(num_questions * dist.get("Easy",   0.40)))
+    hard_n  = max(0, round(num_questions * dist.get("Hard",   0.20)))
+    medium_n = max(1, num_questions - easy_n - hard_n)
+
+    # Build adaptive instruction block
+    adaptive_lines = [
+        f"LEARNER PROFICIENCY: {proficiency}.",
+        f"DIFFICULTY DISTRIBUTION: {easy_n} Easy, {medium_n} Medium, {hard_n} Hard questions.",
+    ]
+
+    if weak_concepts:
+        wc = ", ".join(weak_concepts[:5])
+        adaptive_lines.append(
+            f"WEAK CONCEPTS (generate extra questions on these, test from multiple angles): {wc}."
+        )
+    if strong_concepts:
+        sc = ", ".join(strong_concepts[:5])
+        adaptive_lines.append(
+            f"STRONG CONCEPTS (avoid basic recall; ask higher-order reasoning or application questions only): {sc}."
+        )
+    if revision_required:
+        adaptive_lines.append(
+            "REVISION MODE: Reinforce fundamentals. Use simpler wording. Build learner confidence."
+        )
+    if step_by_step:
+        adaptive_lines.append(
+            "STEP-BY-STEP: Break multi-part questions into clear, single-idea steps."
+        )
+
+    # Proficiency-specific question style guidance
+    if proficiency == "Beginner":
+        style_note = (
+            "Questions must reinforce fundamentals, use simple wording, and build confidence. "
+            "Avoid inference or multi-step reasoning."
+        )
+    elif proficiency in ("Proficient", "Advanced"):
+        style_note = (
+            "Questions must require reasoning, comparison, application, or inference. "
+            "Avoid simple recall questions. Prioritise Medium and Hard difficulty."
+        )
+    else:
+        style_note = "Mix recall, understanding, and application questions."
+
+    adaptive_block = "\n".join(adaptive_lines)
+
     return (
-        "Generate a learner-friendly multiple choice quiz from the document below. "
-        f"Create exactly {num_questions} questions. "
-        "IMPORTANT: Return exactly one JSON array and nothing else. Do NOT include any text before or after the array. "
-        "Do NOT include explanations, comments, or notes. Do NOT use Markdown, fenced code blocks, or prepend the word 'json'. "
-        "Return only a valid JSON array. Do not add any additional text outside the JSON array.\n"
-        "Start the response with '[' and end the response with ']'.\n"
+        "You are an Adaptive Assessment Engine generating a personalised quiz strictly from the document below.\n"
+        "IMPORTANT: Return exactly one JSON array and nothing else. "
+        "Do NOT include any text before or after the array. "
+        "Do NOT use Markdown, fenced code blocks, or prepend the word 'json'. "
+        "Start the response with '[' and end with ']'.\n\n"
+        f"ADAPTIVE LEARNER CONTEXT:\n{adaptive_block}\n\n"
+        f"QUESTION STYLE: {style_note}\n\n"
+        f"Generate exactly {num_questions} questions.\n"
+        "DOCUMENT AWARENESS RULES:\n"
+        "- Every question MUST reference a concept, fact, example, or explanation present in the uploaded document.\n"
+        "- Never generate generic or placeholder questions.\n"
+        "- Never invent facts not present in the document.\n\n"
+        "MCQ QUALITY RULES:\n"
+        "- Every MCQ must have exactly one correct answer and three realistic, conceptually related distractors.\n"
+        "- Distractors must be believable and educational — never use placeholder options.\n\n"
+        "VALIDATION: Before returning, reject any question that is generic, duplicated, unrelated to the document, "
+        "contains placeholder wording, or has unrealistic answer choices. Regenerate those questions.\n\n"
         "For each question, return exactly these keys:\n"
         "- question_id (Q001, Q002, Q003, unique within this quiz)\n"
         "- question_type (must be exactly \"MCQ\")\n"
@@ -1272,18 +1422,58 @@ def _build_mcq_generation_prompt(num_questions: int) -> str:
         "- question\n"
         "- options (a list of exactly 4 answer choices)\n"
         "- answer (the correct answer exactly as one of the options)\n"
-        "Balance the quiz as well as possible across Easy, Medium, and Hard difficulty. "
-        "Also vary the learning skills where the document supports them. "
-        "Do not invent unsupported facts or extra fields. "
-        "Use simple language and keep answer choices clear and short."
+        "Do not invent unsupported facts or extra fields. Use simple language and keep answer choices clear and short."
     )
 
 
-def _build_short_answer_generation_prompt(num_questions: int) -> str:
+def _build_short_answer_generation_prompt(num_questions: int, adaptive_ctx: dict | None = None) -> str:
+    ctx = adaptive_ctx or {}
+    proficiency = ctx.get("proficiency_level", "Developing")
+    dist = ctx.get("difficulty_distribution") or _DIFFICULTY_DISTRIBUTION.get(proficiency, _DIFFICULTY_DISTRIBUTION["Developing"])
+    weak_concepts: list[str] = ctx.get("weak_concepts") or []
+    strong_concepts: list[str] = ctx.get("strong_concepts") or []
+
+    easy_n  = max(1, round(num_questions * dist.get("Easy",   0.40)))
+    hard_n  = max(0, round(num_questions * dist.get("Hard",   0.20)))
+    medium_n = max(1, num_questions - easy_n - hard_n)
+
+    adaptive_lines = [
+        f"LEARNER PROFICIENCY: {proficiency}.",
+        f"DIFFICULTY DISTRIBUTION: {easy_n} Easy, {medium_n} Medium, {hard_n} Hard questions.",
+    ]
+    if weak_concepts:
+        wc = ", ".join(weak_concepts[:5])
+        adaptive_lines.append(
+            f"WEAK CONCEPTS (generate conceptual explanation/reasoning questions on these): {wc}."
+        )
+    if strong_concepts:
+        sc = ", ".join(strong_concepts[:5])
+        adaptive_lines.append(
+            f"STRONG CONCEPTS (ask application or higher-order questions, not basic definitions): {sc}."
+        )
+
+    if proficiency == "Beginner":
+        style_note = "Focus on explanation and understanding. Use simple, clear language."
+    elif proficiency in ("Proficient", "Advanced"):
+        style_note = "Focus on reasoning, application, and inference. Avoid copy-paste definitions."
+    else:
+        style_note = "Mix explanation, reasoning, and application questions."
+
+    adaptive_block = "\n".join(adaptive_lines)
+
     return (
-        "Create a list of learner-friendly short answer questions from the document below. "
-        f"Generate exactly {num_questions} questions. "
-        "Return only a valid JSON array. Do not add any additional text outside the JSON array.\n"
+        "You are an Adaptive Assessment Engine generating personalised short answer questions strictly from the document below.\n"
+        "Return only a valid JSON array. Do not add any additional text outside the JSON array.\n\n"
+        f"ADAPTIVE LEARNER CONTEXT:\n{adaptive_block}\n\n"
+        f"QUESTION STYLE: {style_note}\n\n"
+        f"Generate exactly {num_questions} questions.\n"
+        "DOCUMENT AWARENESS RULES:\n"
+        "- Every question MUST reference a concept, fact, or explanation present in the uploaded document.\n"
+        "- Never generate generic or placeholder questions.\n\n"
+        "SHORT ANSWER QUALITY RULES:\n"
+        "- Generate conceptual questions, not copy-paste definitions.\n"
+        "- Focus on explanation, reasoning, application, and understanding.\n\n"
+        "VALIDATION: Reject any question that is generic, duplicated, or unrelated to the document.\n\n"
         "For each question, return exactly these keys:\n"
         "- question_id (Q001, Q002, Q003, unique within this quiz)\n"
         "- question_type (must be exactly \"Short Answer\")\n"
@@ -1296,10 +1486,7 @@ def _build_short_answer_generation_prompt(num_questions: int) -> str:
         "- question\n"
         "- options (an empty list)\n"
         "- answer\n"
-        "Balance the quiz as well as possible across Easy, Medium, and Hard difficulty. "
-        "Also vary the learning skills where the document supports them. "
-        "Do not invent unsupported facts or extra fields. "
-        "Use simple language and keep expected answers concise."
+        "Do not invent unsupported facts or extra fields. Use simple language and keep expected answers concise."
     )
 
 

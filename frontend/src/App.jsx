@@ -21,59 +21,59 @@ import ProgressRoute from './routes/ProgressRoute';
 import WorkspacePage from './pages/WorkspacePage';
 
 function AppRoutes() {
-  const { restoreSession, loading } = useAuth();
+  const { loading } = useAuth();
 
   if (loading) {
     return <div className="card" style={{ maxWidth: '480px', margin: '4rem auto' }}>Loading session…</div>;
   }
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<RootLayout />}>
-          <Route element={<AuthLayout />}>
-            <Route path="/auth" element={<AuthPage />} />
-            <Route index element={<Navigate to="/auth" replace />} />
-          </Route>
-
-          <Route element={<AppLayout />}>
-            <Route
-              path="/dashboard"
-              element={
-                <ProtectedRoute>
-                  <DashboardPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route path="/upload" element={<ProtectedRoute><UploadRoute /></ProtectedRoute>} />
-            <Route path="/learning-selection" element={<ProtectedRoute><LearningSelectionRoute /></ProtectedRoute>} />
-            <Route path="/progress" element={<ProtectedRoute><ProgressRoute /></ProtectedRoute>} />
-          </Route>
-
-          <Route element={<WorkspaceLayout />}>
-            <Route path="/journey" element={<ProtectedRoute><JourneyRoute /></ProtectedRoute>} />
-            <Route path="/manual-learning" element={<ProtectedRoute><ManualLearningRoute /></ProtectedRoute>} />
-            <Route path="/workspace" element={<ProtectedRoute><WorkspacePage /></ProtectedRoute>} />
-          </Route>
+    <Routes>
+      <Route element={<RootLayout />}>
+        <Route element={<AuthLayout />}>
+          <Route path="/auth" element={<AuthPage />} />
+          <Route index element={<Navigate to="/auth" replace />} />
         </Route>
-      </Routes>
-    </BrowserRouter>
+
+        <Route element={<AppLayout />}>
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute>
+                <DashboardPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/upload" element={<ProtectedRoute><UploadRoute /></ProtectedRoute>} />
+          <Route path="/learning-selection" element={<ProtectedRoute><LearningSelectionRoute /></ProtectedRoute>} />
+          <Route path="/progress" element={<ProtectedRoute><ProgressRoute /></ProtectedRoute>} />
+        </Route>
+
+        <Route element={<WorkspaceLayout />}>
+          <Route path="/journey" element={<ProtectedRoute><JourneyRoute /></ProtectedRoute>} />
+          <Route path="/manual-learning" element={<ProtectedRoute><ManualLearningRoute /></ProtectedRoute>} />
+          <Route path="/workspace" element={<ProtectedRoute><WorkspacePage /></ProtectedRoute>} />
+        </Route>
+      </Route>
+    </Routes>
   );
 }
 
 function App() {
   return (
-    <ThemeProvider>
-      <AccessibilityProvider>
-        <AuthProvider>
-          <DocumentProvider>
-            <JourneyProvider>
-              <AppRoutes />
-            </JourneyProvider>
-          </DocumentProvider>
-        </AuthProvider>
-      </AccessibilityProvider>
-    </ThemeProvider>
+    <BrowserRouter>
+      <ThemeProvider>
+        <AccessibilityProvider>
+          <AuthProvider>
+            <DocumentProvider>
+              <JourneyProvider>
+                <AppRoutes />
+              </JourneyProvider>
+            </DocumentProvider>
+          </AuthProvider>
+        </AccessibilityProvider>
+      </ThemeProvider>
+    </BrowserRouter>
   );
 }
 

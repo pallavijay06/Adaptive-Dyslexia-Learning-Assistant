@@ -1,15 +1,20 @@
 import { Outlet } from 'react-router-dom';
-import AuthNav from '../components/AuthNav';
+import SidebarNav from '../components/SidebarNav';
+import ThemeToggle from '../components/ThemeToggle';
 
 export default function AppLayout() {
   return (
-    <main>
-      <header style={{ marginBottom: '1.5rem' }}>
-        <h1>Adaptive Learning Assistant</h1>
-        <p>Application shell placeholder for the React migration.</p>
-      </header>
-      <AuthNav />
-      <Outlet />
-    </main>
+    <div className="app-shell">
+      <SidebarNav />
+      <main className="app-main">
+        <header className="app-header">
+          <div>
+            <h1>LexiTutor AI</h1>
+          </div>
+          <ThemeToggle />
+        </header>
+        <Outlet />
+      </main>
+    </div>
   );
 }

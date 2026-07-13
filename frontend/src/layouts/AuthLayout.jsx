@@ -1,9 +1,10 @@
 import { Outlet } from 'react-router-dom';
+import '../styles/auth.css';
 
 export default function AuthLayout() {
   return (
-    <main>
-      <div className="card" style={{ maxWidth: '480px', margin: '4rem auto' }}>
+    <main className="auth-shell">
+      <div className="auth-card">
         <Outlet />
       </div>
     </main>
