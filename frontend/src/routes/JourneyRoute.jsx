@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useDocument } from '../contexts/DocumentContext';
 import { useJourney } from '../contexts/JourneyContext';
 import { adaptiveService } from '../services/adaptiveService';
+import SimplifiedNotesPanel from '../components/SimplifiedNotesPanel';
+import VisualLearningPanel from '../components/VisualLearningPanel';
+import ListenModePanel from '../components/ListenModePanel';
+import QuizPanel from '../components/QuizPanel';
+import StemSupportPanel from '../components/StemSupportPanel';
+import ChatPanel from '../components/ChatPanel';
 
 // ── Step action → workspace tab mapping ──────────────────────────────────────
 const MODE_TO_TAB = {
@@ -49,12 +56,8 @@ const ACTION_LABELS = {
   ai_tutor:       'AI Tutor',
 };
 
-function stepLabel(step) {
-  if (step.mode) return step.mode;
-  return ACTION_LABELS[step.action] ?? step.action;
-}
-
-function StepBadge({ action }) {
+function StepBadge({ action, mode }) {
+  const label = (action === 'learning_mode' && mode) ? mode : (ACTION_LABELS[action] ?? action);
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
@@ -62,7 +65,7 @@ function StepBadge({ action }) {
       fontSize: '0.75rem', fontWeight: 600,
       background: 'var(--color-primary, #6366f1)', color: '#fff',
     }}>
-      {ACTION_ICONS[action] ?? '📌'} {ACTION_LABELS[action] ?? action}
+      {ACTION_ICONS[action] ?? '📌'} {label}
     </span>
   );
 }
@@ -117,7 +120,18 @@ function SummaryCard({ summary }) {
   );
 }
 
-function StepCard({ step, isCurrent, isCompleted, isLastStep, onStart, onNext, onComplete, actionLoading }) {
+function StepPanel({ step, docId, docName, simplifiedText, onNotesGenerated }) {
+  const tab = resolveTab(step);
+  if (tab === 'visual') return <VisualLearningPanel documentId={docId} />;
+  if (tab === 'listen') return <ListenModePanel documentId={docId} simplifiedText={simplifiedText} />;
+  if (tab === 'quiz')   return <QuizPanel documentId={docId} documentName={docName} />;
+  if (tab === 'stem')   return <StemSupportPanel documentId={docId} />;
+  if (tab === 'tutor')  return <ChatPanel />;
+  // default: notes
+  return <SimplifiedNotesPanel documentId={docId} onNotesGenerated={onNotesGenerated} />;
+}
+
+function StepCard({ step, isCurrent, isCompleted, isLastStep, onNext, onComplete, actionLoading, docId, docName, simplifiedText, onNotesGenerated }) {
   const dimmed = !isCurrent && !isCompleted;
   return (
     <article
@@ -137,13 +151,13 @@ function StepCard({ step, isCurrent, isCompleted, isLastStep, onStart, onNext, o
         <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--color-muted, #6b7280)' }}>
           Step {step.step}
         </span>
-        <StepBadge action={step.action} />
+        <StepBadge action={step.action} mode={step.mode} />
         {isCompleted && (
           <span style={{ marginLeft: 'auto', color: '#10b981', fontWeight: 700 }}>✓ Done</span>
         )}
       </div>
 
-      {step.mode && (
+      {step.action !== 'learning_mode' && step.mode && (
         <p style={{ margin: '0.25rem 0', fontSize: '0.875rem' }}>
           <strong>Mode:</strong> {step.mode}
         </p>
@@ -158,35 +172,40 @@ function StepCard({ step, isCurrent, isCompleted, isLastStep, onStart, onNext, o
       <ConceptList label="Concepts" concepts={step.concepts} />
 
       {isCurrent && (
-        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.75rem', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => onStart(step)}
-            disabled={actionLoading}
-          >
-            Open {stepLabel(step)}
-          </button>
-          {isLastStep ? (
-            <button
-              type="button"
-              className="button button-primary"
-              onClick={() => onComplete(step)}
-              disabled={actionLoading}
-            >
-              {actionLoading ? 'Saving…' : 'Complete Learning Session'}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="button button-primary"
-              onClick={() => onNext(step)}
-              disabled={actionLoading}
-            >
-              {actionLoading ? 'Saving…' : 'Next Step →'}
-            </button>
-          )}
-        </div>
+        <>
+          {/* Inline learning panel — no navigation */}
+          <div style={{ marginTop: '1rem', borderTop: '1px solid var(--color-border, #e5e7eb)', paddingTop: '1rem' }}>
+            <StepPanel
+              step={step}
+              docId={docId}
+              docName={docName}
+              simplifiedText={simplifiedText}
+              onNotesGenerated={onNotesGenerated}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+            {isLastStep ? (
+              <button
+                type="button"
+                className="button button-primary"
+                onClick={() => onComplete(step)}
+                disabled={actionLoading}
+              >
+                {actionLoading ? 'Saving…' : 'Complete Learning Session'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="button button-primary"
+                onClick={() => onNext(step)}
+                disabled={actionLoading}
+              >
+                {actionLoading ? 'Saving…' : 'Next Step →'}
+              </button>
+            )}
+          </div>
+        </>
       )}
     </article>
   );
@@ -196,7 +215,9 @@ function StepCard({ step, isCurrent, isCompleted, isLastStep, onStart, onNext, o
 export default function JourneyRoute() {
   const navigate  = useNavigate();
   const { user }  = useAuth();
+  const { activeDocument } = useDocument();
   const { adaptiveLearningPlan, setCurrentStep, setCurrentRecommendation, setLearningPath } = useJourney();
+  const [simplifiedText, setSimplifiedText] = useState(null);
 
   const [recommendation,   setRecommendation]   = useState(null);
   const [learningPathData, setLearningPathData] = useState(null);
@@ -245,18 +266,7 @@ export default function JourneyRoute() {
     init();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── "Open Step" — navigate to the correct workspace tab ─────────────────
-  const handleStartStep = (step) => {
-    const tab = resolveTab(step);
-    navigate('/workspace', {
-      state: {
-        tab,
-        journeyStep: step.step,
-      },
-    });
-  };
-
-  // ── "Next Step" — complete current step and navigate to next activity ─────
+  // ── "Next Step" — complete current step and refresh journey in-place ──────
   const handleNextStep = async (step) => {
     setActionLoading(true);
     setError('');
@@ -267,14 +277,7 @@ export default function JourneyRoute() {
         setJourneyComplete(true);
         return;
       }
-      // Refresh state so the next step becomes active, then navigate to it
       await fetchJourneyState();
-      const nextStep = nextData.step;
-      if (nextStep) {
-        navigate('/workspace', {
-          state: { tab: resolveTab(nextStep), journeyStep: nextStep.step },
-        });
-      }
     } catch (err) {
       setError(err.message || 'Could not advance to the next step.');
     } finally {
@@ -330,6 +333,8 @@ export default function JourneyRoute() {
   const currentStepNum = recommendation?.current_step  ?? learningPathData?.current_step  ?? 1;
   const completedSteps = recommendation?.completed_steps ?? learningPathData?.completed_steps ?? [];
   const totalSteps     = recommendation?.total_steps    ?? flow.length;
+  const docId   = activeDocument?.id ?? activeDocument?.document_id;
+  const docName = activeDocument?.file_name ?? '';
 
   return (
     <div style={{ maxWidth: '760px', margin: '0 auto' }}>
@@ -381,10 +386,13 @@ export default function JourneyRoute() {
                 isCurrent={step.step === currentStepNum}
                 isCompleted={completedSteps.includes(step.step)}
                 isLastStep={step.step === totalSteps}
-                onStart={handleStartStep}
                 onNext={handleNextStep}
                 onComplete={handleCompleteSession}
                 actionLoading={actionLoading}
+                docId={docId}
+                docName={docName}
+                simplifiedText={simplifiedText}
+                onNotesGenerated={setSimplifiedText}
               />
             ))}
           </div>
