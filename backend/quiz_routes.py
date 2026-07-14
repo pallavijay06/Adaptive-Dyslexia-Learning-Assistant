@@ -20,6 +20,7 @@ from services.document_context import DocumentError, get_document_text
 from services.llm_router import LLMRouterError
 from services.progress_dashboard_service import calculate_quiz_comprehension_score
 from services.quiz_service import (
+    combine_quiz_report_with_short_answers,
     evaluate_mcq,
     evaluate_short_answer,
     evaluate_short_answer_locally,
@@ -372,6 +373,137 @@ def submit_quiz() -> tuple[object, int]:
                 ] if total else [],
             },
         }), 200
+
+
+@quiz_bp.post("/quiz/submit-full")
+def submit_quiz_full() -> tuple[object, int]:
+    """Submit MCQ + short answers together and receive a single merged report.
+
+    This is the canonical endpoint for the React frontend.  It calls the same
+    backend evaluation pipeline used by Streamlit so React never needs to
+    compute scores, merge results, or generate feedback itself.
+    """
+    payload = request.get_json(silent=True) or {}
+    mcq_answers = payload.get("mcq_answers")          # list[str]
+    mcq_data = payload.get("mcq_data")                # list[dict]
+    short_answers = payload.get("short_answers")      # list[str]
+    short_data = payload.get("short_data")            # list[dict]
+    question_timings = payload.get("question_timings")
+    user_id = payload.get("user_id")
+
+    if not isinstance(mcq_answers, list):
+        return jsonify({"success": False, "error": "mcq_answers must be a list."}), 400
+    if not isinstance(mcq_data, list):
+        return jsonify({"success": False, "error": "mcq_data must be a list."}), 400
+    if not isinstance(short_answers, list):
+        return jsonify({"success": False, "error": "short_answers must be a list."}), 400
+    if not isinstance(short_data, list):
+        return jsonify({"success": False, "error": "short_data must be a list."}), 400
+
+    try:
+        user_id_value = int(user_id) if user_id is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "user_id must be an integer when provided."}), 400
+
+    try:
+        # ── 1. Evaluate MCQs ─────────────────────────────────────────────────
+        mcq_report = evaluate_mcq(mcq_answers, mcq_data) if mcq_data else {
+            "score": 0, "total": 0, "percentage": 0,
+            "correct_answers": 0, "incorrect_answers": 0,
+            "evaluations": [], "question_results": [],
+            "strengths": "", "weaknesses": "", "recommendations": "",
+        }
+
+        # ── 2. Evaluate short answers ────────────────────────────────────────
+        short_feedback = []
+        for i, q in enumerate(short_data):
+            student_ans = short_answers[i] if i < len(short_answers) else ""
+            expected_ans = str(q.get("answer", "")).strip()
+            question_text = str(q.get("question", "")).strip()
+            try:
+                if str(student_ans or "").strip():
+                    ev = evaluate_short_answer(student_ans, expected_ans, question_text=question_text)
+                else:
+                    ev = evaluate_short_answer_locally(student_ans, expected_ans, question_text=question_text)
+            except Exception:
+                logger.exception("[submit-full] Short answer %d evaluation failed", i)
+                ev = evaluate_short_answer_locally(student_ans, expected_ans, question_text=question_text)
+            short_feedback.append({
+                "question": question_text,
+                "student_answer": str(student_ans or ""),
+                "expected_answer": expected_ans,
+                "evaluation": ev,
+            })
+
+        # ── 3. Merge into one report (same function Streamlit uses) ──────────
+        merged_report = combine_quiz_report_with_short_answers(mcq_report, short_feedback)
+
+        # ── 4. Comprehension score + personalized feedback ───────────────────
+        total_questions = merged_report.get("total", 0)
+        quiz_accuracy = float(merged_report.get("percentage") or 0.0)
+        weak_concepts = merged_report.get("wrong_concepts") if isinstance(merged_report.get("wrong_concepts"), list) else []
+
+        from services.progress_dashboard_service import calculate_quiz_comprehension_score
+        comprehension_score = calculate_quiz_comprehension_score(
+            quiz_accuracy=quiz_accuracy,
+            conceptual_score=quiz_accuracy,
+            support_count=0,
+            total_questions=total_questions,
+            first_attempt_success_rate=quiz_accuracy,
+            avg_time_per_question=0.0,
+        ) if total_questions else 0.0
+
+        personalized = generate_personalized_quiz_feedback(
+            quiz_accuracy=quiz_accuracy,
+            conceptual_score=quiz_accuracy,
+            avg_response_time=0.0,
+            support_count=0,
+            total_questions=total_questions,
+            first_attempt_success_rate=quiz_accuracy,
+            weak_concepts=weak_concepts,
+        )
+
+        merged_report["comprehension_score"] = comprehension_score
+        merged_report["feedback_strengths"] = personalized.get("feedback_strengths", "")
+        merged_report["feedback_weaknesses"] = personalized.get("feedback_weaknesses", "")
+        merged_report["feedback_recommended_concepts"] = personalized.get("feedback_recommended_concepts", "")
+        merged_report["feedback_suggested_learning_mode"] = personalized.get("feedback_suggested_learning_mode", "")
+
+        # ── 5. Persist timing + learner model (same as /quiz/submit) ─────────
+        try:
+            _persist_api_question_timings(user_id_value, mcq_data + short_data, merged_report, question_timings)
+        except Exception:
+            logger.exception("[submit-full] Failed to save timing data")
+
+        if user_id_value is not None:
+            try:
+                from services.behavior_tracking_service import track_quiz_completed
+                track_quiz_completed(
+                    user_id=user_id_value,
+                    metadata={"quiz_accuracy": quiz_accuracy, "score": quiz_accuracy, "mode": "Quiz"},
+                )
+                profile_result = refresh_learner_profiles_from_quiz(
+                    user_id_value,
+                    quiz_evaluation=merged_report,
+                    short_answer_evaluations=short_feedback,
+                )
+                comp = profile_result.get("comprehension", {}).get("comprehension_score") or comprehension_score
+                finalize_learning_session_on_quiz(
+                    user_id_value,
+                    quiz_accuracy=quiz_accuracy,
+                    comprehension_score=float(comp),
+                    document_id=payload.get("document_id"),
+                    document_name=payload.get("document_name"),
+                    behavior_events=get_behavior_events(user_id_value, limit=500),
+                )
+            except Exception:
+                logger.exception("[submit-full] Failed to persist learner profile")
+
+        return jsonify({"success": True, "report": merged_report}), 200
+
+    except Exception:
+        logger.exception("[submit-full] Unexpected error")
+        return jsonify({"success": False, "error": "Unexpected server error."}), 500
 
 
 @quiz_bp.post("/quiz/evaluate-short")

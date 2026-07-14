@@ -1300,20 +1300,49 @@ def _parse_json_response(text: str) -> Any:
 
 
 
+def _find_balanced_json_block(text: str, open_char: str, close_char: str) -> str:
+    start_index = text.find(open_char)
+    while start_index != -1:
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start_index, len(text)):
+            char = text[index]
+            if escape:
+                escape = False
+                continue
+            if char == "\\":
+                if in_string:
+                    escape = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char == open_char:
+                depth += 1
+            elif char == close_char:
+                depth -= 1
+                if depth == 0:
+                    return text[start_index : index + 1]
+        start_index = text.find(open_char, start_index + 1)
+    return ""
+
+
 def _extract_json_payload(text: str) -> str:
     if not text:
         return ""
 
     text = text.strip()
 
-    # Attempt to locate the first JSON array or object block.
-    array_match = re.search(r"(\[\s*\{.*\}\s*\])", text, re.S)
-    if array_match:
-        return array_match.group(1)
+    payload = _find_balanced_json_block(text, "[", "]")
+    if payload:
+        return payload
 
-    object_match = re.search(r"(\{.*\})", text, re.S)
-    if object_match:
-        return object_match.group(1)
+    payload = _find_balanced_json_block(text, "{", "}")
+    if payload:
+        return payload
 
     # Fallback to the first bracketed JSON content.
     start = text.find("[")

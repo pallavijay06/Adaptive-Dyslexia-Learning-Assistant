@@ -1,35 +1,42 @@
-import { useState, useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { quizService } from '../services/quizService';
 
 const STATE = { IDLE: 'idle', LOADING: 'loading', ACTIVE: 'active', SUBMITTING: 'submitting', RESULTS: 'results' };
-const PHASE = { MCQ: 'mcq', SHORT: 'short' };
 
 export default function QuizPanel({ documentId, documentName }) {
   const { user } = useAuth();
   const [state, setState] = useState(STATE.IDLE);
-  const [phase, setPhase] = useState(PHASE.MCQ);
-  const [mcqs, setMcqs] = useState([]);
-  const [shortQuestions, setShortQuestions] = useState([]);
-  const [mcqAnswers, setMcqAnswers] = useState({});
-  const [shortAnswers, setShortAnswers] = useState({});
+  const [questions, setQuestions] = useState([]);
+  const [answers, setAnswers] = useState([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
   const [report, setReport] = useState(null);
+  const [hints, setHints] = useState({});
+  const [hintLoading, setHintLoading] = useState({});
+  const [hintError, setHintError] = useState({});
   const [error, setError] = useState('');
-  const quizStartTime = useRef(null);
 
+  const startTimesRef = useRef({});
+  const userId = user?.id ?? null;
+
+  // ── Generate ──────────────────────────────────────────────────────────────
   const handleGenerate = async () => {
     setError('');
     setState(STATE.LOADING);
     try {
-      const data = await quizService.generateQuiz({ documentId });
+      const data = await quizService.generateQuiz({ documentId, userId, numMcqs: 4, numShortQuestions: 4 });
       if (!data.success) throw new Error(data.error || 'Quiz generation failed.');
-      setMcqs(data.mcqs || []);
-      setShortQuestions(data.short_questions || []);
-      setMcqAnswers({});
-      setShortAnswers({});
+      const mcqs = (data.mcqs || []).map((q) => ({ ...q, _type: 'MCQ' }));
+      const shorts = (data.short_questions || []).map((q) => ({ ...q, _type: 'Short Answer' }));
+      const unified = [...mcqs, ...shorts];
+      setQuestions(unified);
+      setAnswers(new Array(unified.length).fill(''));
+      setCurrentIndex(0);
       setReport(null);
-      setPhase(PHASE.MCQ);
-      quizStartTime.current = Date.now();
+      setHints({});
+      setHintLoading({});
+      setHintError({});
+      startTimesRef.current = {};
       setState(STATE.ACTIVE);
     } catch (err) {
       setError(err.message || 'Could not generate quiz.');
@@ -37,63 +44,80 @@ export default function QuizPanel({ documentId, documentName }) {
     }
   };
 
-  const handleNextToShort = () => {
-    setPhase(PHASE.SHORT);
+  // ── Navigation ────────────────────────────────────────────────────────────
+  const goTo = (index) => {
+    if (startTimesRef.current[index] === undefined) startTimesRef.current[index] = Date.now();
+    setCurrentIndex(index);
   };
 
-  const handleBackToMcq = () => {
-    setError('');
-    setPhase(PHASE.MCQ);
+  if (startTimesRef.current[currentIndex] === undefined) {
+    startTimesRef.current[currentIndex] = Date.now();
+  }
+
+  // ── Answer change ─────────────────────────────────────────────────────────
+  const setAnswer = (index, value) => {
+    setAnswers((prev) => { const next = [...prev]; next[index] = value; return next; });
   };
 
+  // ── Hint ──────────────────────────────────────────────────────────────────
+  const handleHint = async (index) => {
+    if (hints[index]) return;
+    const q = questions[index];
+    setHintLoading((prev) => ({ ...prev, [index]: true }));
+    setHintError((prev) => ({ ...prev, [index]: '' }));
+    try {
+      const data = await quizService.getHint({
+        question: q.question,
+        correctAnswer: q.answer,
+        concept: q.concept || null,
+        questionType: q._type,
+      });
+      if (data?.success && data.hint) {
+        setHints((prev) => ({ ...prev, [index]: data.hint }));
+        quizService.logSupportEvent({ userId, questionId: q.question_id || `q_${index}`, supportType: 'hint', quizId: null });
+      } else {
+        setHintError((prev) => ({ ...prev, [index]: data?.error || 'Hint unavailable. Please try again.' }));
+      }
+    } catch {
+      setHintError((prev) => ({ ...prev, [index]: 'Could not load hint. Please try again.' }));
+    } finally {
+      setHintLoading((prev) => ({ ...prev, [index]: false }));
+    }
+  };
+
+  // ── Submit — sends everything to backend, renders what backend returns ────
   const handleSubmit = async () => {
     setState(STATE.SUBMITTING);
+    setError('');
     try {
-      // Step 1: submit MCQ answers → get MCQ report
-      const answers = mcqs.map((_, i) => mcqAnswers[i] ?? null);
-      const mcqData = await quizService.submitQuiz({
-        answers,
-        quizData: mcqs,
-        userId: user?.id,
+      const now = Date.now();
+      const mcqs = questions.filter((q) => q._type === 'MCQ');
+      const shorts = questions.filter((q) => q._type === 'Short Answer');
+      const mcqAnswers = mcqs.map((q) => answers[questions.indexOf(q)] || '');
+      const shortAnswers = shorts.map((q) => answers[questions.indexOf(q)] || '');
+
+      const questionTimings = questions.map((q, i) => {
+        const startMs = startTimesRef.current[i] ?? now;
+        return {
+          question_id: q.question_id || `q_${i}`,
+          question_start_time: new Date(startMs).toISOString(),
+          time_taken_seconds: Math.round((now - startMs) / 1000),
+        };
+      });
+
+      const data = await quizService.submitFull({
+        mcqAnswers,
+        mcqData: mcqs,
+        shortAnswers,
+        shortData: shorts,
+        userId,
         documentId,
         documentName,
+        questionTimings,
       });
-      if (!mcqData.success) throw new Error(mcqData.error || 'Submission failed.');
 
-      const mcqReport = mcqData.report;
-
-      // Step 2: evaluate each short answer in parallel
-      const shortEvals = await Promise.all(
-        shortQuestions.map((q, i) =>
-          quizService.evaluateShortAnswer({
-            studentAnswer: shortAnswers[i] || '',
-            expectedAnswer: q.answer || '',
-          }).then((res) => ({
-            question: q.question,
-            expected_answer: q.answer || '',
-            student_answer: shortAnswers[i] || '',
-            evaluation: res.success ? res.evaluation : {},
-            ...q,
-          })).catch(() => ({
-            question: q.question,
-            expected_answer: q.answer || '',
-            student_answer: shortAnswers[i] || '',
-            evaluation: {},
-            ...q,
-          }))
-        )
-      );
-
-      // Step 3: merge short-answer evaluations into the MCQ report client-side
-      // Mirrors the logic of combine_quiz_report_with_short_answers in quiz_service.py
-      const merged = _mergeShortAnswers(mcqReport, shortEvals);
-
-      // Step 4: attach time taken
-      if (quizStartTime.current) {
-        merged.time_taken_seconds = Math.round((Date.now() - quizStartTime.current) / 1000);
-      }
-
-      setReport(merged);
+      if (!data.success) throw new Error(data.error || 'Quiz submission failed.');
+      setReport(data.report);
       setState(STATE.RESULTS);
     } catch (err) {
       setError(err.message || 'Could not submit quiz.');
@@ -101,20 +125,22 @@ export default function QuizPanel({ documentId, documentName }) {
     }
   };
 
+  // ── Retake ────────────────────────────────────────────────────────────────
   const handleRetake = () => {
+    setAnswers(new Array(questions.length).fill(''));
+    setCurrentIndex(0);
     setReport(null);
-    setMcqAnswers({});
-    setShortAnswers({});
-    setPhase(PHASE.MCQ);
-    quizStartTime.current = Date.now();
+    setHints({});
+    setHintLoading({});
+    setHintError({});
+    startTimesRef.current = {};
     setState(STATE.ACTIVE);
   };
 
   const handleNewQuiz = () => {
-    setMcqs([]);
-    setShortQuestions([]);
+    setQuestions([]);
+    setAnswers([]);
     setReport(null);
-    quizStartTime.current = null;
     setState(STATE.IDLE);
   };
 
@@ -148,7 +174,7 @@ export default function QuizPanel({ documentId, documentName }) {
     );
   }
 
-  // ── Submitting / Evaluating ───────────────────────────────────────────────
+  // ── Submitting ────────────────────────────────────────────────────────────
   if (state === STATE.SUBMITTING) {
     return (
       <div className="workspace-content card">
@@ -161,103 +187,99 @@ export default function QuizPanel({ documentId, documentName }) {
     );
   }
 
-  // ── Results ───────────────────────────────────────────────────────────────
+  // ── Results — pure display of backend report fields ───────────────────────
   if (state === STATE.RESULTS && report) {
-    const pct = report.percentage ?? Math.round(((report.score ?? 0) / (report.total || 1)) * 100);
-    const notAnswered = (report.question_results || []).filter((r) => r.not_answered).length;
-    const timeTaken = report.time_taken_seconds;
+    const pct = report.percentage ?? 0;
+    const evaluations = report.evaluations || [];
 
     return (
       <div className="workspace-content card quiz-results">
         <h2>Quiz Results</h2>
 
-        {/* Score summary */}
+        {/* Score headline — from backend */}
         <p className="quiz-score-headline">
-          {report.score ?? 0} / {report.total ?? mcqs.length} correct — {pct}%
+          {report.score ?? 0} / {report.total ?? questions.length} correct — {pct}%
         </p>
-        {notAnswered > 0 && (
-          <p className="quiz-not-answered-note">{notAnswered} question{notAnswered > 1 ? 's' : ''} not answered</p>
-        )}
-        {timeTaken != null && (
-          <p className="quiz-time-note">Time taken: {_formatTime(timeTaken)}</p>
-        )}
 
-        {/* Per-question feedback */}
-        {(report.evaluations || []).length > 0 && (
+        {/* Comprehension score — from backend */}
+        {report.comprehension_score != null && (
           <div className="quiz-section">
-            <h3>Question Feedback</h3>
-            {report.evaluations.map((ev, i) => (
-              <div key={i} className={`quiz-feedback-card quiz-feedback-card--${_resultClass(ev.result)}`}>
-                <p className="quiz-feedback-question"><strong>Q{i + 1}.</strong> {ev.question}</p>
-                <p className="quiz-feedback-your-answer">
-                  <span className="quiz-feedback-label">Your answer:</span> {ev.your_answer || ev.student_answer || 'Not Answered'}
-                </p>
-                <p className="quiz-feedback-correct-answer">
-                  <span className="quiz-feedback-label">Correct answer:</span> {ev.correct_answer}
-                </p>
-                <p className={`quiz-feedback-result quiz-feedback-result--${_resultClass(ev.result)}`}>
-                  {_resultIcon(ev.result)} {ev.result}
-                </p>
-                {ev.explanation && (
-                  <p className="quiz-feedback-explanation">{ev.explanation}</p>
-                )}
-                {ev.improvement_tip && (
-                  <p className="quiz-feedback-tip">💡 {ev.improvement_tip}</p>
-                )}
-              </div>
-            ))}
+            <h3>Comprehension Score</h3>
+            <p>{report.comprehension_score}%</p>
           </div>
         )}
 
-        {/* Concept performance */}
-        {report.assessment_analytics?.concept_accuracy &&
-          Object.keys(report.assessment_analytics.concept_accuracy).length > 0 && (
+        {/* Personalized feedback — from backend generate_personalized_quiz_feedback() */}
+        {report.feedback_strengths && (
           <div className="quiz-section">
-            <h3>Concept Performance</h3>
-            <ul className="quiz-concept-list">
-              {Object.entries(report.assessment_analytics.concept_accuracy).map(([concept, data]) => (
-                <li key={concept} className="quiz-concept-item">
-                  <span className="quiz-concept-name">{concept}</span>
-                  <span className="quiz-concept-score">{data.correct}/{data.total} ({data.accuracy}%)</span>
-                </li>
-              ))}
-            </ul>
+            <h3>💪 Strengths</h3>
+            <p>{report.feedback_strengths}</p>
+          </div>
+        )}
+        {report.feedback_weaknesses && (
+          <div className="quiz-section">
+            <h3>🎯 Areas to Improve</h3>
+            <p>{report.feedback_weaknesses}</p>
+          </div>
+        )}
+        {report.feedback_recommended_concepts && (
+          <div className="quiz-section">
+            <h3>📚 Recommended Concepts</h3>
+            <p>{report.feedback_recommended_concepts}</p>
+          </div>
+        )}
+        {report.feedback_suggested_learning_mode && (
+          <div className="quiz-section">
+            <h3>💡 Suggested Learning Mode</h3>
+            <p>{report.feedback_suggested_learning_mode}</p>
           </div>
         )}
 
-        {/* Strengths */}
-        {report.strengths && (
+        {/* General strengths/weaknesses/recommendations — from backend evaluate_mcq() */}
+        {report.strengths && !report.feedback_strengths && (
           <div className="quiz-section">
             <h3>Strengths</h3>
             <p>{report.strengths}</p>
           </div>
         )}
-
-        {/* Areas to improve */}
-        {report.weaknesses && (
+        {report.weaknesses && !report.feedback_weaknesses && (
           <div className="quiz-section">
             <h3>Areas to Improve</h3>
             <p>{report.weaknesses}</p>
           </div>
         )}
-
-        {/* Recommendations */}
-        {report.recommendations && (
+        {report.recommendations && !report.feedback_recommended_concepts && (
           <div className="quiz-section">
             <h3>Recommendations</h3>
             <p>{report.recommendations}</p>
           </div>
         )}
 
-        {/* Adaptive insights */}
-        {(report.assessment_analytics?.assessment_insights || []).length > 0 && (
+        {/* Per-question breakdown — from backend evaluations[] */}
+        {evaluations.length > 0 && (
           <div className="quiz-section">
-            <h3>Learning Insights</h3>
-            <ul>
-              {report.assessment_analytics.assessment_insights.map((insight, i) => (
-                <li key={i}>{insight}</li>
-              ))}
-            </ul>
+            <h3>Question Breakdown</h3>
+            {evaluations.map((ev, i) => {
+              const result = ev.result || 'Incorrect';
+              const isCorrect = result === 'Correct';
+              const isPartial = result === 'Partially Correct';
+              return (
+                <div
+                  key={i}
+                  className={`quiz-eval-item${isCorrect ? ' quiz-eval-correct' : isPartial ? ' quiz-eval-partial' : ' quiz-eval-wrong'}`}
+                >
+                  <p className="quiz-eval-q"><strong>Q{i + 1}:</strong> {ev.question}</p>
+                  <p className="quiz-eval-result">
+                    {isCorrect ? '✅ Correct' : isPartial ? '⚠️ Partially Correct' : '❌ Incorrect'}
+                  </p>
+                  {ev.correct_answer && (
+                    <p className="quiz-eval-answer"><strong>Correct answer:</strong> {ev.correct_answer}</p>
+                  )}
+                  {ev.explanation && <p className="quiz-eval-feedback">{ev.explanation}</p>}
+                  {ev.improvement_tip && <p className="quiz-eval-tip"><em>{ev.improvement_tip}</em></p>}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -269,194 +291,111 @@ export default function QuizPanel({ documentId, documentName }) {
     );
   }
 
-  // ── Active (Phase 1: MCQ) ─────────────────────────────────────────────────
-  if (state === STATE.ACTIVE && phase === PHASE.MCQ) {
-    return (
-      <div className="workspace-content card quiz-active">
-        <div className="quiz-phase-header">
-          <span className="quiz-phase-label">Part 1 of 2 – Multiple Choice</span>
-          <div className="quiz-phase-track">
-            <div className="quiz-phase-track-fill quiz-phase-track-fill--half" />
-          </div>
-        </div>
+  // ── Active ────────────────────────────────────────────────────────────────
+  const total = questions.length;
+  const q = questions[currentIndex];
+  if (!q) return null;
 
-        <section className="quiz-section">
-          <h3>Multiple Choice</h3>
-          {mcqs.map((q, qi) => (
-            <div key={qi} className="quiz-question">
-              <p className="quiz-question-text"><strong>Q{qi + 1}.</strong> {q.question}</p>
-              <ul className="quiz-options">
-                {(q.options || []).map((opt, oi) => (
-                  <li key={oi}>
-                    <label className={`quiz-option${mcqAnswers[qi] === oi ? ' quiz-option--selected' : ''}`}>
-                      <input
-                        type="radio"
-                        name={`mcq-${qi}`}
-                        value={oi}
-                        checked={mcqAnswers[qi] === oi}
-                        onChange={() => setMcqAnswers((prev) => ({ ...prev, [qi]: oi }))}
-                      />
-                      {opt}
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </section>
+  const answered = answers.filter((a) => a && a.trim()).length;
+  const progressPct = total > 0 ? Math.round((answered / total) * 100) : 0;
+  const isMCQ = q._type === 'MCQ';
+  const currentAnswer = answers[currentIndex] || '';
 
-        {error && <p className="quiz-error">{error}</p>}
-
-        <div className="quiz-actions quiz-actions--end">
-          <button type="button" className="button button-primary" onClick={handleNextToShort}>
-            Next →
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Active (Phase 2: Short Answer) ────────────────────────────────────────
   return (
     <div className="workspace-content card quiz-active">
+      {/* Progress */}
       <div className="quiz-phase-header">
-        <span className="quiz-phase-label">Part 2 of 2 – Short Answer</span>
+        <span className="quiz-phase-label">
+          Question {currentIndex + 1} of {total} — {answered} answered ({progressPct}%)
+        </span>
         <div className="quiz-phase-track">
-          <div className="quiz-phase-track-fill quiz-phase-track-fill--full" />
+          <div className="quiz-phase-track-fill" style={{ width: `${progressPct}%` }} />
         </div>
       </div>
 
-      <section className="quiz-section">
-        <h3>Short Answer</h3>
-        {shortQuestions.map((q, qi) => (
-          <div key={qi} className="quiz-question">
-            <p className="quiz-question-text"><strong>Q{qi + 1}.</strong> {q.question}</p>
-            <textarea
-              className="quiz-short-input"
-              rows={3}
-              placeholder="Your answer…"
-              value={shortAnswers[qi] || ''}
-              onChange={(e) => setShortAnswers((prev) => ({ ...prev, [qi]: e.target.value }))}
-            />
+      {/* Question card */}
+      <div className="quiz-question">
+        <span className="quiz-type-badge">{isMCQ ? 'Multiple Choice' : 'Short Answer'}</span>
+        <p className="quiz-question-text">
+          <strong>Q{currentIndex + 1}.</strong> {q.question}
+        </p>
+
+        {isMCQ ? (
+          <ul className="quiz-options">
+            {(q.options || []).map((opt, oi) => (
+              <li key={oi}>
+                <label className={`quiz-option${currentAnswer === opt ? ' quiz-option--selected' : ''}`}>
+                  <input
+                    type="radio"
+                    name={`q-${currentIndex}`}
+                    value={opt}
+                    checked={currentAnswer === opt}
+                    onChange={() => setAnswer(currentIndex, opt)}
+                  />
+                  {opt}
+                </label>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <textarea
+            className="quiz-short-input"
+            rows={3}
+            placeholder="Your answer…"
+            value={currentAnswer}
+            onChange={(e) => setAnswer(currentIndex, e.target.value)}
+          />
+        )}
+      </div>
+
+      {/* Hint */}
+      <div className="quiz-hint-row">
+        {!hints[currentIndex] && (
+          <button
+            type="button"
+            className="button button-secondary quiz-hint-btn"
+            onClick={() => handleHint(currentIndex)}
+            disabled={hintLoading[currentIndex]}
+          >
+            {hintLoading[currentIndex] ? 'Getting hint…' : '💡 Show Hint'}
+          </button>
+        )}
+        {hintError[currentIndex] && <p className="quiz-hint-error">{hintError[currentIndex]}</p>}
+        {hints[currentIndex] && (
+          <div className="quiz-hint-box">
+            <strong>💡 Hint:</strong> {hints[currentIndex]}
           </div>
-        ))}
-      </section>
+        )}
+      </div>
 
       {error && <p className="quiz-error">{error}</p>}
 
+      {/* Navigation */}
       <div className="quiz-actions quiz-actions--between">
-        <button type="button" className="button button-secondary" onClick={handleBackToMcq}>
-          ← Back
-        </button>
         <button
           type="button"
-          className="button button-primary"
-          onClick={handleSubmit}
-          disabled={state === STATE.SUBMITTING}
+          className="button button-secondary"
+          onClick={() => goTo(currentIndex - 1)}
+          disabled={currentIndex === 0}
         >
-          Submit Quiz
+          ◀ Previous
         </button>
+
+        {currentIndex < total - 1 ? (
+          <button type="button" className="button button-primary" onClick={() => goTo(currentIndex + 1)}>
+            Next ▶
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="button button-primary"
+            onClick={handleSubmit}
+            disabled={state === STATE.SUBMITTING}
+          >
+            {state === STATE.SUBMITTING ? 'Submitting…' : '✅ Submit Quiz'}
+          </button>
+        )}
       </div>
     </div>
   );
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function _resultClass(result) {
-  if (result === 'Correct') return 'correct';
-  if (result === 'Not Answered') return 'not-answered';
-  if (result === 'Partially Correct') return 'partial';
-  return 'incorrect';
-}
-
-function _resultIcon(result) {
-  if (result === 'Correct') return '✅';
-  if (result === 'Not Answered') return '⬜';
-  if (result === 'Partially Correct') return '🟡';
-  return '❌';
-}
-
-function _formatTime(seconds) {
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return s > 0 ? `${m}m ${s}s` : `${m}m`;
-}
-
-/**
- * Client-side mirror of combine_quiz_report_with_short_answers (quiz_service.py).
- * Merges short-answer evaluations into the MCQ report returned by /quiz/submit.
- */
-function _mergeShortAnswers(mcqReport, shortFeedback) {
-  const report = { ...mcqReport };
-  const evaluations = [...(report.evaluations || [])];
-  const questionResults = [...(report.question_results || [])];
-  let correctCount = report.correct_answers ?? report.score ?? 0;
-  let totalCount = report.total ?? 0;
-  let weakCount = report.incorrect_answers ?? Math.max(totalCount - correctCount, 0);
-
-  shortFeedback.forEach((item, idx) => {
-    const evaluation = item.evaluation || {};
-    const score = parseInt(evaluation.score ?? 0, 10);
-    const maxScore = Math.max(parseInt(evaluation.max_score ?? 5, 10), 1);
-    const question = item.question || '';
-    const expectedAnswer = item.expected_answer || '';
-    const studentAnswer = item.student_answer || '';
-    const rawResult = (evaluation.result || '').trim();
-    const result = ['Correct', 'Partially Correct', 'Incorrect'].includes(rawResult)
-      ? rawResult
-      : score >= maxScore * 0.8 ? 'Correct' : score >= maxScore * 0.4 ? 'Partially Correct' : 'Incorrect';
-
-    totalCount += 1;
-    if (result === 'Correct') {
-      correctCount += 1;
-    } else {
-      weakCount += 1;
-    }
-
-    evaluations.push({
-      question,
-      your_answer: studentAnswer || 'No answer',
-      correct_answer: expectedAnswer,
-      result,
-      explanation: evaluation.feedback || evaluation.local_explanation || '',
-      feedback: evaluation.feedback || '',
-      improvement_tip: evaluation.improvement_tip || '',
-      concept: evaluation.concept || '',
-      difficulty: item.difficulty || '',
-      skill: item.skill || '',
-      is_correct: result === 'Correct',
-      not_answered: !studentAnswer,
-      identified_keywords: evaluation.identified_keywords || [],
-      missing_keywords: evaluation.missing_keywords || [],
-    });
-
-    questionResults.push({
-      question_id: item.question_id || `SA${String(idx + 1).padStart(3, '0')}`,
-      question_type: 'Short Answer',
-      concept: evaluation.concept || item.concept || '',
-      difficulty: item.difficulty || '',
-      skill: item.skill || '',
-      question,
-      your_answer: studentAnswer || 'No answer',
-      student_answer: studentAnswer,
-      correct_answer: expectedAnswer,
-      is_correct: result === 'Correct',
-      not_answered: !studentAnswer,
-      score,
-      feedback: evaluation.feedback || '',
-      improvement_tip: evaluation.improvement_tip || '',
-      local_explanation: evaluation.local_explanation || '',
-    });
-  });
-
-  report.evaluations = evaluations;
-  report.score = correctCount;
-  report.total = totalCount;
-  report.percentage = totalCount > 0 ? Math.round((correctCount / totalCount) * 100) : 0;
-  report.correct_answers = correctCount;
-  report.incorrect_answers = weakCount;
-  report.question_results = questionResults;
-  return report;
 }
