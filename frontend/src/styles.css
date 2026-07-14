@@ -1732,6 +1732,14 @@ main {
   gap: 0.75rem;
 }
 
+.stem-diagram-image {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 0.75rem 0 1rem;
+  display: block;
+}
+
 .stem-highlight-card {
   padding: 0.85rem 0.95rem;
   border-radius: 14px;
@@ -1820,6 +1828,62 @@ main {
 
 .stem-explanation-lines p {
   margin: 0.25rem 0 0;
+}
+
+.stem-tab-nav {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 4px 12px var(--shadow);
+}
+
+.stem-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: none;
+  border: none;
+  border-radius: 10px;
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.stem-tab-btn:hover {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.stem-tab-btn--active {
+  background: rgba(79, 70, 229, 0.12);
+  color: var(--primary-strong);
+  font-weight: 700;
+}
+
+.stem-tab-panel {
+  padding: 1.25rem;
+}
+
+.stem-tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.stem-steps-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
 }
 
 /* ── Visual Learning Panel ───────────────────────────────────────────────── */

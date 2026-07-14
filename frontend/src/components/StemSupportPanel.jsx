@@ -1,162 +1,373 @@
-import { useEffect, useMemo, useState } from 'react';
-import {
-  BookOpenCheck,
-  BrainCircuit,
-  Calculator,
-  ImagePlus,
-  Sparkles,
-  StepForward,
-  Wand2,
-} from 'lucide-react';
-import { learningService } from '../services/learningService';
+import { useEffect, useState } from 'react';
+import { BrainCircuit, Calculator, FlaskConical, ImagePlus, StepForward } from 'lucide-react';
 import { stemService } from '../services/stemService';
 
-function formatTextBlock(text) {
-  if (!text) return null;
-  return text
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 4);
+// ── Formula Assistant tab ────────────────────────────────────────────────────
+// Mirrors: _render_formula_tab(formulas) in backend/stem/stem_page.py
+
+function FormulaTab({ formulas }) {
+  const [explanations, setExplanations] = useState({});
+  const [loading, setLoading] = useState({});
+  const [errors, setErrors] = useState({});
+  const [manualFormula, setManualFormula] = useState('');
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualError, setManualError] = useState('');
+  const [manualResult, setManualResult] = useState(null);
+
+  async function loadExplanation(formula) {
+    if (explanations[formula] || loading[formula]) return;
+    setLoading((prev) => ({ ...prev, [formula]: true }));
+    setErrors((prev) => ({ ...prev, [formula]: '' }));
+    try {
+      const result = await stemService.explainFormula(formula);
+      setExplanations((prev) => ({ ...prev, [formula]: result }));
+    } catch (err) {
+      setErrors((prev) => ({ ...prev, [formula]: err.message || 'Explanation failed.' }));
+    } finally {
+      setLoading((prev) => ({ ...prev, [formula]: false }));
+    }
+  }
+
+  async function handleManualExplain(event) {
+    event.preventDefault();
+    const trimmed = manualFormula.trim();
+    if (!trimmed) {
+      setManualError('Enter a formula to explain.');
+      return;
+    }
+    setManualLoading(true);
+    setManualError('');
+    setManualResult(null);
+    try {
+      const result = await stemService.explainFormula(trimmed);
+      setManualResult(result);
+    } catch (err) {
+      setManualError(err.message || 'Formula explanation failed.');
+    } finally {
+      setManualLoading(false);
+    }
+  }
+
+  if (!formulas || formulas.length === 0) {
+    return <p className="stem-empty-state">No formulas detected in the document.</p>;
+  }
+
+  return (
+    <div className="stem-tab-content">
+      <form className="stem-form" onSubmit={handleManualExplain}>
+        <label className="stem-field-label" htmlFor="manual-formula-input">
+          Explore one formula
+        </label>
+        <div className="stem-form-row">
+          <input
+            id="manual-formula-input"
+            className="stem-input"
+            value={manualFormula}
+            onChange={(e) => setManualFormula(e.target.value)}
+            placeholder="Example: F = ma"
+          />
+          <button type="submit" className="button button-primary" disabled={manualLoading}>
+            {manualLoading ? 'Checking…' : 'Explain'}
+          </button>
+        </div>
+        {manualError && <p className="stem-inline-error">{manualError}</p>}
+      </form>
+
+      {manualResult && (
+        <div className="stem-highlight-card">
+          <p className="stem-highlight-title">{manualResult.formula || manualFormula}</p>
+          <p className="stem-highlight-text">{manualResult.meaning}</p>
+          <p className="stem-highlight-caption">{manualResult.example}</p>
+          {manualResult.terms && Object.keys(manualResult.terms).length > 0 && (
+            <div className="stem-tag-row">
+              {Object.entries(manualResult.terms).map(([key, value]) => (
+                <span key={key} className="stem-tag">{key}: {value}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="stem-card-list">
+        {formulas.map((formula) => {
+          const exp = explanations[formula];
+          const isLoading = loading[formula];
+          const err = errors[formula];
+          return (
+            <div key={formula} className="stem-list-card">
+              <div className="stem-list-card-top">
+                <strong>{formula}</strong>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => loadExplanation(formula)}
+                  disabled={isLoading || !!exp}
+                >
+                  {isLoading ? 'Loading…' : exp ? 'Explained' : 'Explain'}
+                </button>
+              </div>
+              {err && <p className="stem-inline-error">{err}</p>}
+              {exp && (
+                <>
+                  <p>{exp.meaning}</p>
+                  <p className="stem-caption">{exp.example}</p>
+                  {exp.terms && Object.keys(exp.terms).length > 0 && (
+                    <div className="stem-tag-row">
+                      {Object.entries(exp.terms).map(([key, value]) => (
+                        <span key={key} className="stem-tag">{key}: {value}</span>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
-export default function StemSupportPanel({ documentId }) {
-  const [documentText, setDocumentText] = useState('');
-  const [analysis, setAnalysis] = useState(null);
-  const [formulaCards, setFormulaCards] = useState([]);
-  const [conceptCards, setConceptCards] = useState([]);
-  const [loading, setLoading] = useState(true);
+// ── Symbol Explanation tab ───────────────────────────────────────────────────
+// Mirrors: _render_symbol_tab(symbols) in backend/stem/stem_page.py
+
+function SymbolTab({ symbols }) {
+  const [explanations, setExplanations] = useState({});
+  const [loading, setLoading] = useState({});
+  const [errors, setErrors] = useState({});
+
+  async function loadExplanation(symbol) {
+    if (explanations[symbol] || loading[symbol]) return;
+    setLoading((prev) => ({ ...prev, [symbol]: true }));
+    setErrors((prev) => ({ ...prev, [symbol]: '' }));
+    try {
+      const result = await stemService.explainSymbol(symbol);
+      setExplanations((prev) => ({ ...prev, [symbol]: result }));
+    } catch (err) {
+      setErrors((prev) => ({ ...prev, [symbol]: err.message || 'Explanation failed.' }));
+    } finally {
+      setLoading((prev) => ({ ...prev, [symbol]: false }));
+    }
+  }
+
+  if (!symbols || symbols.length === 0) {
+    return <p className="stem-empty-state">No STEM symbols detected in the document.</p>;
+  }
+
+  return (
+    <div className="stem-tab-content">
+      <div className="stem-card-list">
+        {symbols.map((symbol) => {
+          const exp = explanations[symbol];
+          const isLoading = loading[symbol];
+          const err = errors[symbol];
+          return (
+            <div key={symbol} className="stem-list-card">
+              <div className="stem-list-card-top">
+                <strong>{symbol}</strong>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => loadExplanation(symbol)}
+                  disabled={isLoading || !!exp}
+                >
+                  {isLoading ? 'Loading…' : exp ? 'Explained' : 'Explain'}
+                </button>
+              </div>
+              {err && <p className="stem-inline-error">{err}</p>}
+              {exp && (
+                <>
+                  <p>{exp.meaning}</p>
+                  <p>{exp.simple_explanation}</p>
+                  <p className="stem-caption">{exp.example}</p>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Diagram Explanation tab ──────────────────────────────────────────────────
+// Mirrors: _render_diagram_tab(diagram_images) in backend/stem/stem_page.py
+// Streamlit extracts diagrams automatically from the uploaded PDF.
+// React calls POST /document/<id>/diagrams which does the same extraction
+// server-side — no second upload is ever required.
+
+function DiagramTab({ documentId }) {
+  const [diagrams, setDiagrams] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const [formulaInput, setFormulaInput] = useState('');
-  const [formulaExplanation, setFormulaExplanation] = useState(null);
-  const [formulaLoading, setFormulaLoading] = useState(false);
-  const [formulaError, setFormulaError] = useState('');
+  useEffect(() => {
+    let ignore = false;
+    async function load() {
+      if (!documentId) return;
+      setLoading(true);
+      setError('');
+      try {
+        const result = await stemService.getDocumentDiagrams(documentId);
+        if (!ignore) setDiagrams(result);
+      } catch (err) {
+        if (!ignore) setError(err.message || 'Diagram explanation failed.');
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    }
+    load();
+    return () => { ignore = true; };
+  }, [documentId]);
 
-  const [solverInput, setSolverInput] = useState('');
-  const [solverResult, setSolverResult] = useState(null);
-  const [solverLoading, setSolverLoading] = useState(false);
-  const [solverError, setSolverError] = useState('');
+  if (loading) return <p className="stem-inline-loading">Extracting and explaining diagrams from your document…</p>;
+  if (error) return <p className="stem-inline-error">{error}</p>;
+  if (!diagrams || diagrams.length === 0) {
+    return <p className="stem-empty-state">No diagrams were found in this document.</p>;
+  }
 
-  const [diagramFile, setDiagramFile] = useState(null);
-  const [diagramPreview, setDiagramPreview] = useState('');
-  const [diagramExplanation, setDiagramExplanation] = useState(null);
-  const [diagramLoading, setDiagramLoading] = useState(false);
-  const [diagramError, setDiagramError] = useState('');
+  return (
+    <div className="stem-tab-content">
+      {diagrams.map(({ index, filename, image_url, explanation }) => (
+        <div key={index} className="stem-highlight-card">
+          <p className="stem-highlight-title">{explanation.diagram_type || `Diagram ${index}`}</p>
+          <p className="stem-caption">{filename}</p>
+          {image_url && (
+            <img
+              src={image_url}
+              alt={explanation.diagram_type || `Diagram ${index}`}
+              className="stem-diagram-image"
+            />
+          )}
+          {explanation.purpose && <p>{explanation.purpose}</p>}
+          {explanation.how_it_works?.length > 0 && (
+            <ul className="stem-steps-list">
+              {explanation.how_it_works.map((step, i) => (
+                <li key={i}>{step}</li>
+              ))}
+            </ul>
+          )}
+          {explanation.component_roles?.length > 0 && (
+            <div className="stem-tag-row">
+              {explanation.component_roles.map((cr, i) => (
+                <span key={i} className="stem-tag">{cr.component}: {cr.role}</span>
+              ))}
+            </div>
+          )}
+          {explanation.key_concept && <p><strong>Key concept:</strong> {explanation.key_concept}</p>}
+          {explanation.simplified_explanation && <p>{explanation.simplified_explanation}</p>}
+          {explanation.key_takeaway && <p className="stem-caption">{explanation.key_takeaway}</p>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Step Solver tab ──────────────────────────────────────────────────────────
+// Mirrors: _render_step_solver_tab(document_text) in backend/stem/stem_page.py
+
+function StepSolverTab() {
+  const [input, setInput] = useState('');
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSolve(event) {
+    event.preventDefault();
+    const trimmed = input.trim();
+    if (!trimmed) {
+      setError('Enter a STEM problem before solving.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    setResult(null);
+    try {
+      const solution = await stemService.solveProblem(trimmed);
+      setResult(solution);
+    } catch (err) {
+      setError(err.message || 'Step solver failed.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="stem-tab-content">
+      <form className="stem-form" onSubmit={handleSolve}>
+        <label className="stem-field-label" htmlFor="solver-input">
+          Enter your STEM problem
+        </label>
+        <textarea
+          id="solver-input"
+          className="stem-textarea"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          rows={5}
+          placeholder={'10 + 5 * 2\n\nOR\n\nx + 5 = 12\n\nOR\n\nF = ma\nm = 5\na = 2'}
+        />
+        <button type="submit" className="button button-primary" disabled={loading}>
+          {loading ? 'Solving…' : 'Solve Problem'}
+        </button>
+        {error && <p className="stem-inline-error">{error}</p>}
+      </form>
+
+      {result && (
+        <div className="stem-highlight-card">
+          <p className="stem-highlight-title">{result.formula || 'Solution'}</p>
+          {result.meaning && <p>{result.meaning}</p>}
+          {result.example && <p className="stem-caption">{result.example}</p>}
+          {result.terms && Object.keys(result.terms).length > 0 && (
+            <div className="stem-tag-row">
+              {Object.entries(result.terms).map(([key, value]) => (
+                <span key={key} className="stem-tag">{key}: {value}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main panel ───────────────────────────────────────────────────────────────
+
+const TABS = [
+  { id: 'formula',  label: 'Formula Assistant',   icon: Calculator },
+  { id: 'symbol',   label: 'Symbol Explanation',  icon: FlaskConical },
+  { id: 'diagram',  label: 'Diagram Explanation', icon: ImagePlus },
+  { id: 'solver',   label: 'Step Solver',         icon: StepForward },
+];
+
+export default function StemSupportPanel({ documentId }) {
+  const [stemData, setStemData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [activeTab, setActiveTab] = useState('formula');
 
   useEffect(() => {
     let ignore = false;
 
-    async function loadStemSupport() {
+    async function load() {
       if (!documentId) {
         setLoading(false);
         return;
       }
-
+      setLoading(true);
+      setError('');
       try {
-        setLoading(true);
-        setError('');
-        const text = await learningService.fetchDocumentText(documentId);
-        if (ignore) return;
-        setDocumentText(text);
-
-        const [analysisResult, formulaResult, conceptResult] = await Promise.all([
-          stemService.analyzeDocumentText(text),
-          stemService.extractFormulas(text),
-          stemService.getConceptBreakdown(text),
-        ]);
-
-        if (ignore) return;
-        setAnalysis(analysisResult);
-        setFormulaCards(formulaResult?.explanations || []);
-        setConceptCards(conceptResult?.formulas || []);
+        const data = await stemService.analyzeDocument(documentId);
+        if (!ignore) setStemData(data);
       } catch (err) {
-        if (!ignore) {
-          setError(err.message || 'Unable to load STEM support right now.');
-        }
+        if (!ignore) setError(err.message || 'Unable to load STEM support.');
       } finally {
-        if (!ignore) {
-          setLoading(false);
-        }
+        if (!ignore) setLoading(false);
       }
     }
 
-    loadStemSupport();
-    return () => {
-      ignore = true;
-    };
+    load();
+    return () => { ignore = true; };
   }, [documentId]);
-
-  const summaryItems = useMemo(() => {
-    if (!analysis) return [];
-    return [
-      { label: 'Formulas', value: analysis.formula_count ?? 0, icon: Calculator },
-      { label: 'Symbols', value: analysis.symbol_count ?? 0, icon: Sparkles },
-      { label: 'Diagrams', value: analysis.has_diagrams ? 'Detected' : 'None', icon: ImagePlus },
-    ];
-  }, [analysis]);
-
-  async function handleFormulaExplain(event) {
-    event.preventDefault();
-    const trimmed = formulaInput.trim();
-    if (!trimmed) {
-      setFormulaError('Enter a formula to explain.');
-      return;
-    }
-
-    try {
-      setFormulaLoading(true);
-      setFormulaError('');
-      const result = await stemService.explainFormula(trimmed);
-      setFormulaExplanation(result);
-      setFormulaCards((current) => [result, ...current.filter((item) => item.formula !== result.formula)]);
-    } catch (err) {
-      setFormulaError(err.message || 'Formula explanation failed.');
-    } finally {
-      setFormulaLoading(false);
-    }
-  }
-
-  async function handleSolverSubmit(event) {
-    event.preventDefault();
-    const trimmed = solverInput.trim();
-    if (!trimmed) {
-      setSolverError('Enter a problem or formula to solve.');
-      return;
-    }
-
-    try {
-      setSolverLoading(true);
-      setSolverError('');
-      const result = await stemService.solveProblem(trimmed);
-      setSolverResult(result);
-    } catch (err) {
-      setSolverError(err.message || 'Step solver failed.');
-    } finally {
-      setSolverLoading(false);
-    }
-  }
-
-  async function handleDiagramUpload(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const previewUrl = URL.createObjectURL(file);
-    setDiagramFile(file);
-    setDiagramPreview(previewUrl);
-    setDiagramLoading(true);
-    setDiagramError('');
-    setDiagramExplanation(null);
-
-    try {
-      const result = await stemService.explainDiagram(file);
-      setDiagramExplanation(result);
-    } catch (err) {
-      setDiagramError(err.message || 'Diagram explanation failed.');
-    } finally {
-      setDiagramLoading(false);
-    }
-  }
 
   return (
     <div className="stem-panel">
@@ -167,27 +378,32 @@ export default function StemSupportPanel({ documentId }) {
             <span>STEM support</span>
           </div>
           <h2>Clear explanations, visual support, and guided problem solving.</h2>
-          <p>
-            This view keeps the existing STEM tools intact while presenting them with calmer spacing,
-            brighter icons, and smoother transitions.
-          </p>
         </div>
-        <div className="stem-hero-stats">
-          {summaryItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <div key={item.label} className="stem-stat-card">
-                <div className="stem-stat-icon">
-                  <Icon size={18} />
-                </div>
-                <div>
-                  <p className="stem-stat-value">{item.value}</p>
-                  <span className="stem-stat-label">{item.label}</span>
-                </div>
+        {stemData && (
+          <div className="stem-hero-stats">
+            <div className="stem-stat-card">
+              <div className="stem-stat-icon"><Calculator size={18} /></div>
+              <div>
+                <p className="stem-stat-value">{stemData.formula_count ?? 0}</p>
+                <span className="stem-stat-label">Formulas</span>
               </div>
-            );
-          })}
-        </div>
+            </div>
+            <div className="stem-stat-card">
+              <div className="stem-stat-icon"><FlaskConical size={18} /></div>
+              <div>
+                <p className="stem-stat-value">{stemData.symbol_count ?? 0}</p>
+                <span className="stem-stat-label">Symbols</span>
+              </div>
+            </div>
+            <div className="stem-stat-card">
+              <div className="stem-stat-icon"><ImagePlus size={18} /></div>
+              <div>
+                <p className="stem-stat-value">{stemData.has_diagrams ? 'Detected' : 'None'}</p>
+                <span className="stem-stat-label">Diagrams</span>
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       {error && <p className="notes-error" role="alert">{error}</p>}
@@ -199,193 +415,32 @@ export default function StemSupportPanel({ documentId }) {
         </div>
       ) : (
         <>
-          <section className="stem-grid">
-            <article className="stem-card card">
-              <div className="stem-card-header">
-                <div>
-                  <p className="stem-card-kicker">Formula cards</p>
-                  <h3>Understand formulas with simple language</h3>
-                </div>
-                <div className="stem-card-icon">
-                  <Calculator size={20} />
-                </div>
-              </div>
+          <nav className="stem-tab-nav" role="tablist" aria-label="STEM tools">
+            {TABS.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === id}
+                className={`stem-tab-btn${activeTab === id ? ' stem-tab-btn--active' : ''}`}
+                onClick={() => setActiveTab(id)}
+              >
+                <Icon size={16} aria-hidden="true" />
+                {label}
+              </button>
+            ))}
+          </nav>
 
-              <form className="stem-form" onSubmit={handleFormulaExplain}>
-                <label className="stem-field-label" htmlFor="formula-input">
-                  Explore one formula
-                </label>
-                <div className="stem-form-row">
-                  <input
-                    id="formula-input"
-                    className="stem-input"
-                    value={formulaInput}
-                    onChange={(event) => setFormulaInput(event.target.value)}
-                    placeholder="Example: F = ma"
-                  />
-                  <button type="submit" className="button button-primary" disabled={formulaLoading}>
-                    {formulaLoading ? 'Checking…' : 'Explain'}
-                  </button>
-                </div>
-                {formulaError && <p className="stem-inline-error">{formulaError}</p>}
-              </form>
-
-              <div className="stem-card-body">
-                {formulaExplanation && (
-                  <div className="stem-highlight-card">
-                    <p className="stem-highlight-title">{formulaExplanation.formula || formulaInput}</p>
-                    <p className="stem-highlight-text">{formulaExplanation.meaning}</p>
-                    <p className="stem-highlight-caption">{formulaExplanation.example}</p>
-                  </div>
-                )}
-
-                {formulaCards.length > 0 ? (
-                  <div className="stem-card-list">
-                    {formulaCards.map((item, index) => (
-                      <div key={`${item.formula || 'formula'}-${index}`} className="stem-list-card">
-                        <div className="stem-list-card-top">
-                          <strong>{item.formula || 'Formula'}</strong>
-                          <span className="stem-pill">Ready</span>
-                        </div>
-                        <p>{item.meaning || 'Meaning will appear here.'}</p>
-                        {item.terms && Object.keys(item.terms).length > 0 && (
-                          <div className="stem-tag-row">
-                            {Object.entries(item.terms).slice(0, 4).map(([key, value]) => (
-                              <span key={key} className="stem-tag">{key}: {value}</span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="stem-empty-state">
-                    <Wand2 size={18} />
-                    <span>Formulas found in your document will appear here.</span>
-                  </div>
-                )}
-              </div>
-            </article>
-
-            <article className="stem-card card">
-              <div className="stem-card-header">
-                <div>
-                  <p className="stem-card-kicker">Diagram viewer</p>
-                  <h3>Upload a diagram and get a guided explanation</h3>
-                </div>
-                <div className="stem-card-icon">
-                  <ImagePlus size={20} />
-                </div>
-              </div>
-
-              <label className="stem-upload-box" htmlFor="diagram-upload">
-                <input id="diagram-upload" type="file" accept="image/png,image/jpeg" onChange={handleDiagramUpload} />
-                <span className="stem-upload-title">Choose a PNG or JPG diagram</span>
-                <span className="stem-upload-subtitle">The explanation will stay in the same workspace.</span>
-              </label>
-
-              {diagramLoading && <p className="stem-inline-loading">Reading the diagram…</p>}
-              {diagramError && <p className="stem-inline-error">{diagramError}</p>}
-
-              <div className="stem-card-body">
-                {diagramPreview && (
-                  <div className="stem-image-preview">
-                    <img src={diagramPreview} alt="Uploaded diagram preview" />
-                  </div>
-                )}
-
-                {diagramExplanation && (
-                  <div className="stem-highlight-card">
-                    <p className="stem-highlight-title">What this diagram shows</p>
-                    <div className="stem-explanation-lines">
-                      {formatTextBlock(diagramExplanation.meaning || diagramExplanation.example || '')?.map((line) => (
-                        <p key={line}>{line}</p>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </article>
-          </section>
-
-          <section className="stem-grid">
-            <article className="stem-card card">
-              <div className="stem-card-header">
-                <div>
-                  <p className="stem-card-kicker">Concept explanations</p>
-                  <h3>Break difficult ideas into smaller pieces</h3>
-                </div>
-                <div className="stem-card-icon">
-                  <BookOpenCheck size={20} />
-                </div>
-              </div>
-
-              <div className="stem-card-body">
-                {conceptCards.length > 0 ? (
-                  <div className="stem-card-list">
-                    {conceptCards.map((item, index) => (
-                      <div key={`${item.formula || item.meaning || 'concept'}-${index}`} className="stem-list-card">
-                        <div className="stem-list-card-top">
-                          <strong>{item.formula || 'Concept'}</strong>
-                          <span className="stem-pill">Explained</span>
-                        </div>
-                        <p>{item.meaning || 'Explanation coming soon.'}</p>
-                        {item.example && <p className="stem-caption">{item.example}</p>}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="stem-empty-state">
-                    <Sparkles size={18} />
-                    <span>Concept breakdowns will appear after your document is reviewed.</span>
-                  </div>
-                )}
-              </div>
-            </article>
-
-            <article className="stem-card card">
-              <div className="stem-card-header">
-                <div>
-                  <p className="stem-card-kicker">Step solver</p>
-                  <h3>Follow a guided path to the answer</h3>
-                </div>
-                <div className="stem-card-icon">
-                  <StepForward size={20} />
-                </div>
-              </div>
-
-              <form className="stem-form" onSubmit={handleSolverSubmit}>
-                <label className="stem-field-label" htmlFor="solver-input">
-                  Enter a problem or formula
-                </label>
-                <textarea
-                  id="solver-input"
-                  className="stem-textarea"
-                  value={solverInput}
-                  onChange={(event) => setSolverInput(event.target.value)}
-                  rows={4}
-                  placeholder="Example: Find v when a = 2 and t = 4 in v = at"
-                />
-                <button type="submit" className="button button-primary" disabled={solverLoading}>
-                  {solverLoading ? 'Solving…' : 'Solve step by step'}
-                </button>
-                {solverError && <p className="stem-inline-error">{solverError}</p>}
-              </form>
-
-              <div className="stem-card-body">
-                {solverResult && (
-                  <div className="stem-highlight-card">
-                    <p className="stem-highlight-title">Step-by-step guidance</p>
-                    <div className="stem-explanation-lines">
-                      {formatTextBlock(solverResult.meaning || solverResult.example || '')?.map((line) => (
-                        <p key={line}>{line}</p>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </article>
-          </section>
+          <div className="stem-tab-panel card">
+            {activeTab === 'formula' && (
+              <FormulaTab formulas={stemData?.formulas ?? []} />
+            )}
+            {activeTab === 'symbol' && (
+              <SymbolTab symbols={stemData?.symbols ?? []} />
+            )}
+            {activeTab === 'diagram' && <DiagramTab documentId={documentId} />}
+            {activeTab === 'solver' && <StepSolverTab />}
+          </div>
         </>
       )}
     </div>

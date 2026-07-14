@@ -1,22 +1,18 @@
 import api from '../config/api';
 
 export const stemService = {
-  analyzeDocumentText: async (text) => {
-    const res = await api.post('/stem/document/analyze', { text }, { timeout: 120000 });
+  // Load STEM analysis for a stored document by its database id.
+  // Mirrors: process_stem_support(document_text) called in render_stem_mode()
+  analyzeDocument: async (documentId) => {
+    const res = await api.post(`/document/${documentId}/stem`, {}, { timeout: 120000 });
     if (!res.data?.success) {
       throw new Error(res.data?.error || 'STEM analysis failed.');
     }
     return res.data;
   },
 
-  extractFormulas: async (text) => {
-    const res = await api.post('/stem/formula/extract', { text }, { timeout: 120000 });
-    if (!res.data?.success) {
-      throw new Error(res.data?.error || 'Formula extraction failed.');
-    }
-    return res.data;
-  },
-
+  // Explain a single formula.
+  // Mirrors: explain_formula(formula) in _render_formula_tab()
   explainFormula: async (formula) => {
     const res = await api.post('/stem/formula/explain', { formula }, { timeout: 120000 });
     if (!res.data?.success) {
@@ -25,32 +21,35 @@ export const stemService = {
     return res.data.explanation;
   },
 
-  getConceptBreakdown: async (text) => {
-    const res = await api.post('/stem/concept-breakdown', { text }, { timeout: 120000 });
+  // Explain a single symbol.
+  // Mirrors: explain_symbol(symbol) in _render_symbol_tab()
+  explainSymbol: async (symbol) => {
+    const res = await api.post('/stem/symbol/explain', { symbol }, { timeout: 120000 });
     if (!res.data?.success) {
-      throw new Error(res.data?.error || 'Concept breakdown failed.');
+      throw new Error(res.data?.error || 'Symbol explanation failed.');
     }
-    return res.data;
+    return res.data.explanation;
   },
 
+  // Explain diagrams automatically extracted from the uploaded document.
+  // Mirrors: _render_diagram_tab(diagram_images) in backend/stem/stem_page.py
+  // The backend extracts images from the PDF and explains each one —
+  // no second upload is required from the user.
+  getDocumentDiagrams: async (documentId) => {
+    const res = await api.post(`/document/${documentId}/diagrams`, {}, { timeout: 300000 });
+    if (!res.data?.success) {
+      throw new Error(res.data?.error || 'Diagram explanation failed.');
+    }
+    return res.data.diagrams;
+  },
+
+  // Solve a STEM problem step-by-step.
+  // Mirrors: solve_problem(problem_input) in _render_step_solver_tab()
   solveProblem: async (problem) => {
     const res = await api.post('/stem/step-solver', { problem }, { timeout: 120000 });
     if (!res.data?.success) {
       throw new Error(res.data?.error || 'Step solver failed.');
     }
     return res.data.solution;
-  },
-
-  explainDiagram: async (file) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const res = await api.post('/stem/diagram/explain', formData, {
-      timeout: 180000,
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    if (!res.data?.success) {
-      throw new Error(res.data?.error || 'Diagram explanation failed.');
-    }
-    return res.data.explanation;
   },
 };

@@ -39,9 +39,15 @@ from services.quiz_hint_service import generate_quiz_hint, generate_short_answer
 from backend.stem.stem_controller import process_stem_support
 from backend.stem.formula_extractor import extract_formulas
 from backend.stem.symbol_extractor import extract_symbols
+from backend.stem.diagram_explainer import explain_diagram
+from services.ocr_service import extract_images_from_pdf
+from services.behavior_tracking_service import track_diagram_explanation_used
 
 document_bp = Blueprint("document", __name__)
 logger = logging.getLogger(__name__)
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_UPLOADS_DIR = _PROJECT_ROOT / "uploads"
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +60,16 @@ def _get_document_text(document_id: int) -> str | None:
     if record is None:
         return None
     return record.document_text or None
+
+
+def _find_uploaded_file(file_name: str) -> Path | None:
+    """Locate the saved upload for a document by matching its original filename stem."""
+    original = Path(file_name)
+    stem = original.stem
+    suffix = original.suffix.lower()
+    pattern = f"{stem}_*{suffix}"
+    matches = sorted(_UPLOADS_DIR.glob(pattern))
+    return matches[-1] if matches else None
 
 
 def _user_id(data: dict) -> int | None:
@@ -305,35 +321,139 @@ def stem_document(document_id: int):
     """Analyze a stored document for STEM content.
 
     Streamlit equivalent:
-        render_stem_mode(document_text=st.session_state.document_text, ...)
+        render_stem_mode(document_text=st.session_state.document_text,
+                         diagram_images=st.session_state.document_diagram_images)
 
     Response:
-        has_formula, has_symbols, formula_count, symbol_count,
-        available_features, formulas, symbols
+        has_formula, has_symbols, has_diagrams, formula_count, symbol_count,
+        available_features, formulas, symbols, diagram_count
     """
-    text = _get_document_text(document_id)
-    if text is None:
+    record = get_document(document_id)
+    if record is None:
         return jsonify({"success": False, "error": "Document not found."}), 404
+    text = record.document_text or ""
     if not text.strip():
         return jsonify({"success": False, "error": "Document has no extractable text."}), 400
 
+    # Mirror Streamlit: extract images from the uploaded PDF automatically.
+    diagram_images: list[str] = []
+    if record.file_type and record.file_type.lower() == "pdf":
+        uploaded_path = _find_uploaded_file(record.file_name)
+        if uploaded_path:
+            try:
+                diagram_images = extract_images_from_pdf(str(uploaded_path))
+            except Exception:
+                logger.exception("PDF image extraction failed for document_id=%s", document_id)
+
     try:
-        result = process_stem_support(text)
+        result = process_stem_support(text, diagram_images=diagram_images)
         detection = result["result"]
         return jsonify({
             "success": True,
             "has_formula": detection.has_formula,
             "has_symbols": detection.has_symbols,
-            "has_diagrams": detection.has_diagrams,
+            "has_diagrams": detection.has_diagrams or len(diagram_images) > 0,
             "formula_count": detection.formula_count,
             "symbol_count": detection.symbol_count,
             "available_features": result["features"],
             "formulas": result["formulas"],
             "symbols": result["symbols"],
+            "diagram_count": len(diagram_images),
         }), 200
     except Exception:
         logger.exception("STEM document analysis failed for document_id=%s", document_id)
         return jsonify({"success": False, "error": "STEM analysis failed."}), 500
+
+
+# ---------------------------------------------------------------------------
+# POST /document/<id>/diagrams  — Diagram Explanation (Streamlit-equivalent)
+# ---------------------------------------------------------------------------
+
+@document_bp.post("/document/<int:document_id>/diagrams")
+def explain_document_diagrams(document_id: int):
+    """Extract and explain all diagrams from an uploaded PDF document.
+
+    Streamlit equivalent:
+        diagram_images = extract_images_from_pdf(record.uploaded_path)
+        _render_diagram_tab(diagram_images)  # calls explain_diagram per image
+
+    This endpoint mirrors the Streamlit workflow exactly:
+    - No second upload is required.
+    - Images are extracted automatically from the uploaded document.
+    - Each image is explained by the backend using Gemini Vision.
+
+    Response:
+        diagrams: list of { index, filename, explanation }
+    """
+    record = get_document(document_id)
+    if record is None:
+        return jsonify({"success": False, "error": "Document not found."}), 404
+
+    if not record.file_type or record.file_type.lower() != "pdf":
+        return jsonify({"success": True, "diagrams": [], "message": "Diagram extraction is only supported for PDF documents."}), 200
+
+    uploaded_path = _find_uploaded_file(record.file_name)
+    if not uploaded_path:
+        return jsonify({"success": True, "diagrams": [], "message": "Uploaded file not found on disk."}), 200
+
+    try:
+        image_paths = extract_images_from_pdf(str(uploaded_path))
+    except Exception:
+        logger.exception("PDF image extraction failed for document_id=%s", document_id)
+        return jsonify({"success": False, "error": "Failed to extract images from document."}), 500
+
+    if not image_paths:
+        return jsonify({"success": True, "diagrams": [], "message": "No diagrams found in this document."}), 200
+
+    data = request.get_json(silent=True) or {}
+    uid = _user_id(data)
+
+    _DIAGRAMS_SERVE_DIR = _PROJECT_ROOT / "generated_diagrams"
+    _DIAGRAMS_SERVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    diagrams = []
+    for idx, image_path in enumerate(image_paths, start=1):
+        try:
+            explanation = explain_diagram(image_path)
+        except Exception:
+            logger.exception("Diagram explanation failed for image %s", image_path)
+            explanation = {
+                "diagram_type": "Unknown",
+                "purpose": "Unable to determine diagram purpose.",
+                "how_it_works": [],
+                "component_roles": [],
+                "key_concept": "",
+                "simplified_explanation": "The diagram could not be analyzed.",
+                "key_takeaway": "Try another image.",
+            }
+
+        # Copy the extracted temp image into the served diagrams directory so
+        # Flask can serve it at /diagrams/<filename> — mirrors how Streamlit
+        # reads the image directly from disk via st.image(image_path).
+        src = Path(image_path)
+        dest = _DIAGRAMS_SERVE_DIR / src.name
+        try:
+            import shutil
+            shutil.copy2(str(src), str(dest))
+            image_url = f"/diagrams/{src.name}"
+        except Exception:
+            logger.exception("Failed to copy diagram image to serve directory: %s", image_path)
+            image_url = None
+
+        diagrams.append({
+            "index": idx,
+            "filename": src.name,
+            "image_url": image_url,
+            "explanation": explanation,
+        })
+
+    if uid is not None:
+        try:
+            track_diagram_explanation_used(uid, metadata={"document_id": document_id, "diagram_count": len(diagrams)})
+        except Exception:
+            logger.exception("Diagram tracking failed")
+
+    return jsonify({"success": True, "diagrams": diagrams}), 200
 
 
 # ---------------------------------------------------------------------------
