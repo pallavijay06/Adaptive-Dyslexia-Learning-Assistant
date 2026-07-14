@@ -11,7 +11,7 @@ from services.text_cleanup import remove_ansi_escape_codes
 
 
 DEFAULT_MODEL_NAME = "qwen3:8b"
-DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_TIMEOUT_SECONDS = 45  # reduced from 300 — fail fast so the router can move on
 
 
 class OllamaServiceError(RuntimeError):

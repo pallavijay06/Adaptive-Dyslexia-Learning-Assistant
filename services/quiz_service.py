@@ -226,27 +226,28 @@ def generate_mcq_quiz(text: str, num_questions: int = 10, adaptive_ctx: dict | N
     mcqs = None
 
     # ── Attempt 1: primary LLM call ──────────────────────────────────────────
+    logger.info("[Quiz Generation] Starting MCQ generation — LLM call 1 of max 3")
     try:
         response = _run_quiz_prompt(prompt, text)
-        logger.info("[Quiz Gen] Raw LLM response (len=%s)", len(response) if response is not None else 0)
+        logger.info("[Quiz Generation] LLM call 1 returned (len=%s)", len(response) if response is not None else 0)
         mcqs = _parse_json_response(response)
     except Exception:
-        logger.exception("[Quiz Gen] Primary LLM call failed.")
+        logger.exception("[Quiz Generation] LLM call 1 failed.")
 
     # ── Attempt 2: LLM retry (parse failed for any reason) ───────────────────
     if not isinstance(mcqs, list):
         retry_num = max(1, requested_questions // 2) if _QUIZ_RESPONSE_TRUNCATED else requested_questions
         _QUIZ_RESPONSE_TRUNCATED = False
-        logger.warning("[Quiz Gen] Parse failed. Retrying LLM (num_questions=%d).", retry_num)
+        logger.warning("[Quiz Generation] Parse failed. Retrying — LLM call 2 (num_questions=%d).", retry_num)
         try:
             retry_prompt = _build_mcq_generation_prompt(retry_num, adaptive_ctx, doc_concepts)
             retry_response = _run_quiz_prompt(retry_prompt, text)
-            logger.info("[Quiz Gen] Retry LLM response (len=%s)", len(retry_response) if retry_response is not None else 0)
+            logger.info("[Quiz Generation] LLM call 2 returned (len=%s)", len(retry_response) if retry_response is not None else 0)
             mcqs = _parse_json_response(retry_response)
             if isinstance(mcqs, list):
-                logger.info("[Quiz Gen] Retry succeeded (%d questions).", len(mcqs))
+                logger.info("[Quiz Generation] LLM call 2 succeeded (%d questions).", len(mcqs))
         except Exception:
-            logger.exception("[Quiz Gen] Retry LLM call failed.")
+            logger.exception("[Quiz Generation] LLM call 2 failed.")
 
     if not isinstance(mcqs, list):
         logger.warning("[Quiz Parser] Parsed MCQ response is not a list or is empty.")
@@ -288,6 +289,7 @@ def generate_mcq_quiz(text: str, num_questions: int = 10, adaptive_ctx: dict | N
         logger.warning("[Quiz Validation] MCQ failed validation (%d violations). Regenerating once.", len(violations))
         for v in violations:
             logger.debug("[Quiz Validation] %s", v)
+        logger.info("[Quiz Generation] Validation failed — LLM call 3 (regeneration)")
         try:
             regen_response = _run_quiz_prompt(
                 _build_mcq_generation_prompt(num_questions, adaptive_ctx, doc_concepts), text
@@ -429,8 +431,12 @@ def generate_short_questions(text: str, num_questions: int = 5, adaptive_ctx: di
 
 
 def evaluate_mcq(user_answers: list[str], quiz_data: list[dict[str, Any]]) -> dict[str, Any]:
-    """Evaluate MCQ answers and provide a full learning report."""
+    """Evaluate MCQ answers and provide a full learning report.
+
+    This function is pure Python — it makes zero LLM calls.
+    """
     start_time = time.perf_counter()
+    logger.info("[Quiz Evaluation] Starting MCQ evaluation (%d questions) — no LLM calls", len(quiz_data) if isinstance(quiz_data, list) else 0)
     if not isinstance(user_answers, list):
         raise ValueError("User answers must be a list.")
     if not isinstance(quiz_data, list):
@@ -499,7 +505,7 @@ def evaluate_mcq(user_answers: list[str], quiz_data: list[dict[str, Any]]) -> di
         "assessment_analytics": assessment_analytics,
     }
 
-    logger.info("[Quiz] MCQ evaluation completed in %.2fs", time.perf_counter() - start_time)
+    logger.info("[Quiz Evaluation] MCQ evaluation complete in %.2fs — strengths/weaknesses/recommendations built locally (no LLM)", time.perf_counter() - start_time)
     return report
 
 
@@ -508,22 +514,22 @@ def evaluate_short_answer(
     expected_answer: str,
     question_text: str | None = None,
 ) -> dict[str, Any]:
-    """Evaluate a short answer semantically and return friendly feedback."""
+    """Evaluate a short answer semantically and return friendly feedback.
+
+    Uses a single LLM call (not one per question) to avoid sequential timeouts.
+    Falls back to local evaluation immediately if the LLM is unavailable.
+    """
     start_time = time.perf_counter()
-    logger.info("[Quiz] Starting short-answer evaluation")
+    logger.info("[Quiz Evaluation] Starting short-answer evaluation (single question)")
     student_answer_text = str(student_answer or "").strip()
     expected_answer_text = str(expected_answer or "").strip()
     question_text = str(question_text or "").strip()
 
-    if not expected_answer_text:
+    if not expected_answer_text or not student_answer_text:
+        logger.info("[Quiz Evaluation] Skipping LLM — empty answer or expected answer, using local fallback")
         evaluation = _fallback_short_answer_evaluation(student_answer_text, expected_answer_text, question_text)
         evaluation = _extend_short_answer_assessment(evaluation, student_answer_text, expected_answer_text, question_text)
-        logger.info("[Quiz] Short answer local evaluation completed in %.2fs", time.perf_counter() - start_time)
-        return evaluation
-    if not student_answer_text:
-        evaluation = _fallback_short_answer_evaluation(student_answer_text, expected_answer_text, question_text)
-        evaluation = _extend_short_answer_assessment(evaluation, student_answer_text, expected_answer_text, question_text)
-        logger.info("[Quiz] Short answer local evaluation completed in %.2fs", time.perf_counter() - start_time)
+        logger.info("[Quiz Evaluation] Local evaluation completed in %.2fs", time.perf_counter() - start_time)
         return evaluation
 
     local_evaluation = _fallback_short_answer_evaluation(student_answer_text, expected_answer_text, question_text)
@@ -553,17 +559,19 @@ def evaluate_short_answer(
         f"STUDENT ANSWER:\n{student_answer_text}"
     )
 
+    logger.info("[Quiz Evaluation] Sending short-answer to LLM router (1 call)")
     try:
         response = _run_quiz_prompt(prompt)
         evaluation = _parse_json_response(response)
         if not isinstance(evaluation, dict):
             raise ValueError("Short answer evaluation did not return a JSON object.")
+        logger.info("[Quiz Evaluation] LLM short-answer evaluation succeeded in %.2fs", time.perf_counter() - start_time)
     except Exception:
-        logger.exception(
-            "[Quiz Evaluation] Short answer failed using LLM router. Question: %s. Falling back to local evaluation.",
-            question_text or "<unknown>",
+        logger.warning(
+            "[Quiz Evaluation] LLM short-answer failed for question '%s'. Using local fallback. (%.2fs)",
+            (question_text or "<unknown>")[:80],
+            time.perf_counter() - start_time,
         )
-        logger.info("[Quiz] Short answer local fallback completed in %.2fs", time.perf_counter() - start_time)
         return _extend_short_answer_assessment(local_evaluation, student_answer_text, expected_answer_text, question_text)
 
     concept = str(evaluation.get("concept") or "").strip() or _infer_concept("", expected_answer_text)
@@ -579,11 +587,7 @@ def evaluate_short_answer(
     if not _is_explanation_consistent_with_result(evaluation["result"], explanation) or not _teaches_concept(explanation, expected_answer_text):
         explanation = _build_question_explanation(question_text, student_answer_text, expected_answer_text, evaluation["result"])
 
-    local_feedback = _shorten_sentences(
-        explanation,
-        fallback=explanation,
-        max_sentences=3,
-    )
+    local_feedback = _shorten_sentences(explanation, fallback=explanation, max_sentences=3)
     evaluation["local_feedback"] = local_feedback
     evaluation["local_explanation"] = local_feedback
     if not str(evaluation.get("feedback") or "").strip():
@@ -598,13 +602,12 @@ def evaluate_short_answer(
             evaluation["score"] = local_score
 
     evaluation["score"] = max(0, min(5, evaluation["score"]))
-    # Add spelling note when LLM result seems correct but student had a minor typo
     spelling_note = _detect_spelling_note(student_answer_text, expected_answer_text)
     if spelling_note:
         evaluation["spelling_note"] = f'The correct spelling is "{spelling_note}".'
     evaluation["source"] = "llm"
     evaluation = _extend_short_answer_assessment(evaluation, student_answer_text, expected_answer_text, question_text)
-    logger.info("[Quiz] Short answer LLM evaluation completed in %.2fs", time.perf_counter() - start_time)
+    logger.info("[Quiz Evaluation] Short-answer evaluation complete in %.2fs", time.perf_counter() - start_time)
     return evaluation
 
 

@@ -22,7 +22,7 @@ from services.text_cleanup import remove_ansi_escape_codes
 
 
 DEFAULT_MODEL_NAME = "google/gemini-2.5-flash"
-DEFAULT_TIMEOUT_SECONDS = 60
+DEFAULT_TIMEOUT_SECONDS = 12  # fail fast so Gemini fallback is reached quickly
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 SYSTEM_INSTRUCTION = """
@@ -188,12 +188,38 @@ def _load_dotenv_files() -> None:
 
 
 def _extract_response_text(response: Any) -> str:
-    """Extract plain text from OpenRouter API response."""
+    """Extract plain text from OpenRouter API response.
+
+    Some models (e.g. tencent/hy3:free) are reasoning models that populate
+    ``message.reasoning`` instead of ``message.content``.  ``reasoning`` is a
+    dynamic attribute not declared in the Pydantic schema, so we access it via
+    getattr with a sentinel rather than relying on hasattr against model_fields.
+    """
     try:
         if hasattr(response, "choices") and response.choices:
-            choice = response.choices[0]
-            if hasattr(choice, "message") and hasattr(choice.message, "content"):
-                return choice.message.content or ""
+            msg = response.choices[0].message
+
+            # Standard path: content is a non-empty string
+            content = getattr(msg, "content", None)
+            if isinstance(content, str) and content.strip():
+                return content
+
+            # Multimodal path: content is a list of typed parts
+            if isinstance(content, list):
+                texts = [
+                    p.get("text", "")
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                joined = " ".join(t for t in texts if t).strip()
+                if joined:
+                    return joined
+
+            # Reasoning-model path: tencent/hy3 and similar expose the answer
+            # in message.reasoning (dynamic attribute, not in model_fields)
+            reasoning = getattr(msg, "reasoning", None)
+            if isinstance(reasoning, str) and reasoning.strip():
+                return reasoning
     except Exception:
         pass
 
