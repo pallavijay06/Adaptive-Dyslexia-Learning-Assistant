@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 from database.db import get_user_by_id
 from services.master_decision_engine import get_adaptive_learning_plan
 from services.recommendation_engine import RecommendationEngine
+from services.revision_service import generate_revision_notes, RevisionServiceError
 
 adaptive_bp = Blueprint("adaptive_plan", __name__, url_prefix="/adaptive-plan")
 logger = logging.getLogger(__name__)
@@ -206,6 +207,40 @@ def journey_complete(user_id: int):
 
     complete = len(state["completed_steps"]) >= state["total_steps"]
     return jsonify({"success": True, "complete": complete, "completed_steps": state["completed_steps"]}), 200
+
+
+@adaptive_bp.post("/revision-notes")
+def revision_notes():
+    """Generate dyslexia-friendly revision notes for a list of topics.
+
+    Request JSON:
+        revision_topics (list[str], required)  — topics to revise
+
+    The topics are supplied by the frontend from the revision step's
+    ``revision_topics`` field, which was populated by the Understanding
+    Decision Engine and carried forward by the Master Decision Engine.
+    All adaptive decisions are made in the backend; this endpoint only
+    generates the LLM output.
+    """
+    data = request.get_json(silent=True) or {}
+    topics = data.get("revision_topics")
+
+    if not topics or not isinstance(topics, list):
+        return jsonify({"success": False, "error": "revision_topics must be a non-empty list."}), 400
+
+    topics = [str(t).strip() for t in topics if str(t).strip()]
+    if not topics:
+        return jsonify({"success": False, "error": "revision_topics contains no valid topic names."}), 400
+
+    try:
+        notes = generate_revision_notes(topics)
+        return jsonify({"success": True, "revision_notes": notes, "topics": topics}), 200
+    except RevisionServiceError as exc:
+        logger.error("Revision note generation failed: %s", exc)
+        return jsonify({"success": False, "error": "Revision note generation failed. Please try again."}), 500
+    except Exception:
+        logger.exception("Unexpected error in revision_notes endpoint")
+        return jsonify({"success": False, "error": "An unexpected error occurred."}), 500
 
 
 @adaptive_bp.get("/learning-path/<int:user_id>")

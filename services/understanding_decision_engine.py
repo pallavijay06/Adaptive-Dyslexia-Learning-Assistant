@@ -31,6 +31,7 @@ class UnderstandingDecision:
     analogy_required: bool
     step_by_step: bool
     revision_required: bool
+    revision_topics: list[str]    # concepts that need revision (empty when revision_required=False)
     confidence: float             # 0.0 – 1.0
     reasoning: list[str]
 
@@ -95,10 +96,13 @@ _REVISION_TREND_TRIGGER       = "Declining"
 # Public API  (signatures unchanged)
 # ---------------------------------------------------------------------------
 
-def get_understanding_decision(user_id: int) -> UnderstandingDecision:
+def get_understanding_decision(
+    user_id: int,
+    document_concepts: list[str] | None = None,
+) -> UnderstandingDecision:
     """Compute and return the Understanding Decision for a learner."""
     profile_data, retention_data, trend_data = _load_inputs(user_id)
-    return _decide(profile_data, retention_data, trend_data)
+    return _decide(profile_data, retention_data, trend_data, user_id=user_id, document_concepts=document_concepts)
 
 
 def get_understanding_decision_from_data(
@@ -107,6 +111,7 @@ def get_understanding_decision_from_data(
     quiz_accuracy_score: float | None,
     retention_score: float | None,
     learning_trend: str | None,
+    document_concepts: list[str] | None = None,
 ) -> UnderstandingDecision:
     """Pure-function variant — accepts pre-loaded values (for Master Decision Engine)."""
     return _decide(
@@ -116,6 +121,8 @@ def get_understanding_decision_from_data(
         },
         {"score": retention_score, "has_data": retention_score is not None},
         {"status": learning_trend or "Stable", "has_data": learning_trend is not None},
+        user_id=None,
+        document_concepts=document_concepts,
     )
 
 
@@ -186,6 +193,8 @@ def _decide(
     profile_data: dict[str, Any],
     retention_data: dict[str, Any],
     trend_data: dict[str, Any],
+    user_id: int | None = None,
+    document_concepts: list[str] | None = None,
 ) -> UnderstandingDecision:
 
     comprehension  = profile_data.get("comprehension_score")
@@ -266,6 +275,8 @@ def _decide(
         trend_status, trend_has_data, completeness, confidence,
     )
 
+    revision_topics = _load_revision_topics(user_id=user_id, document_concepts=document_concepts) if revision_required else []
+
     return UnderstandingDecision(
         content_complexity=complexity,
         reading_level=reading_level,
@@ -273,6 +284,7 @@ def _decide(
         analogy_required=analogy_required,
         step_by_step=step_by_step,
         revision_required=revision_required,
+        revision_topics=revision_topics,
         confidence=confidence,
         reasoning=reasoning,
     )
@@ -298,6 +310,42 @@ def _worked_examples(complexity: str) -> str:
         "Moderate":    "Moderate",
         "Advanced":    "Few",
     }[complexity]
+
+
+# ---------------------------------------------------------------------------
+# Revision topics loader
+# ---------------------------------------------------------------------------
+
+def _load_revision_topics(
+    user_id: int | None,
+    document_concepts: list[str] | None = None,
+) -> list[str]:
+    """Return weak concepts that also appear in the current document.
+
+    Intersects the learner's historical weak concepts (difficulty_profile)
+    with the concepts from the currently uploaded document so that only
+    relevant revision topics are returned.
+    """
+    if user_id is None:
+        return []
+    try:
+        from services.difficulty_profile_service import get_difficult_concepts
+        entries = get_difficult_concepts(user_id, limit=10, min_attempts=1)
+        weak_concepts = [
+            str(e.get("concept") or "").strip()
+            for e in entries
+            if float(e.get("difficulty_score") or 0.0) > 50.0
+        ]
+        weak_concepts = [c for c in weak_concepts if c]
+
+        # Intersect with current document concepts when available
+        if document_concepts:
+            doc_set = {c.strip().lower() for c in document_concepts if c.strip()}
+            weak_concepts = [c for c in weak_concepts if c.lower() in doc_set]
+
+        return weak_concepts[:5]  # cap at 5 topics
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------

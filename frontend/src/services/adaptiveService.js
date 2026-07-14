@@ -48,5 +48,16 @@ export const adaptiveService = {
     }
     return response.data;
   },
+
+  /** POST /adaptive-plan/revision-notes */
+  generateRevisionNotes: async (revisionTopics) => {
+    const response = await api.post('/adaptive-plan/revision-notes', {
+      revision_topics: revisionTopics,
+    });
+    if (!response.data?.success) {
+      throw new Error(response.data?.error || 'Failed to generate revision notes.');
+    }
+    return response.data;
+  },
 };
 

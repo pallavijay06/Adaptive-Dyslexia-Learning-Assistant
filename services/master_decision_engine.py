@@ -91,6 +91,7 @@ class LearningFlowStep:
     action: str                              # revision | learning_mode | extra_examples | quiz | ai_tutor
     mode: Optional[str] = None               # learning_mode steps
     concepts: Optional[list[str]] = None     # revision / extra_examples steps
+    revision_topics: Optional[list[str]] = None  # revision step — topics to revise
     quiz_length: Optional[int] = None        # quiz step
     quiz_timing: Optional[str] = None        # quiz step
     focus_concepts: Optional[list[str]] = None  # quiz step
@@ -173,7 +174,7 @@ def get_adaptive_learning_plan(
             by the parser pipeline. Passed directly to the Content
             Personalization Engine — the Master does not extract concepts.
     """
-    understanding = get_understanding_decision(user_id)
+    understanding = get_understanding_decision(user_id, document_concepts=document_concepts)
     content       = get_content_personalization_decision(user_id, document_concepts)
     strategy      = get_learning_strategy_decision(user_id)
     return _orchestrate(understanding, content, strategy)
@@ -507,6 +508,7 @@ def _build_adaptive_flow(
             step=step_num,
             action="revision",
             concepts=list(conflict_ctx["revision_concepts"]) or None,
+            revision_topics=list(understanding.revision_topics) if understanding.revision_topics else None,
         ))
         step_num += 1
 
@@ -638,6 +640,7 @@ def _build_prompt_instruction_set(
             "revision_required":     content_instruction.revision_required,
             "revision_focus":        content_instruction.revision_focus,
             "revision_scope":        "concept-specific" if content_instruction.revision_focus else "global",
+            "revision_topics":       list(understanding.revision_topics) if understanding.revision_topics else [],
         },
         session_instruction={
             "adaptive_learning_flow":  [vars(s) for s in adaptive_flow],

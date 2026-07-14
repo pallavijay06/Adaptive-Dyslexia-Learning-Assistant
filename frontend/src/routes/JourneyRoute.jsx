@@ -10,6 +10,7 @@ import ListenModePanel from '../components/ListenModePanel';
 import QuizPanel from '../components/QuizPanel';
 import StemSupportPanel from '../components/StemSupportPanel';
 import ChatPanel from '../components/ChatPanel';
+import RevisionPanel from '../components/RevisionPanel';
 
 // ── Step action → workspace tab mapping ──────────────────────────────────────
 const MODE_TO_TAB = {
@@ -121,6 +122,14 @@ function SummaryCard({ summary }) {
 }
 
 function StepPanel({ step, docId, docName, simplifiedText, onNotesGenerated }) {
+  if (step?.action === 'revision') {
+    return (
+      <RevisionPanel
+        revisionTopics={step.revision_topics ?? []}
+        revisionReason={step.reason ?? ''}
+      />
+    );
+  }
   const tab = resolveTab(step);
   if (tab === 'visual') return <VisualLearningPanel documentId={docId} />;
   if (tab === 'listen') return <ListenModePanel documentId={docId} simplifiedText={simplifiedText} />;
