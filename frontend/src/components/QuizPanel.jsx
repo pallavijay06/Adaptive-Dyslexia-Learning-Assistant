@@ -3,10 +3,12 @@ import { useAuth } from '../contexts/AuthContext';
 import { quizService } from '../services/quizService';
 
 const STATE = { IDLE: 'idle', LOADING: 'loading', ACTIVE: 'active', SUBMITTING: 'submitting', RESULTS: 'results' };
+const PHASE = { MCQ: 'mcq', SHORT: 'short' };
 
 export default function QuizPanel({ documentId, documentName }) {
   const { user } = useAuth();
   const [state, setState] = useState(STATE.IDLE);
+  const [phase, setPhase] = useState(PHASE.MCQ);
   const [mcqs, setMcqs] = useState([]);
   const [shortQuestions, setShortQuestions] = useState([]);
   const [mcqAnswers, setMcqAnswers] = useState({});
@@ -25,6 +27,7 @@ export default function QuizPanel({ documentId, documentName }) {
       setMcqAnswers({});
       setShortAnswers({});
       setReport(null);
+      setPhase(PHASE.MCQ);
       setState(STATE.ACTIVE);
     } catch (err) {
       setError(err.message || 'Could not generate quiz.');
@@ -32,11 +35,18 @@ export default function QuizPanel({ documentId, documentName }) {
     }
   };
 
-  const handleSubmit = async () => {
+  const handleNextToShort = () => {
+    setPhase(PHASE.SHORT);
+  };
+
+  const handleBackToMcq = () => {
     setError('');
+    setPhase(PHASE.MCQ);
+  };
+
+  const handleSubmit = async () => {
     setState(STATE.SUBMITTING);
     try {
-      // Build answers array: one entry per MCQ with the selected option index
       const answers = mcqs.map((_, i) => mcqAnswers[i] ?? null);
       const data = await quizService.submitQuiz({
         answers,
@@ -58,6 +68,7 @@ export default function QuizPanel({ documentId, documentName }) {
     setReport(null);
     setMcqAnswers({});
     setShortAnswers({});
+    setPhase(PHASE.MCQ);
     setState(STATE.ACTIVE);
   };
 
@@ -135,14 +146,17 @@ export default function QuizPanel({ documentId, documentName }) {
     );
   }
 
-  // ── Active / Submitting ───────────────────────────────────────────────────
-  const allMcqAnswered = mcqs.length === 0 || mcqs.every((_, i) => mcqAnswers[i] != null);
+  // ── Active (Phase 1: MCQ) ─────────────────────────────────────────────────
+  if (state === STATE.ACTIVE && phase === PHASE.MCQ) {
+    return (
+      <div className="workspace-content card quiz-active">
+        <div className="quiz-phase-header">
+          <span className="quiz-phase-label">Part 1 of 2 – Multiple Choice</span>
+          <div className="quiz-phase-track">
+            <div className="quiz-phase-track-fill quiz-phase-track-fill--half" />
+          </div>
+        </div>
 
-  return (
-    <div className="workspace-content card quiz-active">
-      <h2>Quiz</h2>
-
-      {mcqs.length > 0 && (
         <section className="quiz-section">
           <h3>Multiple Choice</h3>
           {mcqs.map((q, qi) => (
@@ -167,34 +181,55 @@ export default function QuizPanel({ documentId, documentName }) {
             </div>
           ))}
         </section>
-      )}
 
-      {shortQuestions.length > 0 && (
-        <section className="quiz-section">
-          <h3>Short Answer</h3>
-          {shortQuestions.map((q, qi) => (
-            <div key={qi} className="quiz-question">
-              <p className="quiz-question-text"><strong>Q{qi + 1}.</strong> {q.question}</p>
-              <textarea
-                className="quiz-short-input"
-                rows={3}
-                placeholder="Your answer…"
-                value={shortAnswers[qi] || ''}
-                onChange={(e) => setShortAnswers((prev) => ({ ...prev, [qi]: e.target.value }))}
-              />
-            </div>
-          ))}
-        </section>
-      )}
+        {error && <p className="quiz-error">{error}</p>}
+
+        <div className="quiz-actions quiz-actions--end">
+          <button type="button" className="button button-primary" onClick={handleNextToShort}>
+            Next →
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Active (Phase 2: Short Answer) ────────────────────────────────────────
+  return (
+    <div className="workspace-content card quiz-active">
+      <div className="quiz-phase-header">
+        <span className="quiz-phase-label">Part 2 of 2 – Short Answer</span>
+        <div className="quiz-phase-track">
+          <div className="quiz-phase-track-fill quiz-phase-track-fill--full" />
+        </div>
+      </div>
+
+      <section className="quiz-section">
+        <h3>Short Answer</h3>
+        {shortQuestions.map((q, qi) => (
+          <div key={qi} className="quiz-question">
+            <p className="quiz-question-text"><strong>Q{qi + 1}.</strong> {q.question}</p>
+            <textarea
+              className="quiz-short-input"
+              rows={3}
+              placeholder="Your answer…"
+              value={shortAnswers[qi] || ''}
+              onChange={(e) => setShortAnswers((prev) => ({ ...prev, [qi]: e.target.value }))}
+            />
+          </div>
+        ))}
+      </section>
 
       {error && <p className="quiz-error">{error}</p>}
 
-      <div className="quiz-actions">
+      <div className="quiz-actions quiz-actions--between">
+        <button type="button" className="button button-secondary" onClick={handleBackToMcq}>
+          ← Back
+        </button>
         <button
           type="button"
           className="button button-primary"
           onClick={handleSubmit}
-          disabled={!allMcqAnswered || state === STATE.SUBMITTING}
+          disabled={state === STATE.SUBMITTING}
         >
           {state === STATE.SUBMITTING ? 'Submitting…' : 'Submit Quiz'}
         </button>

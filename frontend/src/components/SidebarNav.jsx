@@ -81,8 +81,10 @@ export default function SidebarNav() {
             navigate('/auth', { replace: true });
           }}
         >
-          <LogOut size={18} />
-          {!collapsed && <span>Logout</span>}
+          <span className="sidebar-link-icon">
+            <LogOut size={18} />
+          </span>
+          {!collapsed && <span className="sidebar-link-label">Logout</span>}
         </button>
       </div>
     </aside>

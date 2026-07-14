@@ -218,52 +218,43 @@ def generate_mcq_quiz(text: str, num_questions: int = 10, adaptive_ctx: dict | N
         return _ensure_quiz_metadata(copy.deepcopy(cached_mcqs), "MCQ")
     logger.info("[CACHE MISS] Quiz MCQ")
 
-    prompt = _build_mcq_generation_prompt(num_questions, adaptive_ctx)
+    doc_concepts = _extract_document_concepts(text, num_questions)
+    prompt = _build_mcq_generation_prompt(num_questions, adaptive_ctx, doc_concepts)
 
     requested_questions = num_questions
-    retry_attempted = False
+    global _QUIZ_RESPONSE_TRUNCATED
+    mcqs = None
+
+    # ── Attempt 1: primary LLM call ──────────────────────────────────────────
     try:
         response = _run_quiz_prompt(prompt, text)
-        # Log raw response from LLM for instrumentation
-        try:
-            logger.info("[Quiz Gen] Raw LLM response (len=%s)", len(response) if response is not None else 0)
-            logger.debug("[Quiz Gen] Raw LLM response head: %s", (response or "")[:300])
-            logger.debug("[Quiz Gen] Raw LLM response tail: %s", (response or "")[-150:])
-        except Exception:
-            logger.exception("[Quiz Gen] Failed to log raw LLM response")
-
+        logger.info("[Quiz Gen] Raw LLM response (len=%s)", len(response) if response is not None else 0)
         mcqs = _parse_json_response(response)
-        # If parser detected truncation, perform one retry with half the requested questions
-        global _QUIZ_RESPONSE_TRUNCATED
-        if mcqs is None and _QUIZ_RESPONSE_TRUNCATED and not retry_attempted:
-            logger.info("Requested MCQs: %d", requested_questions)
-            logger.warning("Attempt 1: Parser failed (truncated response). Retrying with half the questions.")
-            retry_attempted = True
-            _QUIZ_RESPONSE_TRUNCATED = False
-            retry_num = max(1, requested_questions // 2)
-            logger.info("Retry: Requested MCQs: %d", retry_num)
-            # build new prompt for retry
-            retry_prompt = _build_mcq_generation_prompt(retry_num, adaptive_ctx)
-            try:
-                retry_response = _run_quiz_prompt(retry_prompt, text)
-                logger.info("[Quiz Gen] Raw LLM response (retry len=%s)", len(retry_response) if retry_response is not None else 0)
-                mcqs = _parse_json_response(retry_response)
-                if mcqs is not None:
-                    logger.info("Retry succeeded. Returning %d questions.", len(mcqs) if isinstance(mcqs, list) else 0)
-            except Exception:
-                logger.exception("[Quiz Parser] Retry generation failed.")
-
-        if not isinstance(mcqs, list):
-            logger.warning("[Quiz Parser] Parsed MCQ response is not a list or is empty.")
-            mcqs = None
     except Exception:
-        logger.exception("[Quiz Parser] MCQ generation failed. Falling back to local quiz generation.")
+        logger.exception("[Quiz Gen] Primary LLM call failed.")
+
+    # ── Attempt 2: LLM retry (parse failed for any reason) ───────────────────
+    if not isinstance(mcqs, list):
+        retry_num = max(1, requested_questions // 2) if _QUIZ_RESPONSE_TRUNCATED else requested_questions
+        _QUIZ_RESPONSE_TRUNCATED = False
+        logger.warning("[Quiz Gen] Parse failed. Retrying LLM (num_questions=%d).", retry_num)
+        try:
+            retry_prompt = _build_mcq_generation_prompt(retry_num, adaptive_ctx, doc_concepts)
+            retry_response = _run_quiz_prompt(retry_prompt, text)
+            logger.info("[Quiz Gen] Retry LLM response (len=%s)", len(retry_response) if retry_response is not None else 0)
+            mcqs = _parse_json_response(retry_response)
+            if isinstance(mcqs, list):
+                logger.info("[Quiz Gen] Retry succeeded (%d questions).", len(mcqs))
+        except Exception:
+            logger.exception("[Quiz Gen] Retry LLM call failed.")
+
+    if not isinstance(mcqs, list):
+        logger.warning("[Quiz Parser] Parsed MCQ response is not a list or is empty.")
         mcqs = None
 
     if mcqs is None:
         _QUIZ_GENERATION_FALLBACK_USED = True
-        logger.warning("[Quiz Parser] Falling back to local quiz generation")
-        logger.info("Requested MCQs: %d; Retry attempted: %s", requested_questions, retry_attempted)
+        logger.warning("[Quiz Gen] Both LLM attempts failed. Running local fallback.")
         return _local_generate_mcq_quiz(text, num_questions)
 
     validated_mcqs = []
@@ -290,6 +281,43 @@ def generate_mcq_quiz(text: str, num_questions: int = 10, adaptive_ctx: dict | N
         validated_mcqs = _local_generate_mcq_quiz(text, num_questions)
 
     validated_mcqs = _ensure_quiz_metadata(validated_mcqs, "MCQ")
+
+    # ── Quality validation + one automatic regeneration ──────────────────────
+    violations = _validate_quiz(validated_mcqs, text, "MCQ")
+    if violations:
+        logger.warning("[Quiz Validation] MCQ failed validation (%d violations). Regenerating once.", len(violations))
+        for v in violations:
+            logger.debug("[Quiz Validation] %s", v)
+        try:
+            regen_response = _run_quiz_prompt(
+                _build_mcq_generation_prompt(num_questions, adaptive_ctx, doc_concepts), text
+            )
+            regen_mcqs_raw = _parse_json_response(regen_response)
+            if isinstance(regen_mcqs_raw, list):
+                regen_mcqs = [
+                    {
+                        **_extract_question_metadata(item, "MCQ", str(item.get("question", "")).strip(), str(item.get("answer", "")).strip()),
+                        "question": str(item.get("question", "")).strip(),
+                        "options": [str(o).strip() for o in (item.get("options") or [])],
+                        "answer": str(item.get("answer", "")).strip(),
+                    }
+                    for item in regen_mcqs_raw
+                    if isinstance(item, dict)
+                    and str(item.get("question", "")).strip()
+                    and str(item.get("answer", "")).strip()
+                    and isinstance(item.get("options"), list)
+                    and len(item["options"]) == 4
+                ]
+                regen_mcqs = _ensure_quiz_metadata(regen_mcqs, "MCQ")
+                regen_violations = _validate_quiz(regen_mcqs, text, "MCQ")
+                if len(regen_violations) < len(violations):
+                    logger.info("[Quiz Validation] Regenerated MCQ is cleaner (%d violations). Using it.", len(regen_violations))
+                    validated_mcqs = regen_mcqs
+                else:
+                    logger.info("[Quiz Validation] Regenerated MCQ not better. Keeping original.")
+        except Exception:
+            logger.exception("[Quiz Validation] Regeneration attempt failed. Keeping original quiz.")
+
     set_cache_value(cache_key, validated_mcqs, ttl_hours=QUIZ_CACHE_TTL_HOURS)
 
     # Final instrumentation: log validated_mcqs and final return value
@@ -320,7 +348,8 @@ def generate_short_questions(text: str, num_questions: int = 5, adaptive_ctx: di
         logger.info("[CACHE HIT] Quiz Short")
         return _ensure_quiz_metadata(copy.deepcopy(cached_questions), "Short Answer")
 
-    prompt = _build_short_answer_generation_prompt(num_questions, adaptive_ctx)
+    doc_concepts = _extract_document_concepts(text, num_questions)
+    prompt = _build_short_answer_generation_prompt(num_questions, adaptive_ctx, doc_concepts)
 
     try:
         response = _run_quiz_prompt(prompt, text)
@@ -360,6 +389,41 @@ def generate_short_questions(text: str, num_questions: int = 5, adaptive_ctx: di
         validated_questions = _local_generate_short_questions(text, num_questions)
 
     validated_questions = _ensure_quiz_metadata(validated_questions, "Short Answer")
+
+    # ── Quality validation + one automatic regeneration ──────────────────────
+    violations = _validate_quiz(validated_questions, text, "Short Answer")
+    if violations:
+        logger.warning("[Quiz Validation] Short Answer failed validation (%d violations). Regenerating once.", len(violations))
+        for v in violations:
+            logger.debug("[Quiz Validation] %s", v)
+        try:
+            regen_response = _run_quiz_prompt(
+                _build_short_answer_generation_prompt(num_questions, adaptive_ctx, doc_concepts), text
+            )
+            regen_qs_raw = _parse_json_response(regen_response)
+            if isinstance(regen_qs_raw, list):
+                regen_qs = [
+                    {
+                        **_extract_question_metadata(item, "Short Answer", str(item.get("question", "")).strip(), str(item.get("answer", "")).strip()),
+                        "question": str(item.get("question", "")).strip(),
+                        "options": [],
+                        "answer": str(item.get("answer", "")).strip(),
+                    }
+                    for item in regen_qs_raw
+                    if isinstance(item, dict)
+                    and str(item.get("question", "")).strip()
+                    and str(item.get("answer", "")).strip()
+                ]
+                regen_qs = _ensure_quiz_metadata(regen_qs, "Short Answer")
+                regen_violations = _validate_quiz(regen_qs, text, "Short Answer")
+                if len(regen_violations) < len(violations):
+                    logger.info("[Quiz Validation] Regenerated Short Answer is cleaner (%d violations). Using it.", len(regen_violations))
+                    validated_questions = regen_qs
+                else:
+                    logger.info("[Quiz Validation] Regenerated Short Answer not better. Keeping original.")
+        except Exception:
+            logger.exception("[Quiz Validation] Regeneration attempt failed. Keeping original quiz.")
+
     set_cache_value(cache_key, validated_questions, ttl_hours=QUIZ_CACHE_TTL_HOURS)
     return copy.deepcopy(validated_questions)
 
@@ -385,26 +449,28 @@ def evaluate_mcq(user_answers: list[str], quiz_data: list[dict[str, Any]]) -> di
         student_answer = str(student_answer or "").strip()
         concept = str(question_item.get("concept") or "").strip() or _infer_concept(question, correct_answer)
 
-        is_correct = _compare_mcq_answers(student_answer, correct_answer, options)
+        not_answered = student_answer == ""
+        is_correct = False if not_answered else _compare_mcq_answers(student_answer, correct_answer, options)
         if is_correct:
             correct_count += 1
 
         score = 1 if is_correct else 0
-        feedback = _build_mcq_feedback(concept, correct_answer)
-        question_feedback.append(
-            _build_question_assessment_result(
-                question_item=question_item,
-                index=index,
-                question=question,
-                student_answer=student_answer,
-                correct_answer=correct_answer,
-                is_correct=is_correct,
-                score=score,
-                feedback=feedback,
-                question_type="MCQ",
-                options=options,
-            )
+        feedback = "Not Answered" if not_answered else _build_mcq_feedback(concept, correct_answer)
+        result = _build_question_assessment_result(
+            question_item=question_item,
+            index=index,
+            question=question,
+            student_answer=student_answer,
+            correct_answer=correct_answer,
+            is_correct=is_correct,
+            score=score,
+            feedback=feedback,
+            question_type="MCQ",
+            options=options,
         )
+        if not_answered:
+            result["not_answered"] = True
+        question_feedback.append(result)
 
     percentage = round((correct_count / total) * 100) if total else 0
 
@@ -858,7 +924,8 @@ def _build_raw_assessment_evidence(
     accuracy: int,
 ) -> dict[str, Any]:
     wrong_concepts = _unique_preserving_order(
-        [str(item.get("concept") or "").strip() for item in question_results if not item.get("is_correct")]
+        [str(item.get("concept") or "").strip() for item in question_results
+         if not item.get("is_correct")]
     )
     correct_concepts = _unique_preserving_order(
         [str(item.get("concept") or "").strip() for item in question_results if item.get("is_correct")]
@@ -1337,7 +1404,77 @@ def quiz_generation_used_fallback() -> bool:
     return used
 
 
-def _build_mcq_generation_prompt(num_questions: int, adaptive_ctx: dict | None = None) -> str:
+def _extract_document_concepts(text: str, num_questions: int) -> list[str]:
+    """Split the document into segments and extract one concept label per segment.
+
+    Returns an ordered list of unique concept labels that spans the whole document.
+    The list length is capped at num_questions so the allocation table stays compact.
+    """
+    # Split on blank lines, headings, or every ~300 words as a fallback
+    raw_segments: list[str] = re.split(r"\n{2,}|(?=\n[A-Z][^\n]{0,60}\n)", text)
+    # Also chunk any segment that is still very long (>300 words) into 300-word pieces
+    segments: list[str] = []
+    for seg in raw_segments:
+        words = seg.split()
+        if len(words) <= 300:
+            if seg.strip():
+                segments.append(seg.strip())
+        else:
+            for i in range(0, len(words), 300):
+                chunk = " ".join(words[i : i + 300]).strip()
+                if chunk:
+                    segments.append(chunk)
+
+    concepts: list[str] = []
+    seen: set[str] = set()
+    for seg in segments:
+        label = _concept_label_from_segment(seg)
+        if label and label.lower() not in seen:
+            seen.add(label.lower())
+            concepts.append(label)
+
+    # Cap at num_questions concepts so the allocation table is never longer than the quiz
+    return concepts[:num_questions] if concepts else []
+
+
+def _concept_label_from_segment(segment: str) -> str:
+    """Return a short concept label (2-4 words) for a text segment."""
+    # Prefer the first heading-like line (short, title-cased or all-caps)
+    lines = [l.strip() for l in segment.splitlines() if l.strip()]
+    for line in lines[:3]:
+        words = line.split()
+        if 1 <= len(words) <= 6 and not line.endswith("."):
+            label = " ".join(words[:4])
+            if label:
+                return label.title()
+
+    # Fall back to the most frequent non-stopword content token in the segment
+    tokens = [
+        t for t in re.findall(r"[a-zA-Z][a-zA-Z-]{3,}", segment.lower())
+        if t not in _STOPWORDS
+    ]
+    if not tokens:
+        return ""
+    most_common = Counter(tokens).most_common(3)
+    label = " ".join(word.title() for word, _ in most_common[:2])
+    return label
+
+
+def _build_concept_allocation(concepts: list[str], num_questions: int) -> str:
+    """Return a formatted allocation table: concept → number of questions."""
+    if not concepts:
+        return ""
+    n = len(concepts)
+    base, remainder = divmod(num_questions, n)
+    lines = []
+    for i, concept in enumerate(concepts):
+        count = base + (1 if i < remainder else 0)
+        if count > 0:
+            lines.append(f"  {concept}: {count} question{'s' if count > 1 else ''}")
+    return "\n".join(lines)
+
+
+def _build_mcq_generation_prompt(num_questions: int, adaptive_ctx: dict | None = None, doc_concepts: list[str] | None = None) -> str:
     ctx = adaptive_ctx or {}
     proficiency = ctx.get("proficiency_level", "Developing")
     dist = ctx.get("difficulty_distribution") or _DIFFICULTY_DISTRIBUTION.get(proficiency, _DIFFICULTY_DISTRIBUTION["Developing"])
@@ -1346,148 +1483,384 @@ def _build_mcq_generation_prompt(num_questions: int, adaptive_ctx: dict | None =
     revision_required: bool = bool(ctx.get("revision_required"))
     step_by_step: bool = bool(ctx.get("step_by_step"))
 
-    # Compute per-difficulty question counts from distribution
-    easy_n  = max(1, round(num_questions * dist.get("Easy",   0.40)))
-    hard_n  = max(0, round(num_questions * dist.get("Hard",   0.20)))
+    easy_n   = max(1, round(num_questions * dist.get("Easy",  0.40)))
+    hard_n   = max(0, round(num_questions * dist.get("Hard",  0.20)))
     medium_n = max(1, num_questions - easy_n - hard_n)
 
-    # Build adaptive instruction block
-    adaptive_lines = [
-        f"LEARNER PROFICIENCY: {proficiency}.",
-        f"DIFFICULTY DISTRIBUTION: {easy_n} Easy, {medium_n} Medium, {hard_n} Hard questions.",
-    ]
+    # ── Proficiency-specific cognitive demand ────────────────────────────────
+    if proficiency == "Beginner":
+        style_instruction = (
+            "COGNITIVE DEMAND: Recall and recognition only.\n"
+            "- Ask for definitions, labels, and single facts stated directly in the document.\n"
+            "- Example stems: 'What is the term for...', 'Which of the following defines...', "
+            "'According to the document, what does X mean?'\n"
+            "- Use plain, short sentences. One idea per question."
+        )
+    elif proficiency == "Developing":
+        style_instruction = (
+            "COGNITIVE DEMAND: Understanding and relationships.\n"
+            "- Ask how concepts relate, what causes what, and how processes work.\n"
+            "- Example stems: 'Why does X happen?', 'What is the relationship between X and Y?', "
+            "'Which statement best explains how X works?'\n"
+            "- Mix factual recall with simple application."
+        )
+    elif proficiency == "Proficient":
+        style_instruction = (
+            "COGNITIVE DEMAND: Reasoning, comparison, and inference.\n"
+            "- Ask learners to compare concepts, identify implications, or apply knowledge to a new context.\n"
+            "- Example stems: 'Which of the following best explains why...', "
+            "'How does X differ from Y according to the document?', "
+            "'What would most likely happen if...?'\n"
+            "- Avoid simple recall. Every question must require thinking beyond the literal text."
+        )
+    else:  # Advanced
+        style_instruction = (
+            "COGNITIVE DEMAND: Analysis, evaluation, and multi-step reasoning.\n"
+            "- Ask learners to evaluate arguments, synthesise multiple ideas, or reason through scenarios.\n"
+            "- Example stems: 'Based on the document, which conclusion is best supported by...', "
+            "'A student claims that X. Which evidence from the document supports or refutes this?', "
+            "'If condition Y changed, what effect would this have on X according to the document?'\n"
+            "- All questions must require integrating at least two ideas from the document."
+        )
 
+    # ── Adaptive concept targeting ───────────────────────────────────────────
+    concept_lines: list[str] = []
     if weak_concepts:
         wc = ", ".join(weak_concepts[:5])
-        adaptive_lines.append(
-            f"WEAK CONCEPTS (generate extra questions on these, test from multiple angles): {wc}."
+        concept_lines.append(
+            f"PRIORITY CONCEPTS (learner struggles here — weight at least 40% of questions on these): {wc}."
         )
     if strong_concepts:
         sc = ", ".join(strong_concepts[:5])
-        adaptive_lines.append(
-            f"STRONG CONCEPTS (avoid basic recall; ask higher-order reasoning or application questions only): {sc}."
+        concept_lines.append(
+            f"MASTERED CONCEPTS (do not ask basic recall on these — use higher-order questions only): {sc}."
         )
     if revision_required:
-        adaptive_lines.append(
-            "REVISION MODE: Reinforce fundamentals. Use simpler wording. Build learner confidence."
+        concept_lines.append(
+            "REVISION MODE: Reinforce core facts. Use simpler wording. Build confidence before introducing harder ideas."
         )
     if step_by_step:
-        adaptive_lines.append(
-            "STEP-BY-STEP: Break multi-part questions into clear, single-idea steps."
+        concept_lines.append(
+            "STEP-BY-STEP: Each question must test one single idea. Do not combine multiple concepts in one question."
         )
 
-    # Proficiency-specific question style guidance
-    if proficiency == "Beginner":
-        style_note = (
-            "Questions must reinforce fundamentals, use simple wording, and build confidence. "
-            "Avoid inference or multi-step reasoning."
-        )
-    elif proficiency in ("Proficient", "Advanced"):
-        style_note = (
-            "Questions must require reasoning, comparison, application, or inference. "
-            "Avoid simple recall questions. Prioritise Medium and Hard difficulty."
-        )
-    else:
-        style_note = "Mix recall, understanding, and application questions."
+    concept_block = ("\n".join(concept_lines) + "\n\n") if concept_lines else ""
 
-    adaptive_block = "\n".join(adaptive_lines)
+    # ── Document concept coverage block ─────────────────────────────────────
+    allocation_block = ""
+    if doc_concepts:
+        allocation = _build_concept_allocation(doc_concepts, num_questions)
+        concept_list = "\n".join(f"  - {c}" for c in doc_concepts)
+        allocation_block = (
+            "DOCUMENT CONCEPT MAP (extracted from the full document in reading order):\n"
+            f"{concept_list}\n\n"
+            "REQUIRED QUESTION ALLOCATION — you must generate exactly this many questions per concept:\n"
+            f"{allocation}\n"
+            "Every concept listed above must contribute at least one question. "
+            "Do not generate more than one question per concept unless the allocation above says so. "
+            "Do not cluster questions around the first concept or the first paragraph.\n\n"
+        )
 
     return (
-        "You are an Adaptive Assessment Engine generating a personalised quiz strictly from the document below.\n"
-        "IMPORTANT: Return exactly one JSON array and nothing else. "
-        "Do NOT include any text before or after the array. "
-        "Do NOT use Markdown, fenced code blocks, or prepend the word 'json'. "
-        "Start the response with '[' and end with ']'.\n\n"
-        f"ADAPTIVE LEARNER CONTEXT:\n{adaptive_block}\n\n"
-        f"QUESTION STYLE: {style_note}\n\n"
-        f"Generate exactly {num_questions} questions.\n"
-        "DOCUMENT AWARENESS RULES:\n"
-        "- Every question MUST reference a concept, fact, example, or explanation present in the uploaded document.\n"
-        "- Never generate generic or placeholder questions.\n"
-        "- Never invent facts not present in the document.\n\n"
-        "MCQ QUALITY RULES:\n"
-        "- Every MCQ must have exactly one correct answer and three realistic, conceptually related distractors.\n"
-        "- Distractors must be believable and educational — never use placeholder options.\n\n"
-        "VALIDATION: Before returning, reject any question that is generic, duplicated, unrelated to the document, "
-        "contains placeholder wording, or has unrealistic answer choices. Regenerate those questions.\n\n"
-        "For each question, return exactly these keys:\n"
-        "- question_id (Q001, Q002, Q003, unique within this quiz)\n"
-        "- question_type (must be exactly \"MCQ\")\n"
-        "- concept (2-5 words naming the main topic from the document)\n"
-        "- subcategory (one natural label such as Formula, Definition, Diagram, Theory, Application, or Calculation)\n"
-        "- difficulty (must be exactly one of: Easy, Medium, Hard)\n"
-        "- skill (must be exactly one of: Concept Understanding, Definition Recall, Formula Application, "
-        "Numerical Problem Solving, Diagram Interpretation, Real-world Application)\n"
-        "- learning_objective (one concise measurable sentence describing what the learner demonstrates)\n"
-        "- question\n"
-        "- options (a list of exactly 4 answer choices)\n"
-        "- answer (the correct answer exactly as one of the options)\n"
-        "Do not invent unsupported facts or extra fields. Use simple language and keep answer choices clear and short."
+        "You are a professional educational assessment engine producing exam-quality multiple choice questions.\n"
+        "Your questions must read like questions from a real school or university examination paper.\n\n"
+        "OUTPUT FORMAT:\n"
+        "Return exactly one raw JSON array. Nothing before '['. Nothing after ']'.\n"
+        "No markdown. No code fences. No explanation. No commentary.\n\n"
+        f"LEARNER PROFILE:\n"
+        f"Proficiency: {proficiency}\n"
+        f"Difficulty split: {easy_n} Easy, {medium_n} Medium, {hard_n} Hard\n\n"
+        f"{style_instruction}\n\n"
+        f"{concept_block}"
+        f"{allocation_block}"
+        "DOCUMENT RULES (strictly enforced):\n"
+        "1. Every question must be grounded in a specific fact, concept, process, or example from the document.\n"
+        "2. Follow the REQUIRED QUESTION ALLOCATION above exactly. "
+        "Do not ask more than one question about the same sentence or the same narrow fact.\n"
+        "3. Never invent information not present in the document.\n\n"
+        "QUESTION QUALITY RULES (strictly enforced):\n"
+        "4. Every question must name a specific concept, term, process, or fact from the document. "
+        "Never ask vague questions such as:\n"
+        "   - 'What is a key idea from this document?'\n"
+        "   - 'Which statement is true?'\n"
+        "   - 'What is this document about?'\n"
+        "   - 'Which of the following is correct?'\n"
+        "   These are forbidden. Any question of this type must be discarded and replaced.\n"
+        "5. DISTRACTOR RULES — every wrong option must be a complete, meaningful phrase, not a word or fragment:\n"
+        "   - Each distractor must describe a real concept, process, or definition from the same subject domain.\n"
+        "   - Distractors must be educationally believable: a student who has not studied could reasonably pick them.\n"
+        "   - All four options must be full phrases of similar length and grammatical form.\n"
+        "   GOOD example — 'What is photosynthesis?':\n"
+        "     A) The process plants use to make food from sunlight  ← correct\n"
+        "     B) The movement of water from roots to leaves\n"
+        "     C) The process by which seeds germinate in soil\n"
+        "     D) The absorption of minerals through root hairs\n"
+        "   BAD example (forbidden):\n"
+        "     A) leaves   B) openings   C) absorb   D) Plants make food\n"
+        "   Never use: single words, partial phrases, 'A key idea', 'A different idea', 'A wrong idea', "
+        "'more detail', or any text copied verbatim from neighbouring words in the document.\n"
+        "   Never repeat the same option twice, even with different wording.\n"
+        "6. The correct answer must be unambiguously correct based on the document content.\n"
+        "7. All four options must be grammatically parallel and similar in length.\n\n"
+        f"Generate exactly {num_questions} questions.\n\n"
+        "For each question return exactly these JSON keys:\n"
+        "  question_id   — Q001, Q002, ... (unique)\n"
+        "  question_type — exactly \"MCQ\"\n"
+        "  concept       — 2-5 words naming the specific topic from the document\n"
+        "  subcategory   — one of: Definition, Theory, Application, Formula, Calculation, Diagram\n"
+        "  difficulty    — exactly one of: Easy, Medium, Hard\n"
+        "  skill         — exactly one of: Concept Understanding, Definition Recall, Formula Application, "
+        "Numerical Problem Solving, Diagram Interpretation, Real-world Application\n"
+        "  learning_objective — one measurable sentence: what the learner must demonstrate\n"
+        "  question      — the question stem\n"
+        "  options       — list of exactly 4 answer choices\n"
+        "  answer        — the correct answer, copied exactly from options\n"
     )
 
 
-def _build_short_answer_generation_prompt(num_questions: int, adaptive_ctx: dict | None = None) -> str:
+def _build_short_answer_generation_prompt(num_questions: int, adaptive_ctx: dict | None = None, doc_concepts: list[str] | None = None) -> str:
     ctx = adaptive_ctx or {}
     proficiency = ctx.get("proficiency_level", "Developing")
     dist = ctx.get("difficulty_distribution") or _DIFFICULTY_DISTRIBUTION.get(proficiency, _DIFFICULTY_DISTRIBUTION["Developing"])
     weak_concepts: list[str] = ctx.get("weak_concepts") or []
     strong_concepts: list[str] = ctx.get("strong_concepts") or []
 
-    easy_n  = max(1, round(num_questions * dist.get("Easy",   0.40)))
-    hard_n  = max(0, round(num_questions * dist.get("Hard",   0.20)))
+    easy_n   = max(1, round(num_questions * dist.get("Easy",  0.40)))
+    hard_n   = max(0, round(num_questions * dist.get("Hard",  0.20)))
     medium_n = max(1, num_questions - easy_n - hard_n)
 
-    adaptive_lines = [
-        f"LEARNER PROFICIENCY: {proficiency}.",
-        f"DIFFICULTY DISTRIBUTION: {easy_n} Easy, {medium_n} Medium, {hard_n} Hard questions.",
-    ]
+    # ── Proficiency → Bloom's level + stem bank + answer expectation ─────────
+    if proficiency == "Beginner":
+        style_instruction = (
+            "BLOOM'S LEVEL: Understand (explain in own words, not copy).\n"
+            "- Questions must ask the learner to explain the meaning or purpose of a named concept.\n"
+            "- Permitted stems: 'Explain what X does.', 'Describe the role of X in Y.', "
+            "'Why is X needed for Y?', 'What happens to Y when X is present?'\n"
+            "- FORBIDDEN stems: 'What is X?', 'What food do plants make?', 'Name X.' — "
+            "these can be answered by copying one sentence verbatim and are not allowed.\n"
+            "- Expected answer length: 1-2 sentences written in the learner's own words."
+        )
+    elif proficiency == "Developing":
+        style_instruction = (
+            "BLOOM'S LEVEL: Apply and Analyse (explain mechanisms and relationships).\n"
+            "- Questions must ask the learner to explain how or why something works, "
+            "or describe a cause-and-effect relationship between two named concepts.\n"
+            "- Permitted stems: 'Explain why X is important for Y.', "
+            "'Describe how X leads to Y.', 'How does X affect Y?', "
+            "'What would happen to Y if X were removed?'\n"
+            "- FORBIDDEN stems: 'What is X?', 'What does X do?' (single-sentence lookup), "
+            "'List the steps of X.' — these are not allowed.\n"
+            "- Expected answer length: 2-3 sentences that explain a mechanism or relationship."
+        )
+    elif proficiency == "Proficient":
+        style_instruction = (
+            "BLOOM'S LEVEL: Analyse and Evaluate (compare, infer, apply to new context).\n"
+            "- Questions must require the learner to compare two concepts, identify a "
+            "cause-and-effect chain across multiple steps, or apply a concept to explain "
+            "a scenario not stated verbatim in the document.\n"
+            "- Permitted stems: 'Compare X and Y in terms of their role in Z.', "
+            "'Explain the sequence of events that leads from X to Z.', "
+            "'How would you use the concept of X to explain why Y occurs?', "
+            "'Why does changing X affect both Y and Z?'\n"
+            "- FORBIDDEN: any question answerable by copying a single sentence.\n"
+            "- Expected answer length: 3-4 sentences demonstrating reasoning beyond recall."
+        )
+    else:  # Advanced
+        style_instruction = (
+            "BLOOM'S LEVEL: Evaluate and Create (synthesise, justify, critique).\n"
+            "- Questions must require the learner to synthesise two or more ideas, "
+            "evaluate a claim using evidence from the document, or reason through a "
+            "hypothetical scenario.\n"
+            "- Permitted stems: 'Using evidence from the document, explain why X is "
+            "more important than Y for Z.', "
+            "'A student claims that X causes Z directly. Evaluate this claim.', "
+            "'Explain how X and Y together account for Z, and what would change if X were absent.', "
+            "'Justify why the document presents X as the primary driver of Y.'\n"
+            "- FORBIDDEN: any question answerable without integrating at least two ideas.\n"
+            "- Expected answer length: 4-5 sentences integrating multiple concepts."
+        )
+
+    # ── Adaptive concept targeting ───────────────────────────────────────────
+    concept_lines: list[str] = []
     if weak_concepts:
         wc = ", ".join(weak_concepts[:5])
-        adaptive_lines.append(
-            f"WEAK CONCEPTS (generate conceptual explanation/reasoning questions on these): {wc}."
+        concept_lines.append(
+            f"PRIORITY CONCEPTS (learner struggles here — weight at least 40% of questions on these): {wc}."
         )
     if strong_concepts:
         sc = ", ".join(strong_concepts[:5])
-        adaptive_lines.append(
-            f"STRONG CONCEPTS (ask application or higher-order questions, not basic definitions): {sc}."
+        concept_lines.append(
+            f"MASTERED CONCEPTS (do not ask basic recall on these — use higher-order questions only): {sc}."
         )
 
-    if proficiency == "Beginner":
-        style_note = "Focus on explanation and understanding. Use simple, clear language."
-    elif proficiency in ("Proficient", "Advanced"):
-        style_note = "Focus on reasoning, application, and inference. Avoid copy-paste definitions."
-    else:
-        style_note = "Mix explanation, reasoning, and application questions."
+    concept_block = ("\n".join(concept_lines) + "\n\n") if concept_lines else ""
 
-    adaptive_block = "\n".join(adaptive_lines)
+    # ── Document concept coverage block ─────────────────────────────────────
+    allocation_block = ""
+    if doc_concepts:
+        allocation = _build_concept_allocation(doc_concepts, num_questions)
+        concept_list = "\n".join(f"  - {c}" for c in doc_concepts)
+        allocation_block = (
+            "DOCUMENT CONCEPT MAP (extracted from the full document in reading order):\n"
+            f"{concept_list}\n\n"
+            "REQUIRED QUESTION ALLOCATION — you must generate exactly this many questions per concept:\n"
+            f"{allocation}\n"
+            "Every concept listed above must contribute at least one question. "
+            "Do not generate more than one question per concept unless the allocation above says so. "
+            "Do not cluster questions around the first concept or the first paragraph.\n\n"
+        )
 
     return (
-        "You are an Adaptive Assessment Engine generating personalised short answer questions strictly from the document below.\n"
-        "Return only a valid JSON array. Do not add any additional text outside the JSON array.\n\n"
-        f"ADAPTIVE LEARNER CONTEXT:\n{adaptive_block}\n\n"
-        f"QUESTION STYLE: {style_note}\n\n"
-        f"Generate exactly {num_questions} questions.\n"
-        "DOCUMENT AWARENESS RULES:\n"
-        "- Every question MUST reference a concept, fact, or explanation present in the uploaded document.\n"
-        "- Never generate generic or placeholder questions.\n\n"
-        "SHORT ANSWER QUALITY RULES:\n"
-        "- Generate conceptual questions, not copy-paste definitions.\n"
-        "- Focus on explanation, reasoning, application, and understanding.\n\n"
-        "VALIDATION: Reject any question that is generic, duplicated, or unrelated to the document.\n\n"
-        "For each question, return exactly these keys:\n"
-        "- question_id (Q001, Q002, Q003, unique within this quiz)\n"
-        "- question_type (must be exactly \"Short Answer\")\n"
-        "- concept (2-5 words naming the main topic from the document)\n"
-        "- subcategory (one natural label such as Formula, Definition, Diagram, Theory, Application, or Calculation)\n"
-        "- difficulty (must be exactly one of: Easy, Medium, Hard)\n"
-        "- skill (must be exactly one of: Concept Understanding, Definition Recall, Formula Application, "
-        "Numerical Problem Solving, Diagram Interpretation, Real-world Application)\n"
-        "- learning_objective (one concise measurable sentence describing what the learner demonstrates)\n"
-        "- question\n"
-        "- options (an empty list)\n"
-        "- answer\n"
-        "Do not invent unsupported facts or extra fields. Use simple language and keep expected answers concise."
+        "You are a professional educational assessment engine producing exam-quality short answer questions.\n"
+        "Your questions must read like questions from a real school or university examination paper.\n\n"
+        "OUTPUT FORMAT:\n"
+        "Return exactly one raw JSON array. Nothing before '['. Nothing after ']'.\n"
+        "No markdown. No code fences. No explanation. No commentary.\n\n"
+        f"LEARNER PROFILE:\n"
+        f"Proficiency: {proficiency}\n"
+        f"Difficulty split: {easy_n} Easy, {medium_n} Medium, {hard_n} Hard\n\n"
+        f"{style_instruction}\n\n"
+        f"{concept_block}"
+        f"{allocation_block}"
+        "DOCUMENT RULES (strictly enforced):\n"
+        "1. Every question must be grounded in a specific fact, concept, process, or relationship from the document.\n"
+        "2. Follow the REQUIRED QUESTION ALLOCATION above exactly. "
+        "Do not ask more than one question about the same sentence or the same narrow fact.\n"
+        "3. Never invent information not present in the document.\n\n"
+        "QUESTION QUALITY RULES (strictly enforced):\n"
+        "4. UNDERSTANDING OVER COPYING — every question must require the learner to demonstrate "
+        "understanding, not locate and copy a sentence.\n"
+        "   Test this: could a learner answer correctly by finding and copying one sentence verbatim? "
+        "If yes, rewrite the question.\n"
+        "   FORBIDDEN question patterns (discard and replace any of these):\n"
+        "   - 'What is X?' when X is defined in a single sentence\n"
+        "   - 'What food do plants make?'\n"
+        "   - 'What does X produce?'\n"
+        "   - 'Name the process by which...'\n"
+        "   - 'What is one important idea from the document?'\n"
+        "   - 'Describe something you learned.'\n"
+        "   - 'What is this document about?'\n"
+        "   GOOD question patterns (use these):\n"
+        "   - 'Explain why X is important for Y.'\n"
+        "   - 'Describe how X leads to Y.'\n"
+        "   - 'Why would Y not occur if X were absent?'\n"
+        "   - 'How does X affect Y according to the document?'\n"
+        "5. The model answer must be a complete explanation a teacher could use for marking. "
+        "It must not be a single copied sentence from the document. "
+        "It must explain the mechanism, relationship, or reasoning behind the concept.\n"
+        "6. Each question must test a different concept. Do not repeat the same topic.\n\n"
+        f"Generate exactly {num_questions} questions.\n\n"
+        "For each question return exactly these JSON keys:\n"
+        "  question_id   — Q001, Q002, ... (unique)\n"
+        "  question_type — exactly \"Short Answer\"\n"
+        "  concept       — 2-5 words naming the specific topic from the document\n"
+        "  subcategory   — one of: Definition, Theory, Application, Formula, Calculation, Diagram\n"
+        "  difficulty    — exactly one of: Easy, Medium, Hard\n"
+        "  skill         — exactly one of: Concept Understanding, Definition Recall, Formula Application, "
+        "Numerical Problem Solving, Diagram Interpretation, Real-world Application\n"
+        "  learning_objective — one measurable sentence: what the learner must demonstrate\n"
+        "  question      — the question stem\n"
+        "  options       — empty list []\n"
+        "  answer        — a complete model answer explaining the mechanism or relationship, "
+        "not a single copied sentence\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# Quiz quality validation
+# ---------------------------------------------------------------------------
+
+_GENERIC_QUESTION_PATTERNS = re.compile(
+    r"(what is (a |an |the )?key idea|which statement is (true|correct)|what is this document about"
+    r"|describe something you learned|what is one important idea|which of the following is correct"
+    r"|what does x (do|produce|mean)|name the process by which)",
+    re.I,
+)
+
+_PLACEHOLDER_PATTERNS = re.compile(
+    r"(lorem ipsum|\[.*?\]|<.*?>|placeholder|todo|tbd|example question|sample question|insert question)",
+    re.I,
+)
+
+_RANDOM_WORD_OPTION_PATTERN = re.compile(r"^[a-zA-Z]{2,12}$")
+
+
+def _validate_quiz(
+    questions: list[dict[str, Any]],
+    doc_text: str,
+    question_type: str,
+) -> list[str]:
+    """Return a list of violation descriptions. Empty list means the quiz passes."""
+    violations: list[str] = []
+    doc_lower = doc_text.lower() if doc_text else ""
+    doc_tokens = _content_tokens(doc_lower)
+
+    seen_questions: set[str] = set()
+    seen_facts: list[str] = []  # normalised answer strings for near-duplicate detection
+
+    for i, item in enumerate(questions):
+        q_raw = str(item.get("question") or "").strip()
+        a_raw = str(item.get("answer") or "").strip()
+        opts: list[str] = [str(o).strip() for o in (item.get("options") or [])]
+        q_norm = _normalize_answer(q_raw)
+        a_norm = _normalize_answer(a_raw)
+        label = f"Q{i+1}"
+
+        # 1. Duplicate questions
+        if q_norm in seen_questions:
+            violations.append(f"{label}: duplicate question text.")
+        seen_questions.add(q_norm)
+
+        # 2. Duplicate options (MCQ only)
+        if question_type == "MCQ" and opts:
+            norm_opts = [_normalize_answer(o) for o in opts]
+            if len(norm_opts) != len(set(norm_opts)):
+                violations.append(f"{label}: duplicate options.")
+
+        # 3. Generic / vague question
+        if _GENERIC_QUESTION_PATTERNS.search(q_raw):
+            violations.append(f"{label}: generic question pattern detected.")
+
+        # 4. Placeholder text in question or answer
+        if _PLACEHOLDER_PATTERNS.search(q_raw) or _PLACEHOLDER_PATTERNS.search(a_raw):
+            violations.append(f"{label}: placeholder text detected.")
+
+        # 5. Options containing random single words (MCQ only)
+        if question_type == "MCQ":
+            for opt in opts:
+                if _RANDOM_WORD_OPTION_PATTERN.match(opt.strip()):
+                    violations.append(f"{label}: option '{opt}' looks like a random word.")
+                    break
+
+        # 6. Answer not present in options (MCQ only)
+        if question_type == "MCQ" and opts and a_raw:
+            norm_opts = [_normalize_answer(o) for o in opts]
+            if a_norm not in norm_opts:
+                violations.append(f"{label}: answer not found in options.")
+
+        # 7. Multiple correct answers (MCQ only) — more than one option matches the answer
+        if question_type == "MCQ" and opts and a_raw:
+            norm_opts = [_normalize_answer(o) for o in opts]
+            matches = sum(1 for o in norm_opts if _fuzzy_text_similarity(o, a_norm) >= 0.90)
+            if matches > 1:
+                violations.append(f"{label}: multiple options match the answer.")
+
+        # 8. Concept not found in document
+        concept_raw = str(item.get("concept") or "").strip()
+        if concept_raw and doc_tokens:
+            concept_tokens = _content_tokens(concept_raw.lower())
+            if concept_tokens and not concept_tokens.intersection(doc_tokens):
+                violations.append(f"{label}: concept '{concept_raw}' not found in document.")
+
+        # 9. Repeated testing of the same fact (near-duplicate answers)
+        if a_norm:
+            for prev in seen_facts:
+                if _fuzzy_text_similarity(a_norm, prev) >= 0.85:
+                    violations.append(f"{label}: answer too similar to a previous question's answer (repeated fact).")
+                    break
+            seen_facts.append(a_norm)
+
+    return violations
 
 
 def _ensure_quiz_metadata(questions: list[dict[str, Any]], question_type: str) -> list[dict[str, Any]]:
@@ -1618,35 +1991,68 @@ def _local_generate_mcq_quiz(text: str, num_questions: int) -> list[dict[str, An
             break
 
     if not facts:
-        key_terms = re.findall(r"\b[a-zA-Z]{4,}\b", text)
-        key_terms = [term for term in key_terms if term.lower() not in _STOPWORDS]
-        facts = [(term.capitalize(), "is", "important") for term in key_terms[:num_questions]]
+        # Extract subject–verb–object triples from any sentence with a copula or action verb
+        for sentence in sentences:
+            match = re.search(
+                r"([A-Z][^.!?]{10,80}?) (refers to|defined as|known as|called|involves|requires|produces|releases|absorbs|converts|enables|prevents|supports|controls) ([^.!?]{5,80})",
+                sentence, re.I,
+            )
+            if match:
+                facts.append((match.group(1).strip(), match.group(2).strip(), match.group(3).strip().rstrip(".")))
+            if len(facts) >= num_questions * 2:
+                break
+
+    # Last resort: build (subject, "is", full_sentence_remainder) from any declarative sentence
+    if not facts:
+        for sentence in sentences:
+            words = sentence.split()
+            if len(words) >= 6:
+                subject = " ".join(words[:3])
+                remainder = " ".join(words[3:min(12, len(words))]).rstrip(".")
+                facts.append((subject, "is", remainder))
+            if len(facts) >= num_questions * 2:
+                break
 
     mcqs = []
-    distractors = list({t for t in re.findall(r"\b[a-zA-Z][a-zA-Z-]{2,}\b", text) if t.lower() not in _STOPWORDS})
-    random.shuffle(distractors)
+    # Build a pool of full-sentence distractors from other facts in the document
+    all_fact_phrases = [
+        (f"{verb} {rem}" if verb.lower() != "is" else rem)
+        for _, verb, rem in facts
+    ]
 
-    for subject, verb, remainder in facts[:num_questions]:
+    for idx, (subject, verb, remainder) in enumerate(facts[:num_questions]):
         correct = f"{verb} {remainder}" if verb.lower() != "is" else remainder
         question = f"What does {subject} {verb}?" if verb.lower() != "is" else f"What is {subject}?"
+        # Use other fact phrases as distractors — they are full phrases from the same domain
+        pool = [
+            p for i, p in enumerate(all_fact_phrases)
+            if i != idx and p.lower() != correct.lower()
+        ]
+        seen: set[str] = {correct.lower()}
         options = [correct]
-        for candidate in distractors:
-            if candidate.lower() != remainder.lower() and candidate.lower() not in {opt.lower() for opt in options}:
+        for candidate in pool:
+            if candidate.lower() not in seen:
+                seen.add(candidate.lower())
                 options.append(candidate)
             if len(options) == 4:
                 break
-        while len(options) < 4:
-            options.append("more detail")
+        # Last-resort pad with generic but complete phrases (never single words)
+        generic_pads = [
+            "A process that does not occur in this context",
+            "An unrelated biological mechanism",
+            "A chemical reaction involving different reactants",
+            "A physical property unrelated to this concept",
+        ]
+        for pad in generic_pads:
+            if len(options) >= 4:
+                break
+            if pad.lower() not in seen:
+                options.append(pad)
         random.shuffle(options)
         mcqs.append({"question": question, "options": options, "answer": correct})
 
-    if len(mcqs) < num_questions:
-        while len(mcqs) < num_questions:
-            mcqs.append({
-                "question": f"What is a key idea from this document?",
-                "options": ["A key idea", "A different idea", "A wrong idea", "A missing idea"],
-                "answer": "A key idea",
-            })
+    # If the document genuinely has fewer extractable facts than requested, return what we have.
+    # Never pad with dummy questions.
     return _ensure_quiz_metadata(mcqs[:num_questions], "MCQ")
 
 
@@ -1676,11 +2082,8 @@ def _local_generate_short_questions(text: str, num_questions: int) -> list[dict[
                 break
             questions.append({"question": f"What does {subject} do?", "answer": detail})
 
-    if len(questions) < num_questions:
-        for i in range(len(questions), num_questions):
-            questions.append({"question": f"What is one important idea from the document?", "answer": "A main idea from the document."})
-
-    return _ensure_quiz_metadata(questions, "Short Answer")
+    # Never pad with dummy questions — return however many genuine ones were found.
+    return _ensure_quiz_metadata(questions[:num_questions], "Short Answer")
 
 
 def _compare_mcq_answers(
@@ -1796,7 +2199,12 @@ def _generate_mcq_learning_report(question_feedback: list[dict[str, Any]]) -> di
         question = str(item.get("question", "")).strip()
         student_answer = str(item.get("student_answer", "")).strip() or "No answer"
         correct_answer = str(item.get("correct_answer", "")).strip()
-        result = "Correct" if item.get("is_correct") else "Incorrect"
+        if item.get("is_correct"):
+            result = "Correct"
+        elif item.get("not_answered"):
+            result = "Not Answered"
+        else:
+            result = "Incorrect"
         evaluations.append(
             {
                 "question": question,

@@ -59,10 +59,7 @@ def _current_user_id() -> int | None:
 @auth_bp.post("/register")
 def register():
     """Register a new learner account."""
-    print("[REGISTER] raw body  :", request.get_data(as_text=True))
-    print("[REGISTER] content-type:", request.content_type)
     data = request.get_json(silent=True) or {}
-    print("[REGISTER] parsed JSON:", data)
     full_name = (data.get("full_name") or data.get("name") or "").strip()
     email = (data.get("email") or "").strip()
     password = data.get("password") or ""
@@ -79,7 +76,6 @@ def register():
         full_name, email, password, confirm_password, age, grade, institution, field_of_study
     )
     if not valid:
-        print("[REGISTER 400] validation failed:", message, "| payload:", request.get_json())
         return jsonify({"success": False, "error": message}), 400
 
     try:

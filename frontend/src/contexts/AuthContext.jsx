@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import api from '../config/api';
 
 const AuthContext = createContext(null);
@@ -8,6 +8,8 @@ export function AuthProvider({ children }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  const [initialising, setInitialising] = useState(true);
 
   const restoreSession = async () => {
     try {
@@ -24,6 +26,7 @@ export function AuthProvider({ children }) {
       setIsAuthenticated(false);
     } finally {
       setLoading(false);
+      setInitialising(false);
     }
   };
 
@@ -40,9 +43,9 @@ export function AuthProvider({ children }) {
 
       const msg = response.data?.error || '';
       if (msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('no account')) {
-        setError('No account found. Please sign up first.');
+        setError('No account found. Please sign up.');
       } else if (msg.toLowerCase().includes('invalid') || msg.toLowerCase().includes('password')) {
-        setError('Incorrect email or password. Please try again.');
+        setError('Invalid email or password.');
       } else {
         setError(msg || 'Login failed.');
       }
@@ -50,10 +53,14 @@ export function AuthProvider({ children }) {
     } catch (axiosError) {
       const msg = axiosError?.response?.data?.error || '';
       const status = axiosError?.response?.status;
-      if (status === 401) {
-        setError('Incorrect email or password. Please try again.');
-      } else if (status === 404 || msg.toLowerCase().includes('not found')) {
-        setError('No account found. Please sign up first.');
+      if (status === 404) {
+        setError('No account found. Please sign up.');
+      } else if (status === 401) {
+        setError('Invalid email or password.');
+      } else if (status === 400) {
+        setError(msg || 'Please check your details and try again.');
+      } else if (status >= 500) {
+        setError('Something went wrong. Please try again later.');
       } else if (msg) {
         setError(msg);
       } else {
@@ -120,7 +127,7 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const clearError = () => setError('');
+  const clearError = useCallback(() => setError(''), []);
 
   useEffect(() => {
     restoreSession();
@@ -131,6 +138,7 @@ export function AuthProvider({ children }) {
     setUser,
     isAuthenticated,
     setIsAuthenticated,
+    initialising,
     loading,
     setLoading,
     error,
@@ -140,7 +148,7 @@ export function AuthProvider({ children }) {
     signup,
     logout,
     restoreSession,
-  }), [user, isAuthenticated, loading, error]);
+  }), [user, isAuthenticated, initialising, loading, error]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

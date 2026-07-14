@@ -21,10 +21,10 @@ import ProgressRoute from './routes/ProgressRoute';
 import WorkspacePage from './pages/WorkspacePage';
 
 function AppRoutes() {
-  const { loading } = useAuth();
+  const { initialising } = useAuth();
 
-  if (loading) {
-    return <div className="card" style={{ maxWidth: '480px', margin: '4rem auto' }}>Loading session…</div>;
+  if (initialising) {
+    return <div className="card" style={{ maxWidth: '480px', margin: '4rem auto' }}>Loading session...</div>;
   }
 
   return (
