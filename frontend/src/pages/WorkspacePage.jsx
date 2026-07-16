@@ -41,7 +41,6 @@ const MODE_TO_TAB = {
   'STEM Support':      'stem',
   'AI Tutor':          'tutor',
   'Revision':          'notes',   // revision falls back to notes
-  'Extra Examples':    'notes',
 };
 
 export default function WorkspacePage() {

@@ -8,21 +8,34 @@ import { adaptiveService } from '../services/adaptiveService';
  * Calls POST /adaptive-plan/revision-notes and displays the result.
  * Contains zero adaptive business logic.
  */
-export default function RevisionPanel({ revisionTopics = [], revisionReason }) {
+export default function RevisionPanel({ revisionTopics = [], revisionReason, documentId }) {
   const [notes, setNotes]     = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState('');
 
   const handleGenerate = async () => {
+    console.log('[RevisionPanel] Button clicked');
+    console.log('[RevisionPanel] revisionTopics', revisionTopics);
+    console.log('[RevisionPanel] revisionReason', revisionReason);
+    console.log('[RevisionPanel] documentId', documentId);
     setLoading(true);
     setError('');
     setNotes('');
     try {
-      const data = await adaptiveService.generateRevisionNotes(revisionTopics);
-      setNotes(data.revision_notes);
+      console.log('[RevisionPanel] Calling adaptiveService.generateRevisionNotes');
+      const data = await adaptiveService.generateRevisionNotes({
+        revisionTopics,
+        revisionReason,
+        documentId,
+      });
+      console.log('[RevisionPanel] Response received', data);
+      setNotes(data.revision_notes ?? data.notes ?? '');
+      console.log('[RevisionPanel] setNotes executed');
     } catch (err) {
+      console.error('[RevisionPanel] Error in handleGenerate', err);
       setError(err.message || 'Failed to generate revision notes.');
     } finally {
+      console.log('[RevisionPanel] Finalizing loading state');
       setLoading(false);
     }
   };

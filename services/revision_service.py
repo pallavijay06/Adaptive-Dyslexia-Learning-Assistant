@@ -38,12 +38,17 @@ def generate_revision_notes(revision_topics: list[str]) -> str:
         ValueError: If revision_topics is empty.
         RevisionServiceError: If the LLM fails to generate notes.
     """
+    print("[revision_service] generate_revision_notes entered")
+    print("[revision_service] revision_topics", revision_topics)
     if not revision_topics:
         raise ValueError("revision_topics cannot be empty.")
 
     prompt = _build_prompt(revision_topics)
+    print("[revision_service] calling llm_router.generate_content")
     try:
-        return generate_content(prompt, max_tokens=1200)
+        result = generate_content(prompt, max_tokens=1200)
+        print("[revision_service] llm_router returned", result)
+        return result
     except LLMRouterError as exc:
         raise RevisionServiceError(f"Revision note generation failed: {exc}") from exc
     except Exception as exc:

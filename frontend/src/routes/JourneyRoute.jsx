@@ -23,15 +23,14 @@ const MODE_TO_TAB = {
   'STEM Support':     'stem',
   'AI Tutor':         'tutor',
   'Revision':         'notes',
-  'Extra Examples':   'notes',
 };
 
 const ACTION_TO_TAB = {
   revision:       'notes',
   learning_mode:  null,   // resolved via step.mode
-  extra_examples: 'notes',
   quiz:           'quiz',
   ai_tutor:       'tutor',
+  stem_support:   'stem',
 };
 
 function resolveTab(step) {
@@ -44,7 +43,6 @@ function resolveTab(step) {
 const ACTION_ICONS = {
   revision:       '🔄',
   learning_mode:  '📖',
-  extra_examples: '💡',
   quiz:           '✏️',
   ai_tutor:       '🤖',
 };
@@ -52,7 +50,6 @@ const ACTION_ICONS = {
 const ACTION_LABELS = {
   revision:       'Revision',
   learning_mode:  'Learning Mode',
-  extra_examples: 'Extra Examples',
   quiz:           'Quiz',
   ai_tutor:       'AI Tutor',
 };
@@ -127,6 +124,7 @@ function StepPanel({ step, docId, docName, simplifiedText, onNotesGenerated }) {
       <RevisionPanel
         revisionTopics={step.revision_topics ?? []}
         revisionReason={step.reason ?? ''}
+        documentId={docId}
       />
     );
   }

@@ -88,10 +88,11 @@ class LearningStrategy:
 class LearningFlowStep:
     """One structured step in the adaptive learning flow."""
     step: int
-    action: str                              # revision | learning_mode | extra_examples | quiz | ai_tutor
+    action: str                              # revision | learning_mode | extra_examples | quiz | ai_tutor | stem_support
     mode: Optional[str] = None               # learning_mode steps
     concepts: Optional[list[str]] = None     # revision / extra_examples steps
     revision_topics: Optional[list[str]] = None  # revision step — topics to revise
+    reason: Optional[str] = None             # revision step — why revision is required
     quiz_length: Optional[int] = None        # quiz step
     quiz_timing: Optional[str] = None        # quiz step
     focus_concepts: Optional[list[str]] = None  # quiz step
@@ -140,10 +141,6 @@ class AdaptiveLearningPlan:
 # the primary learning mode, regardless of what the strategy engine decided.
 _REVISION_STEP = "Revision"
 
-# When extra_examples is non-empty, an Extra Examples step is inserted
-# immediately AFTER the primary learning mode.
-_EXTRA_EXAMPLES_STEP = "Extra Examples"
-
 # Quiz timing labels that trigger pre-quiz revision insertion
 _QUIZ_TIMING_AFTER_REVISION = "After Revision"
 
@@ -165,6 +162,7 @@ _LOW_CONFIDENCE_THRESHOLD = 0.30
 def get_adaptive_learning_plan(
     user_id: int,
     document_concepts: list[str],
+    is_stem_document: bool = False,
 ) -> AdaptiveLearningPlan:
     """Orchestrate all three sub-engines and return one unified AdaptiveLearningPlan.
 
@@ -173,24 +171,28 @@ def get_adaptive_learning_plan(
         document_concepts: Concept names extracted from the uploaded document
             by the parser pipeline. Passed directly to the Content
             Personalization Engine — the Master does not extract concepts.
+        is_stem_document: When True, a STEM Support step is automatically
+            inserted into the adaptive flow. Determined by the existing
+            STEM detector (backend/stem/detector.py) — never by the frontend.
     """
     understanding = get_understanding_decision(user_id, document_concepts=document_concepts)
     content       = get_content_personalization_decision(user_id, document_concepts)
     strategy      = get_learning_strategy_decision(user_id)
-    return _orchestrate(understanding, content, strategy)
+    return _orchestrate(understanding, content, strategy, is_stem_document=is_stem_document)
 
 
 def get_adaptive_learning_plan_from_decisions(
     understanding: UnderstandingDecision,
     content: ContentPersonalizationDecision,
     strategy: LearningStrategyDecision,
+    is_stem_document: bool = False,
 ) -> AdaptiveLearningPlan:
     """Pure-function variant — accepts pre-computed sub-engine decisions.
 
     Use this when the caller has already loaded the three decisions
     (e.g. to avoid redundant DB reads in a batch pipeline).
     """
-    return _orchestrate(understanding, content, strategy)
+    return _orchestrate(understanding, content, strategy, is_stem_document=is_stem_document)
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +203,7 @@ def _orchestrate(
     understanding: UnderstandingDecision,
     content: ContentPersonalizationDecision,
     strategy: LearningStrategyDecision,
+    is_stem_document: bool = False,
 ) -> AdaptiveLearningPlan:
     """Six-step orchestration. No evidence recomputation."""
 
@@ -227,7 +230,7 @@ def _orchestrate(
     learning_strategy = _build_learning_strategy(strategy)
 
     # 7. Build adaptive learning flow (uses conflict context)
-    adaptive_flow = _build_adaptive_flow(understanding, content, strategy, conflict_ctx)
+    adaptive_flow = _build_adaptive_flow(understanding, content, strategy, conflict_ctx, is_stem_document)
 
     # 8. Build DecisionSummary
     decision_summary = _build_decision_summary(understanding, content, strategy, overall_confidence)
@@ -357,8 +360,6 @@ def _resolve_conflicts(
     ctx: dict[str, Any] = {
         "insert_revision_step":    False,
         "revision_concepts":       [],
-        "insert_extra_examples":   False,
-        "extra_example_concepts":  [],
         "global_many_examples":    False,
         "ai_tutor_after_quiz":     False,
         "conflict_notes":          [],
@@ -389,15 +390,6 @@ def _resolve_conflicts(
         ctx["conflict_notes"].append(
             "R2: revision_required=True but no revision_focus concepts — "
             "revision applies globally."
-        )
-
-    # R3 — Extra examples step
-    if content.extra_examples:
-        ctx["insert_extra_examples"] = True
-        ctx["extra_example_concepts"] = list(content.extra_examples)
-        ctx["conflict_notes"].append(
-            f"R3: Extra Examples step inserted for {len(content.extra_examples)} concept(s): "
-            f"{content.extra_examples}."
         )
 
     # R4 — Global many-examples flag (no concept-specific step needed)
@@ -484,6 +476,7 @@ def _build_adaptive_flow(
     content: ContentPersonalizationDecision,
     strategy: LearningStrategyDecision,
     conflict_ctx: dict[str, Any],
+    is_stem_document: bool = False,
 ) -> list[LearningFlowStep]:
     """Construct the complete ordered learning sequence as structured step objects.
 
@@ -491,8 +484,8 @@ def _build_adaptive_flow(
 
         [Revision]                  ← only if revision_required=True
         Primary Learning Mode       ← always present
-        [Extra Examples]            ← only if extra_examples is non-empty
         [Support Learning Mode]     ← only if support_learning_mode is set
+        [STEM Support]              ← only if is_stem_document=True
         Quiz                        ← always present
         [AI Tutor]                  ← only if ai_tutor_required=True
 
@@ -503,12 +496,22 @@ def _build_adaptive_flow(
     step_num = 1
 
     # Step 1 — Revision (before everything else if required)
-    if conflict_ctx["insert_revision_step"]:
+    # Rule 3: only add a Revision step when revision_required=True AND
+    # revision_topics is non-empty.  The Understanding Decision Engine already
+    # enforces this (Rule 2), but we guard here as well so the flow can never
+    # contain a Revision step with an empty topic list.
+    if conflict_ctx["insert_revision_step"] and understanding.revision_topics:
+        revision_topics = list(understanding.revision_topics)
+        revision_reason = next(
+            (line for line in understanding.reasoning if line.startswith("Revision required:")),
+            None,
+        )
         flow.append(LearningFlowStep(
             step=step_num,
             action="revision",
             concepts=list(conflict_ctx["revision_concepts"]) or None,
-            revision_topics=list(understanding.revision_topics) if understanding.revision_topics else None,
+            revision_topics=revision_topics,
+            reason=revision_reason,
         ))
         step_num += 1
 
@@ -521,21 +524,21 @@ def _build_adaptive_flow(
     ))
     step_num += 1
 
-    # Step 3 — Extra Examples (immediately after primary mode)
-    if conflict_ctx["insert_extra_examples"]:
-        flow.append(LearningFlowStep(
-            step=step_num,
-            action="extra_examples",
-            concepts=list(conflict_ctx["extra_example_concepts"]),
-        ))
-        step_num += 1
-
-    # Step 4 — Support learning mode (if available)
+    # Step 3 — Support learning mode (if available)
     if strategy.support_learning_mode:
         flow.append(LearningFlowStep(
             step=step_num,
             action="learning_mode",
             mode=strategy.support_learning_mode,
+        ))
+        step_num += 1
+
+    # Step 4 — STEM Support (only when the document contains STEM content)
+    if is_stem_document:
+        flow.append(LearningFlowStep(
+            step=step_num,
+            action="stem_support",
+            mode="STEM Support",
         ))
         step_num += 1
 

@@ -35,7 +35,11 @@ export default function LearningSelectionRoute() {
     setLoading(true);
     setError('');
     try {
-      const data = await adaptiveService.generatePlan(user.id);
+      const data = await adaptiveService.generatePlan(
+        user.id,
+        [],
+        activeDocument?.document_id ?? activeDocument?.id ?? null,
+      );
       setAdaptiveLearningPlan(data.plan);
       setDocumentId(activeDocument.id ?? activeDocument.document_id ?? null);
       navigate('/journey');

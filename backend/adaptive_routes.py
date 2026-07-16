@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import asdict
 
 from flask import Blueprint, jsonify, request
 
-from database.db import get_user_by_id
+from database.db import get_user_by_id, get_document as get_db_document
+from services.document_context import get_document as get_active_document
 from services.master_decision_engine import get_adaptive_learning_plan
 from services.recommendation_engine import RecommendationEngine
 from services.revision_service import generate_revision_notes, RevisionServiceError
+from backend.stem.stem_service import analyze_document_for_stem
 
 adaptive_bp = Blueprint("adaptive_plan", __name__, url_prefix="/adaptive-plan")
 logger = logging.getLogger(__name__)
@@ -19,18 +22,156 @@ logger = logging.getLogger(__name__)
 # Stores: { current_step: int, plan: dict, completed_steps: list[int] }
 _journey_state: dict[int, dict] = {}
 
+_STOPWORDS = {
+    "about", "after", "again", "against", "all", "also", "an", "and", "any", "are", "as",
+    "at", "be", "because", "been", "before", "being", "between", "both", "but", "by", "can",
+    "could", "did", "do", "does", "doing", "during", "each", "few", "for", "from", "further",
+    "had", "has", "have", "having", "he", "her", "here", "hers", "herself", "him", "himself",
+    "his", "how", "i", "if", "in", "into", "is", "it", "its", "itself", "just", "me", "more",
+    "most", "my", "myself", "no", "nor", "not", "now", "of", "off", "on", "once", "only", "or",
+    "other", "our", "ours", "ourselves", "out", "over", "own", "same", "she", "should", "so",
+    "some", "such", "than", "that", "the", "their", "theirs", "them", "themselves", "then",
+    "there", "these", "they", "this", "those", "through", "to", "too", "under", "until", "up",
+    "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "why", "with", "would", "you", "your", "yours", "yourself", "yourselves", "will", "this",
+    "these", "those", "their", "there", "here", "when", "where", "while", "though",
+}
+
 
 def _plan_to_dict(plan) -> dict:
-    """Convert AdaptiveLearningPlan dataclass to a JSON-serialisable dict."""
+    """Convert adaptive-plan objects to JSON-serialisable data."""
     def _convert(obj):
         if hasattr(obj, "__dataclass_fields__"):
             return {k: _convert(getattr(obj, k)) for k in obj.__dataclass_fields__}
+        if hasattr(obj, "__dict__") and not isinstance(obj, (str, bytes, int, float, bool)):
+            return {k: _convert(v) for k, v in vars(obj).items() if not k.startswith("_")}
         if isinstance(obj, list):
             return [_convert(i) for i in obj]
         if isinstance(obj, dict):
             return {k: _convert(v) for k, v in obj.items()}
         return obj
     return _convert(plan)
+
+
+def _extract_document_concepts(text: str, limit: int = 8) -> list[str]:
+    """Extract a compact set of concepts from document text for adaptive planning."""
+    if not text or not text.strip():
+        return []
+
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return []
+
+    candidates: list[str] = []
+    for line in cleaned.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if 1 <= len(line.split()) <= 6 and not line.endswith((".", "!", "?")):
+            candidates.extend(re.findall(r"[A-Za-z][A-Za-z0-9'’\-]{2,}", line))
+            break
+
+    token_counts: dict[str, int] = {}
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9'’\-]{2,}", cleaned):
+        lowered = token.lower()
+        if lowered in _STOPWORDS or len(token) <= 3:
+            continue
+        token_counts[lowered] = token_counts.get(lowered, 0) + 1
+
+    ranked_tokens = [token for token, _ in sorted(token_counts.items(), key=lambda item: (-item[1], item[0]))]
+    for token in ranked_tokens[:limit]:
+        if token not in {c.lower() for c in candidates}:
+            candidates.append(token)
+
+    concepts: list[str] = []
+    seen: set[str] = set()
+    for concept in candidates:
+        normalized = " ".join(str(concept).split())
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        concepts.append(normalized.title())
+
+    return concepts[:limit]
+
+
+def _resolve_document_text(data: dict) -> str | None:
+    """Resolve raw document text from the request payload or the current document context."""
+    document_id = data.get("document_id")
+    record = None
+
+    if document_id is not None:
+        try:
+            if isinstance(document_id, (int, float)) and not isinstance(document_id, bool):
+                record = get_db_document(int(document_id))
+            else:
+                record = get_active_document(str(document_id))
+        except (TypeError, ValueError):
+            record = None
+
+    if record is None:
+        record = get_active_document()
+
+    if record is None:
+        return None
+
+    document_text = getattr(record, "document_text", None)
+    if isinstance(document_text, str) and document_text.strip():
+        return document_text
+
+    extracted_path = getattr(record, "extracted_path", None)
+    if extracted_path:
+        try:
+            with open(extracted_path, encoding="utf-8") as handle:
+                return handle.read()
+        except (OSError, UnicodeError):
+            return None
+
+    return None
+
+
+def _resolve_document_concepts(data: dict) -> list[str]:
+    """Resolve document concepts from the request payload or the current document context."""
+    explicit = data.get("document_concepts") or []
+    if isinstance(explicit, list):
+        concepts = [str(c).strip() for c in explicit if str(c).strip()]
+        if concepts:
+            return concepts
+
+    document_id = data.get("document_id")
+    record = None
+
+    if document_id is not None:
+        try:
+            if isinstance(document_id, (int, float)) and not isinstance(document_id, bool):
+                record = get_db_document(int(document_id))
+            else:
+                record = get_active_document(str(document_id))
+        except (TypeError, ValueError):
+            record = None
+
+    if record is None:
+        record = get_active_document()
+
+    if record is None:
+        return []
+
+    document_text = getattr(record, "document_text", None)
+    if isinstance(document_text, str) and document_text.strip():
+        return _extract_document_concepts(document_text)
+
+    extracted_path = getattr(record, "extracted_path", None)
+    if extracted_path:
+        try:
+            with open(extracted_path, encoding="utf-8") as handle:
+                return _extract_document_concepts(handle.read())
+        except (OSError, UnicodeError):
+            return []
+
+    return []
 
 
 @adaptive_bp.post("/generate")
@@ -40,6 +181,7 @@ def generate_plan():
     Request JSON:
         user_id (int, required)
         document_concepts (list[str], optional)
+        document_id (int | str, optional)
     """
     data = request.get_json(silent=True) or {}
     user_id = data.get("user_id")
@@ -54,12 +196,21 @@ def generate_plan():
     if get_user_by_id(user_id) is None:
         return jsonify({"success": False, "error": "User not found."}), 404
 
-    document_concepts = data.get("document_concepts") or []
-    if not isinstance(document_concepts, list):
-        document_concepts = []
+    document_concepts = _resolve_document_concepts(data)
+
+    # Detect STEM content using the existing backend STEM service.
+    # The frontend never decides whether a document is STEM — the backend does.
+    is_stem_document = False
+    try:
+        doc_text = _resolve_document_text(data)
+        if doc_text:
+            stem_result = analyze_document_for_stem(doc_text)
+            is_stem_document = stem_result.has_formula or stem_result.has_symbols
+    except Exception:
+        logger.exception("STEM detection failed for user %s — defaulting to non-STEM", user_id)
 
     try:
-        plan = get_adaptive_learning_plan(user_id, document_concepts)
+        plan = get_adaptive_learning_plan(user_id, document_concepts, is_stem_document=is_stem_document)
         plan_dict = _plan_to_dict(plan)
 
         # Initialise journey state for this user
@@ -224,6 +375,24 @@ def revision_notes():
     """
     data = request.get_json(silent=True) or {}
     topics = data.get("revision_topics")
+    user_id = data.get("user_id")
+    document_id = data.get("document_id")
+    revision_reason = data.get("revision_reason")
+
+    print("[backend] revision-notes endpoint reached")
+    print("[backend] request payload", data)
+    print("[backend] topics", topics)
+    print("[backend] document_id", document_id)
+    print("[backend] user_id", user_id)
+    print("[backend] revision_reason", revision_reason)
+
+    logger.info(
+        "Revision notes request received: user_id=%s document_id=%s topics=%s revision_reason=%s",
+        user_id,
+        document_id,
+        topics,
+        revision_reason,
+    )
 
     if not topics or not isinstance(topics, list):
         return jsonify({"success": False, "error": "revision_topics must be a non-empty list."}), 400

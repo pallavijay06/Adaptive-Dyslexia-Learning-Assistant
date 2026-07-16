@@ -277,6 +277,12 @@ def _decide(
 
     revision_topics = _load_revision_topics(user_id=user_id, document_concepts=document_concepts) if revision_required else []
 
+    # Rule 2: revision_required must be False when the intersection is empty.
+    # A declining trend or low retention score is not enough on its own —
+    # there must be at least one topic from the current document to revise.
+    if revision_required and not revision_topics:
+        revision_required = False
+
     return UnderstandingDecision(
         content_complexity=complexity,
         reading_level=reading_level,
