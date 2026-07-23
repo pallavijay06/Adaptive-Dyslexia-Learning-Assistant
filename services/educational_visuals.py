@@ -107,8 +107,28 @@ def get_topic_emojis(topic: str) -> dict[str, str]:
     return TOPIC_EMOJIS["default"]
 
 
+def _intelligent_shorten(text: str, max_width: int, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, max_words: int = 5) -> str:
+    """Shorten text to fit max_width by trimming at word boundaries only.
+
+    Does NOT remove stop words or strip grammar — that corrupts explanation sentences.
+    Simply drops trailing words until the text fits.
+    """
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+
+    words = text.split()
+    while len(words) > 1 and draw.textlength(" ".join(words), font=font) > max_width:
+        words = words[:-1]
+
+    result = " ".join(words[:max_words])
+    return result
+
+
 def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int, max_lines: int = 2) -> list[str]:
-    """Wrap text to fit within max_width and limit the number of lines."""
+    """Wrap text to fit within max_width and limit lines.
+    
+    No ellipsis. Uses intelligent shortening if needed.
+    """
     if max_width <= 0:
         return [text]
 
@@ -131,18 +151,16 @@ def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, 
 
     lines.append(current_line)
 
+    # Trim to max_lines
     if len(lines) > max_lines:
         lines = lines[:max_lines]
 
-    if len(lines) == max_lines:
-        last = lines[-1]
-        while draw.textlength(last + "…", font=font) > max_width and last:
-            last = last.rsplit(" ", 1)[0]
-        if last:
-            lines[-1] = last + "…"
-        else:
-            truncated = text[: max_width // 8].rstrip()
-            lines[-1] = truncated + "…"
+    # If last line is too long, shorten it intelligently
+    if len(lines) > 0:
+        last_line = lines[-1]
+        if draw.textlength(last_line, font=font) > max_width:
+            shortened = _intelligent_shorten(last_line, max_width, draw, font, max_words=5)
+            lines[-1] = shortened
 
     return lines
 
@@ -175,11 +193,77 @@ def _draw_emoji_png(image: Image.Image, emoji_img: Image.Image, center_x: int, c
 
 
 def _measure_text_block(draw: ImageDraw.ImageDraw, lines: list[str], font: ImageFont.ImageFont, spacing: int = 6) -> tuple[int, int]:
+    """Measure text block dimensions with proper line spacing.
+    
+    Returns:
+        (width, height) tuple of text block in pixels
+    """
+    if not lines:
+        return 0, 0
+    
     widths = [draw.textbbox((0, 0), line, font=font)[2] for line in lines]
-    height = sum(draw.textbbox((0, 0), line, font=font)[3] for line in lines)
-    if len(lines) > 1:
-        height += spacing * (len(lines) - 1)
-    return max(widths) if widths else 0, height
+    line_heights = [draw.textbbox((0, 0), line, font=font)[3] for line in lines]
+    
+    width = max(widths) if widths else 0
+    height = sum(line_heights) + spacing * max(0, len(lines) - 1)
+    
+    return width, height
+
+
+def _measure_single_char(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
+    """Measure a single character (emoji or text) dimensions."""
+    bbox = draw.textbbox((0, 0), text, font=font)
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
+    return width, height
+
+
+def _calculate_node_dimensions(
+    draw: ImageDraw.ImageDraw,
+    text_lines: list[str],
+    text_font: ImageFont.ImageFont,
+    emoji: str,
+    emoji_font: ImageFont.ImageFont,
+    padding: int = 30,
+    level: int = 1,
+) -> tuple[int, int]:
+    """Calculate optimal node dimensions based on content.
+    
+    Args:
+        draw: ImageDraw instance
+        text_lines: Wrapped text lines
+        text_font: Font for text
+        emoji: Emoji character
+        emoji_font: Font for emoji
+        padding: Internal padding
+        level: Node hierarchy level (1=primary, 2=supporting)
+        
+    Returns:
+        (width, height) tuple for the node
+    """
+    # Measure text content
+    text_width, text_height = _measure_text_block(draw, text_lines, text_font, spacing=8)
+    
+    # Measure emoji
+    emoji_w, emoji_h = _measure_single_char(draw, emoji, emoji_font)
+    
+    # Calculate node dimensions with proper spacing
+    # Total height = emoji + spacing + text
+    min_node_width = 220 if level == 1 else 180
+    max_node_width = 360 if level == 1 else 300
+    
+    # Width: accommodate text and emoji with padding
+    node_width = max(
+        min_node_width,
+        text_width + padding * 2,
+        emoji_w + padding * 2
+    )
+    node_width = min(node_width, max_node_width)
+    
+    # Height: emoji + spacing + text + padding
+    node_height = emoji_h + 12 + text_height + padding * 2
+    
+    return int(node_width), int(node_height)
 
 
 def _rectangles_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int], padding: int = 20) -> bool:
@@ -219,7 +303,15 @@ def _point_on_circle_edge(center_x: int, center_y: int, radius: int, angle: floa
 
 
 def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
-    """Create a polished emoji-first mind map diagram with radial layout."""
+    """Create a polished emoji-first mind map with improved layout and hierarchy.
+    
+    Features:
+    - Dynamic node sizing based on content
+    - Proper text centering and vertical alignment
+    - Visual hierarchy (level 1 larger than level 2)
+    - Smart spacing and collision avoidance
+    - Professional educational design
+    """
     logger.info("ENTER: create_mind_map at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
     if theme not in COLOR_SCHEMES:
         theme = "light"
@@ -229,11 +321,12 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
     colors = COLOR_SCHEMES[theme]
     emojis = get_topic_emojis(title)
 
+    # Canvas parameters with balanced layout
     img_width = 2200
     img_height = 1800
     margin = 110
     min_radius = 500
-    padding = 30
+    padding = 35
     max_nodes = min(len(nodes), 12)
 
     image = Image.new("RGB", (img_width, img_height), hex_to_rgb(colors["background"]))
@@ -241,21 +334,25 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
 
     try:
         title_font = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", 46)
-        node_font = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", 28)
+        node_font_l1 = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", 28)
+        node_font_l2 = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", 24)
         subtitle_font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 26)
     except (IOError, OSError):
         try:
             title_font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 46)
-            node_font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 28)
+            node_font_l1 = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 28)
+            node_font_l2 = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 24)
             subtitle_font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 26)
         except (IOError, OSError):
             title_font = ImageFont.load_default()
-            node_font = ImageFont.load_default()
+            node_font_l1 = ImageFont.load_default()
+            node_font_l2 = ImageFont.load_default()
             subtitle_font = ImageFont.load_default()
 
     cx = img_width // 2
     cy = img_height // 2
 
+    # Draw title
     title_lines = _wrap_text(draw, title, title_font, img_width - margin * 2, max_lines=2)
     draw.multiline_text(
         (cx, margin // 2),
@@ -267,16 +364,19 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
         spacing=12,
     )
 
+    # Build and measure central node
     central_icon = emojis.get("main", emojis.get("process", "🧠"))
     central_image = _load_emoji_png(central_icon)
-    central_label_lines = _wrap_text(draw, title, node_font, 260, max_lines=2)
-    central_text_width, central_text_height = _measure_text_block(draw, central_label_lines, node_font, spacing=10)
-    central_icon_size = 120
-    central_box_width = max(320, central_text_width + padding * 2, central_icon_size + padding * 2)
+    central_label_lines = _wrap_text(draw, title, node_font_l1, 280, max_lines=2)
+    central_text_width, central_text_height = _measure_text_block(draw, central_label_lines, node_font_l1, spacing=10)
+    central_icon_size = 130
+    
+    central_box_width = max(360, central_text_width + padding * 2, central_icon_size + padding * 2)
     central_box_height = central_icon_size + central_text_height + padding * 3
-    central_box_width = int(central_box_width * 1.3)
-    central_box_height = int(central_box_height * 1.3)
+    central_box_width = int(central_box_width * 1.25)
+    central_box_height = int(central_box_height * 1.25)
 
+    # Draw central node
     central_box = [
         cx - central_box_width // 2,
         cy - central_box_height // 2,
@@ -297,54 +397,74 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
     else:
         draw.text((cx, central_icon_y), central_icon, font=subtitle_font, fill=hex_to_rgb(colors["text"]), anchor="mm")
 
+    # Draw central text - vertically centered
+    text_y = central_icon_y + central_icon_size // 2 + padding // 2
     draw.multiline_text(
-        (cx, central_icon_y + central_icon_size // 2 + padding // 2),
+        (cx, text_y),
         "\n".join(central_label_lines),
-        font=node_font,
+        font=node_font_l1,
         fill=hex_to_rgb(colors["text"]),
         anchor="ma",
         align="center",
         spacing=10,
     )
 
+    # Build child nodes with dynamic sizing based on hierarchy level
     child_nodes = []
     for index, node_item in enumerate(nodes[:max_nodes]):
         node_text = node_item.get("text", "") if isinstance(node_item, dict) else str(node_item)
         node_icon = node_item.get("emoji", "📍") if isinstance(node_item, dict) else "📍"
+        node_level = node_item.get("level", 1) if isinstance(node_item, dict) else 1
+        
         if not node_icon or not node_icon.strip():
             node_icon = "📍"
-        wrapped = _wrap_text(draw, node_text, node_font, 340, max_lines=2)
-        text_width, text_height = _measure_text_block(draw, wrapped, node_font, spacing=8)
+        
+        # Use appropriate font based on hierarchy level
+        node_font = node_font_l1 if node_level == 1 else node_font_l2
+        max_width = 360 if node_level == 1 else 300
+        
+        wrapped = _wrap_text(draw, node_text, node_font, max_width, max_lines=2)
         emoji_image = _load_emoji_png(node_icon)
-        icon_size = 90
-        node_width = max(260, text_width + padding * 2, icon_size + padding * 2)
-        node_height = text_height + icon_size + padding * 3
-        child_nodes.append(
-            {
-                "text_lines": wrapped,
-                "emoji": node_icon,
-                "emoji_image": emoji_image,
-                "width": int(node_width),
-                "height": int(node_height),
-                "angle": 0.0,
-                "center": (0, 0),
-                "icon_size": icon_size,
-            }
+        
+        # Determine icon size based on level
+        icon_size = 95 if node_level == 1 else 75
+        
+        # Calculate dynamic node dimensions
+        node_width, node_height = _calculate_node_dimensions(
+            draw, wrapped, node_font, node_icon, subtitle_font,
+            padding=padding, level=node_level
         )
+        
+        child_nodes.append({
+            "text_lines": wrapped,
+            "emoji": node_icon,
+            "emoji_image": emoji_image,
+            "width": node_width,
+            "height": node_height,
+            "angle": 0.0,
+            "center": (0, 0),
+            "icon_size": icon_size,
+            "level": node_level,
+            "font": node_font,
+        })
 
     node_count = len(child_nodes)
     logger.info("[MindMap] Step 2 - nodes prepared: node_count=%d", node_count)
+    
+    # Calculate radial layout with improved spacing
     angle_step = (2 * math.pi) / max(node_count, 1)
-    radius = max(min_radius, 520 + (node_count - 8) * 80)
+    radius = max(min_radius, 520 + (node_count - 8) * 100)
     node_rects: list[tuple[int, int, int, int]] = []
     central_half_w = central_box_width // 2
     central_half_h = central_box_height // 2
     central_rect = (central_box[0], central_box[1], central_box[2], central_box[3])
 
-    MAX_LAYOUT_ATTEMPTS = 20
+    # Layout resolution loop - now with better bounds checking
+    MAX_LAYOUT_ATTEMPTS = 25
     for attempt in range(MAX_LAYOUT_ATTEMPTS):
         loop_start = time.perf_counter()
         node_rects.clear()
+        
         for i, node in enumerate(child_nodes):
             angle = angle_step * i
             node["angle"] = angle
@@ -355,41 +475,29 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
             half_h = node["height"] // 2
             node_rects.append((x - half_w, y - half_h, x + half_w, y + half_h))
 
+        # Check for overlaps with improved padding
         overlaps = any(
-            _rectangles_overlap(node_rects[a_index], node_rects[b_index], padding=50)
+            _rectangles_overlap(node_rects[a_index], node_rects[b_index], padding=60)
             for a_index in range(len(node_rects))
             for b_index in range(a_index + 1, len(node_rects))
         )
 
         any_overlap_central = any(
-            _rectangles_overlap(rect, central_rect, padding=40)
+            _rectangles_overlap(rect, central_rect, padding=50)
             for rect in node_rects
         )
 
+        # Check bounds
         outside_bounds = False
         for _ni, (_rect, _node) in enumerate(zip(node_rects, child_nodes)):
-            _failed: list[str] = []
-            if _rect[0] < margin:              _failed.append("LEFT")
-            if _rect[1] < margin:              _failed.append("TOP")
-            if _rect[2] > img_width - margin:  _failed.append("RIGHT")
-            if _rect[3] > img_height - margin: _failed.append("BOTTOM")
-            if _failed:
+            if _rect[0] < margin or _rect[1] < margin or _rect[2] > img_width - margin or _rect[3] > img_height - margin:
                 outside_bounds = True
-                logger.warning(
-                    "[MindMap] BOUNDS FAIL attempt=%d node=%d text=%r "
-                    "x=%d y=%d w=%d h=%d rect=(%d,%d,%d,%d) "
-                    "canvas=%dx%d margin=%d boundary=%s",
-                    attempt, _ni, " ".join(_node["text_lines"]),
-                    _node["center"][0], _node["center"][1],
-                    _node["width"], _node["height"],
-                    _rect[0], _rect[1], _rect[2], _rect[3],
-                    img_width, img_height, margin, ",".join(_failed),
-                )
+                break
 
         loop_duration = time.perf_counter() - loop_start
         logger.info(
-            "[MindMap] Step 3 - attempt=%d radius=%d overlaps=%s "
-            "any_overlap_central=%s outside_bounds=%s canvas=%dx%d loop_time=%.4f",
+            "[MindMap] Step 3 - attempt=%d radius=%d overlaps=%s central_overlap=%s outside_bounds=%s "
+            "canvas=%dx%d loop_time=%.4fs",
             attempt, radius, overlaps, any_overlap_central, outside_bounds,
             img_width, img_height, loop_duration,
         )
@@ -398,10 +506,10 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
             logger.info("[MindMap] Step 3 complete - layout settled after %d attempts", attempt)
             break
 
-        # Grow both radius and canvas together so outside_bounds can resolve
-        radius += 60
-        img_width += 120
-        img_height += 120
+        # Grow radius and canvas with better progression
+        radius += 70
+        img_width += 140
+        img_height += 140
         image = Image.new("RGB", (img_width, img_height), hex_to_rgb(colors["background"]))
         draw = ImageDraw.Draw(image)
         cx = img_width // 2
@@ -413,28 +521,25 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
             cy + central_box_height // 2,
         ]
         central_rect = (central_box[0], central_box[1], central_box[2], central_box[3])
-        logger.warning(
-            "[MindMap] Step 3 retrying attempt=%d radius=%d canvas=%dx%d",
-            attempt + 1, radius, img_width, img_height,
-        )
+        
+        logger.warning("[MindMap] Step 3 retrying attempt=%d radius=%d canvas=%dx%d", attempt + 1, radius, img_width, img_height)
     else:
         logger.warning(
-            "[MindMap] Step 3 reached MAX_LAYOUT_ATTEMPTS=%d — using best layout found "
-            "(overlaps=%s outside_bounds=%s)",
-            MAX_LAYOUT_ATTEMPTS, overlaps, outside_bounds,
+            "[MindMap] Step 3 reached MAX_LAYOUT_ATTEMPTS=%d — using best layout found",
+            MAX_LAYOUT_ATTEMPTS,
         )
 
-    # Pass 1: draw connectors (behind everything)
+    # Render connectors (pass 1: behind everything)
     for idx, node in enumerate(child_nodes):
         x, y = node["center"]
         half_w = node["width"] // 2
         half_h = node["height"] // 2
         branch_color = BRANCH_PALETTE[idx % len(BRANCH_PALETTE)]
         start = _point_on_rect_edge(cx, cy, central_half_w, central_half_h, math.cos(node["angle"]), math.sin(node["angle"]))
-        end = _point_on_rect_edge(x, y, half_w + 8, half_h + 8, math.cos(node["angle"]), math.sin(node["angle"]))
+        end = _point_on_rect_edge(x, y, half_w + 10, half_h + 10, math.cos(node["angle"]), math.sin(node["angle"]))
         draw.line([start, end], fill=hex_to_rgb(branch_color["border"]), width=4)
 
-    # Pass 2: redraw central box on top of connectors
+    # Redraw central box on top of connectors (pass 2)
     draw.rounded_rectangle(
         central_box,
         radius=50,
@@ -447,22 +552,23 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
     else:
         draw.text((cx, central_icon_y), central_icon, font=subtitle_font, fill=hex_to_rgb(colors["text"]), anchor="mm")
     draw.multiline_text(
-        (cx, central_icon_y + central_icon_size // 2 + padding // 2),
+        (cx, text_y),
         "\n".join(central_label_lines),
-        font=node_font,
+        font=node_font_l1,
         fill=hex_to_rgb(colors["text"]),
         anchor="ma",
         align="center",
         spacing=10,
     )
 
-    # Pass 3: draw branch nodes
+    # Draw branch nodes with proper centering (pass 3)
     for idx, node in enumerate(child_nodes):
         x, y = node["center"]
         half_w = node["width"] // 2
         half_h = node["height"] // 2
         node_box = [x - half_w, y - half_h, x + half_w, y + half_h]
         branch_color = BRANCH_PALETTE[idx % len(BRANCH_PALETTE)]
+        
         draw.rounded_rectangle(
             node_box,
             radius=36,
@@ -471,20 +577,46 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
             width=4,
         )
 
-        icon_y = y - node["height"] // 3
+        # === Centered content block (emoji + text as one unit) ===
+        # Measure text lines
+        text_lines = node["text_lines"]
+        line_height = 20
+        line_spacing = 8
+        text_total_height = sum(
+            max(draw.textbbox((0, 0), line, font=node["font"])[3], line_height)
+            for line in text_lines
+        ) + (line_spacing * max(0, len(text_lines) - 1))
+        
+        # Total content height (emoji + spacing + text)
+        content_total_height = node["icon_size"] + 12 + text_total_height
+        
+        # Vertical center of the box
+        box_center_y = y
+        
+        # Top of the content block
+        content_top = box_center_y - content_total_height // 2
+        
+        # Emoji position (top of content block)
+        icon_y = content_top + node["icon_size"] // 2
+        
+        # Text position (below emoji with spacing)
+        text_y = icon_y + node["icon_size"] // 2 + 12
+
+        # Draw emoji
         if node["emoji_image"]:
             _draw_emoji_png(image, node["emoji_image"], x, icon_y, node["icon_size"])
         else:
             draw.text((x, icon_y), node["emoji"], font=subtitle_font, fill=hex_to_rgb(colors["text"]), anchor="mm")
 
+        # Draw text
         draw.multiline_text(
-            (x, y + node["icon_size"] // 6),
-            "\n".join(node["text_lines"]),
-            font=node_font,
+            (x, text_y),
+            "\n".join(text_lines),
+            font=node["font"],
             fill=hex_to_rgb("#1A1A2E"),
-            anchor="mm",
+            anchor="ma",
             align="center",
-            spacing=10,
+            spacing=8,
         )
 
     filename = f"mindmap_{uuid.uuid4().hex[:8]}.png"
@@ -494,7 +626,6 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
     logger.info("[MindMap] Step 4 complete - image saved")
     logger.info("EXIT: create_mind_map at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
     return filepath
-    
 
 
 def create_process_flowchart(
@@ -585,14 +716,22 @@ def _create_flowchart_graphviz(title: str, steps: list[str], colors: dict) -> st
 
 
 def _create_flowchart_pillow(title: str, steps: list[str], colors: dict) -> str:
-    """Fallback flowchart creation using Pillow."""
+    """Fallback flowchart creation using Pillow with proper text positioning.
+    
+    Features:
+    - Content (emoji + text) centered as single block
+    - No text overflow or clipping
+    - Dynamic node sizing
+    - Intelligent text shortening (no ellipsis)
+    - Proper vertical centering
+    """
     padding = 80
-    step_gap = 100
+    step_gap = 120
 
     try:
         title_font = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", 38)
         text_font = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", 22)
-        emoji_font = ImageFont.truetype("C:\\Windows\\Fonts\\seguiemj.ttf", 46)
+        emoji_font = ImageFont.truetype("C:\\Windows\\Fonts\\seguiemj.ttf", 48)
     except (IOError, OSError):
         try:
             title_font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 38)
@@ -606,29 +745,52 @@ def _create_flowchart_pillow(title: str, steps: list[str], colors: dict) -> str:
     temp_img = Image.new("RGB", (1, 1))
     temp_draw = ImageDraw.Draw(temp_img)
 
+    # Phase 1: Pre-measure all steps and calculate node sizes
     node_specs = []
-    max_width = 0
+    max_node_width = 0
+    
     for i, step in enumerate(steps[:10]):
-        step_lines = _wrap_text(temp_draw, step, text_font, 520)
-        text_width, text_height = _measure_text_block(temp_draw, step_lines, text_font, spacing=8)
-        emoji = get_topic_emojis(title).get(list(get_topic_emojis(title).keys())[i % len(get_topic_emojis(title))], "📍")
-        emoji_height = temp_draw.textbbox((0, 0), emoji, font=emoji_font)[3]
-        node_width = max(text_width + 80, 280, temp_draw.textbbox((0, 0), emoji, font=emoji_font)[2] + 60)
-        node_height = text_height + emoji_height + 70
+        # Wrap text to max width
+        wrapped_lines = _wrap_text(temp_draw, step, text_font, 520, max_lines=2)
+        
+        # Measure text dimensions
+        text_width, text_height = _measure_text_block(temp_draw, wrapped_lines, text_font, spacing=10)
+        
+        # Measure emoji
+        emoji = get_topic_emojis(title).get(
+            list(get_topic_emojis(title).keys())[i % len(get_topic_emojis(title))], 
+            "📍"
+        )
+        emoji_bbox = temp_draw.textbbox((0, 0), emoji, font=emoji_font)
+        emoji_width = emoji_bbox[2] - emoji_bbox[0]
+        emoji_height = emoji_bbox[3] - emoji_bbox[1]
+        
+        # Calculate node dimensions
+        node_content_width = max(text_width, emoji_width) + 60
+        node_content_height = emoji_height + 20 + text_height + 60
+        
         node_specs.append({
-            "lines": step_lines,
+            "lines": wrapped_lines,
             "emoji": emoji,
-            "width": int(node_width),
-            "height": int(node_height),
+            "emoji_width": emoji_width,
+            "emoji_height": emoji_height,
+            "text_width": text_width,
+            "text_height": text_height,
+            "width": max(280, node_content_width),
+            "height": max(120, node_content_height),
         })
-        max_width = max(max_width, node_width)
+        max_node_width = max(max_node_width, node_specs[-1]["width"])
 
-    img_width = max(1000, max_width + padding * 2)
-    img_height = padding * 2 + sum(node["height"] for node in node_specs) + step_gap * (len(node_specs) - 1) + 60
+    # Phase 2: Calculate canvas size
+    img_width = max(1000, max_node_width + padding * 2)
+    total_content_height = sum(node["height"] for node in node_specs)
+    total_gaps = step_gap * (len(node_specs) - 1)
+    img_height = padding * 2 + total_content_height + total_gaps + 80
 
     image = Image.new("RGB", (img_width, img_height), hex_to_rgb(colors["background"]))
     draw = ImageDraw.Draw(image)
 
+    # Phase 3: Draw title
     draw.text(
         (img_width // 2, padding // 2 + 20),
         title,
@@ -637,6 +799,7 @@ def _create_flowchart_pillow(title: str, steps: list[str], colors: dict) -> str:
         anchor="mm",
     )
 
+    # Phase 4: Render each node with proper centering
     center_x = img_width // 2
     y_offset = padding + 50
 
@@ -649,6 +812,7 @@ def _create_flowchart_pillow(title: str, steps: list[str], colors: dict) -> str:
         bottom = top + box_height
         step_color = BRANCH_PALETTE[index % len(BRANCH_PALETTE)]
 
+        # Draw node box
         draw.rounded_rectangle(
             [(left, top), (right, bottom)],
             radius=32,
@@ -657,7 +821,7 @@ def _create_flowchart_pillow(title: str, steps: list[str], colors: dict) -> str:
             width=4,
         )
 
-        # Step number badge
+        # Draw step number badge
         badge_r = 22
         badge_cx = left + badge_r + 12
         badge_cy = top + box_height // 2
@@ -667,16 +831,34 @@ def _create_flowchart_pillow(title: str, steps: list[str], colors: dict) -> str:
         )
         draw.text((badge_cx, badge_cy), str(index + 1), font=text_font, fill=(255, 255, 255), anchor="mm")
 
+        # === Calculate centered content block ===
+        # Total height of content (emoji + spacing + text)
+        content_total_height = node["emoji_height"] + 20 + node["text_height"]
+        
+        # Vertical center of the box
+        box_center_y = top + box_height // 2
+        
+        # Top of the content block (if centered)
+        content_top = box_center_y - content_total_height // 2
+        
+        # Emoji position (top of content block)
+        emoji_y = content_top + node["emoji_height"] // 2
+        
+        # Text position (below emoji with spacing)
+        text_y = emoji_y + node["emoji_height"] // 2 + 10 + node["text_height"] // 2
+
+        # Draw emoji centered horizontally
         draw.text(
-            (center_x, top + 28),
+            (center_x, emoji_y),
             node["emoji"],
             font=emoji_font,
             fill=hex_to_rgb(colors["text"]),
             anchor="mm",
         )
 
+        # Draw text centered horizontally and positioned after emoji
         draw.multiline_text(
-            (center_x, top + 30 + temp_draw.textbbox((0, 0), node["emoji"], font=emoji_font)[3] // 2 + 14),
+            (center_x, text_y),
             "\n".join(node["lines"]),
             font=text_font,
             fill=hex_to_rgb("#1A1A2E"),
@@ -685,16 +867,21 @@ def _create_flowchart_pillow(title: str, steps: list[str], colors: dict) -> str:
             spacing=10,
         )
 
+        # Draw connector to next step if not the last step
         if index < len(node_specs) - 1:
-            line_start = (center_x, bottom + 18)
-            line_end = (center_x, bottom + step_gap - 18)
+            line_start = (center_x, bottom + 16)
+            line_end = (center_x, bottom + step_gap - 16)
             draw.line([line_start, line_end], fill=hex_to_rgb(colors["line"]), width=5)
+            
+            # Draw arrow at end of connector
             arrow_tip = (center_x, bottom + step_gap - 4)
+            arrow_width = 16
+            arrow_height = 24
             draw.polygon(
                 [
                     arrow_tip,
-                    (center_x - 14, bottom + step_gap - 22),
-                    (center_x + 14, bottom + step_gap - 22),
+                    (center_x - arrow_width, bottom + step_gap - arrow_height),
+                    (center_x + arrow_width, bottom + step_gap - arrow_height),
                 ],
                 fill=hex_to_rgb(colors["line"]),
             )
@@ -704,6 +891,8 @@ def _create_flowchart_pillow(title: str, steps: list[str], colors: dict) -> str:
     filename = f"flowchart_edu_{uuid.uuid4().hex[:8]}.png"
     filepath = os.path.join(VISUALS_FOLDER, filename)
     image.save(filepath)
+    logger.info("[Flowchart] Generated: %s (canvas=%dx%d, nodes=%d, no ellipsis)", 
+                filepath, img_width, img_height, len(node_specs))
     return filepath
 
 

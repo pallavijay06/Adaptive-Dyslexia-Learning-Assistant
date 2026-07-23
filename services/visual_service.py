@@ -40,6 +40,7 @@ def generate_visual_content(text: str, theme: str = "light", visual_type: str | 
     Returns a dict with `flowchart_path`, `mindmap_path`, `structure`,
     `topic`, and short `description`.
     """
+    logger.info("======== ENTERED VISUAL SERVICE ========")
     logger.info("ENTER: generate_visual_content at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
 
     if not text or not text.strip():
@@ -73,29 +74,42 @@ def generate_visual_content(text: str, theme: str = "light", visual_type: str | 
 
         if normalized_visual_type in {None, "mind_map"}:
             branches = structure.get("branches", [])
+            # Build hierarchy-aware node list: branch labels + their children
+            # Each node carries a "level" key: 1 = primary concept, 2 = child detail
             mindmap_nodes: list[dict] = []
             if branches and isinstance(branches[0], dict):
-                for branch in branches[:8]:
+                for branch in branches:
                     label = branch.get("label", {})
-                    mindmap_nodes.append(
+                    label_node = (
                         label if isinstance(label, dict)
                         else {"text": str(label), "emoji": "📌"}
                     )
-                    for child in branch.get("children", [])[:4]:
-                        mindmap_nodes.append(
-                            child if isinstance(child, dict)
-                            else {"text": str(child), "emoji": "📍"}
-                        )
+                    label_node = dict(label_node)
+                    label_node["level"] = 1
+                    mindmap_nodes.append(label_node)
+                    children = branch.get("children", [])
+                    if isinstance(children, list):
+                        for child in children:
+                            child_node = (
+                                child if isinstance(child, dict)
+                                else {"text": str(child), "emoji": "📍"}
+                            )
+                            child_node = dict(child_node)
+                            child_node["level"] = 2
+                            mindmap_nodes.append(child_node)
             else:
                 for item in (
                     structure.get("inputs", []) +
                     structure.get("outputs", []) +
                     structure.get("steps", [])
                 ):
-                    mindmap_nodes.append(
+                    node = (
                         item if isinstance(item, dict)
                         else {"text": str(item), "emoji": "📍"}
                     )
+                    node = dict(node)
+                    node.setdefault("level", 1)
+                    mindmap_nodes.append(node)
             mindmap_path = _generate_mindmap(
                 structure.get("title", "Concept"),
                 mindmap_nodes,
@@ -126,104 +140,56 @@ def generate_visual_content(text: str, theme: str = "light", visual_type: str | 
 # ---------------------------------------------------------------------------
 
 _STAGE1_PROMPT = """\
-You are an expert educational content designer creating revision notes for a student.
-Your quality standard is Google NotebookLM concept maps.
+You are an experienced teacher creating an educational mind map for dyslexic learners.
+Read the document carefully and identify the important study concepts a student
+should remember after studying this chapter.
 
-Read the document carefully. Your output will become the nodes of a mind map.
-A student must be able to understand the entire topic by reading only the mind map.
+Do NOT perform keyword extraction.
+Do NOT perform entity extraction.
+Do NOT return isolated nouns, physical objects, materials, devices, examples,
+locations, or random words that only appear in the text.
 
-OUTPUT TWO THINGS:
+Think: "What are the important ideas, processes, relationships, functions,
+principles, or mechanisms that belong on a textbook revision mind map?"
 
-1. TOPIC TITLE
-   The exact chapter or subject name as it would appear in a textbook.
-   Examples: "Photosynthesis", "Ohm's Law", "Binary Search", "Human Digestive System"
-   NOT: "Photosynthesis Basics", "Plant Food Production", "Overview", "Main Topic"
+Output requirements:
+- Return ONLY valid JSON with a top-level `title` and a `concepts` array.
+- `title` should be the exact chapter or subject title inferred from the document.
+- Each concept should be a short textbook-style heading suitable for a mind map branch.
+- Concepts should be meaningful educational study ideas, not raw nouns.
+- Use approximately 2–6 words per concept.
+- Concepts may be paraphrased for clarity if they remain fully supported by the document.
+- Do NOT write full sentences, explanations, definitions, examples, or lists of materials.
+- Do NOT invent unsupported concepts.
+- Do NOT force a fixed number of concepts; choose the number dynamically based on topic size.
+- If the topic is small, return fewer concepts; if the topic is larger, return more.
 
-2. TOPIC DESCRIPTION
-   One or two complete sentences that explain what this topic is about.
-   This will appear in the center node of the mind map.
-   Example for Photosynthesis:
-     "Photosynthesis is the process by which green plants make their own food
-      using sunlight, water, and carbon dioxide."
+Good examples:
+- Purpose of Photosynthesis
+- Requirements for Photosynthesis
+- Role of Chlorophyll
+- Light Energy Absorption
+- Glucose Formation
+- Oxygen Release
+- Importance of Photosynthesis
 
-3. EDUCATIONAL NODES
-   Each node has two parts:
-   a) "title" — a short educational statement, 4-8 words, that names the specific fact.
-      It must read like a revision note heading, not a category label.
-      CORRECT titles:
-        ✓ "Sunlight Provides Energy"
-        ✓ "Chlorophyll Absorbs Light"
-        ✓ "Carbon Dioxide Is Absorbed"
-        ✓ "Water Is Absorbed by Roots"
-        ✓ "Glucose Is Produced"
-        ✓ "Oxygen Is Released"
-        ✓ "Glucose Stored as Starch"
-      BANNED titles (these are labels, not facts):
-        ✗ "Chlorophyll"           (single word)
-        ✗ "Photosynthesis"        (topic name repeated as a node)
-        ✗ "Plant Food"            (vague)
-        ✗ "Definition"            (generic)
-        ✗ "Process"               (generic)
-        ✗ "Location"              (generic)
-        ✗ "Key Component"         (generic)
-        ✗ "Overview"              (generic)
-        ✗ "Sunlight"              (single word)
-        ✗ "Water"                 (single word)
-        ✗ "Carbon Dioxide"        (single word / label)
-   b) "explanation" — one or two complete sentences that teach the concept.
-      Must be fully understandable without reading any other node.
-      Must have an explicit subject.
-      Must be factually correct and student-friendly.
-      CORRECT explanations:
-        ✓ "Sunlight provides the energy required to convert carbon dioxide and water into glucose."
-        ✓ "Chlorophyll is the green pigment that captures sunlight inside chloroplasts."
-        ✓ "Leaves absorb carbon dioxide through tiny openings called stomata."
-        ✓ "Roots absorb water from the soil and transport it up to the leaves."
-        ✓ "Plants convert light energy into chemical energy stored as glucose."
-        ✓ "Oxygen is released into the atmosphere as a by-product of photosynthesis."
-        ✓ "Glucose is stored as starch in the plant for later use as an energy source."
-      BANNED explanations:
-        ✗ "This process is essential for..."   (incomplete)
-        ✗ "Photosynthesis is..."               (incomplete)
-        ✗ "Used for..."                        (missing subject)
-        ✗ "Occurs in..."                       (missing subject)
-        ✗ "Responsible for..."                 (missing subject)
-        ✗ "Provides..."                        (missing subject)
-        ✗ "Essential for..."                   (missing subject)
-        ✗ "Helps plants..."                    (vague)
-        ✗ "Combines with..."                   (missing subject)
-        ✗ "Produces..."                        (missing subject)
-   c) "importance" — integer 1-10.
-      10 = student cannot understand the topic without this node.
-      Only include nodes with importance >= 6.
+Bad examples:
+- Water
+- Leaves
+- Roots
+- Stomata
+- Carbon Dioxide
+- Wire
+- Battery
+- Device
 
-CONCEPT SELECTION RULES:
-- Select only the most important educational concepts.
-- Do NOT create filler nodes.
-- Do NOT try to cover every sentence in the document.
-- Do NOT repeat the same idea using different wording.
-- The number of nodes depends entirely on the content.
-  If six nodes explain the topic well, return six.
-  If fifteen are genuinely needed, return fifteen.
-  Never pad. Never truncate.
-
-QUALITY CHECK before returning:
-- Every title must be an educational statement, not a label or category.
-- Every explanation must be a complete sentence with a subject.
-- No duplicate ideas.
-- No vague or generic nodes.
-- No incomplete sentences.
-- Every node must make sense when read completely alone.
-
-Return ONLY a valid JSON object. No markdown, no explanation.
-Format:
+JSON format:
 {
-  "topic": "Exact chapter or subject title",
-  "description": "One or two complete sentences explaining what this topic is.",
-  "nodes": [
-    {"title": "Short Educational Statement", "explanation": "Complete sentence teaching the concept.", "importance": 9},
-    {"title": "Short Educational Statement", "explanation": "Complete sentence teaching the concept.", "importance": 8}
-  ]
+    "title": "Exact chapter or subject title",
+    "concepts": [
+        {"text": "Light Energy Absorption", "importance": 0.98},
+        {"text": "Chlorophyll Function", "importance": 0.95}
+    ]
 }
 
 Document:
@@ -231,11 +197,17 @@ Document:
 
 
 def _stage1_extract_concepts(text: str) -> list[dict]:
-    """LLM call 1: extract topic, description, and educational nodes from document."""
+    """LLM call: extract topic title and a list of concepts (text + importance).
+
+    Returns a list of dicts with keys: 'concept' and 'importance'.
+    The LLM is only allowed to identify concepts; no sentences or explanations.
+    """
     logger.info("[Stage1] Extracting concepts from document")
     prompt = _STAGE1_PROMPT + text.strip()[:3000]
-    response = generate_content(prompt, max_tokens=1400)
+    logger.info("[Stage1][PROMPT] %s", prompt[:2000])
+    response = generate_content(prompt, max_tokens=800)
     cleaned = clean_ollama_response(response or "")
+    logger.info("[Stage1][OUTPUT] Raw LLM response (trimmed): %s", (cleaned or "")[:2000])
     cleaned = re.sub(r'```(?:json)?\s*([\s\S]*?)```', r'\1', cleaned).strip()
     start = cleaned.find("{")
     end = cleaned.rfind("}")
@@ -244,22 +216,23 @@ def _stage1_extract_concepts(text: str) -> list[dict]:
         return []
     try:
         parsed = json.loads(cleaned[start:end + 1])
-        nodes = parsed.get("nodes", [])
-        topic = parsed.get("topic", "").strip()
-        description = parsed.get("description", "").strip()
-        logger.info("[Stage1] Topic: %s | Nodes: %d", topic, len(nodes))
-        result = []
-        for n in nodes:
-            if not isinstance(n, dict):
+        concepts = parsed.get("concepts", []) or []
+        title = parsed.get("title", "").strip()
+        logger.info("[Stage1] Title: %s | Concepts: %d", title, len(concepts))
+        result: list[dict] = []
+        for c in concepts:
+            if not isinstance(c, dict):
                 continue
-            if not n.get("title") or not n.get("explanation"):
+            text_val = (c.get("text") or c.get("concept") or "").strip()
+            try:
+                importance = float(c.get("importance", 0.0))
+            except Exception:
+                importance = 0.0
+            if not text_val:
                 continue
             result.append({
-                "topic": topic,
-                "description": description,
-                "concept": n["title"],
-                "fact": n["explanation"],
-                "importance": int(n.get("importance", 5)),
+                "concept": text_val,
+                "importance": float(max(0.0, min(1.0, importance))),
             })
         return result
     except json.JSONDecodeError:
@@ -267,30 +240,317 @@ def _stage1_extract_concepts(text: str) -> list[dict]:
         return []
 
 
+def _tokenize_text(text: str, min_length: int = 3) -> list[str]:
+    """Return normalized tokens from text for support and duplicate detection."""
+    return [
+        token.lower()
+        for token in re.findall(r"[A-Za-z0-9'’]+", text or "")
+        if len(token) >= min_length
+    ]
+
+
+def _word_set(text: str) -> set[str]:
+    return set(_tokenize_text(text, min_length=3))
+
+
+def _is_generic_concept(candidate: dict) -> bool:
+    title = str(candidate.get("concept", "")).strip()
+    if not title:
+        return True
+    words = title.split()
+    if len(words) < 3:
+        return True
+
+    lower_title = title.lower()
+    generic_signals = (
+        "overview", "definition", "key component", "main concept", "process", "topic",
+        "description", "important", "summary", "general", "basic", "used for", "helps", "because",
+        "characteristic", "function", "role", "part of", "related to"
+    )
+    if any(signal in lower_title for signal in generic_signals):
+        return True
+
+    return False
+
+
+def _support_score(candidate: dict, source_tokens: set[str]) -> int:
+    title_tokens = _word_set(candidate.get("concept", ""))
+    explanation_tokens = _word_set(candidate.get("fact", ""))
+
+    title_support = len(title_tokens & source_tokens)
+    explanation_support = len(explanation_tokens & source_tokens)
+
+    return title_support * 3 + explanation_support
+
+
+def _has_document_support(candidate: dict, source_tokens: set[str]) -> bool:
+    if not source_tokens:
+        return True
+    title_tokens = _word_set(candidate.get("concept", ""))
+    if title_tokens and title_tokens & source_tokens:
+        return True
+
+    explanation_tokens = _word_set(candidate.get("fact", ""))
+    if explanation_tokens and explanation_tokens & source_tokens:
+        return True
+
+    return False
+
+
+def _concept_is_duplicate(candidate: dict, accepted: dict) -> bool:
+    candidate_words = _word_set(candidate.get("concept", ""))
+    accepted_words = _word_set(accepted.get("concept", ""))
+    if not candidate_words or not accepted_words:
+        return False
+
+    overlap_ratio = len(candidate_words & accepted_words) / min(len(candidate_words), len(accepted_words))
+    if overlap_ratio >= 0.65:
+        return True
+
+    candidate_explanation = _word_set(candidate.get("fact", ""))
+    accepted_explanation = _word_set(accepted.get("fact", ""))
+    if candidate_explanation and accepted_explanation:
+        explanation_overlap = len(candidate_explanation & accepted_explanation) / max(len(candidate_explanation), len(accepted_explanation), 1)
+        if explanation_overlap >= 0.75:
+            return True
+
+    return False
+
+
+def _adaptive_mindmap_node_limit(text: str) -> int:
+    # Deprecated: node count must not be hardcoded. Keep for compatibility but not used.
+    return 9999
+
+
 # ---------------------------------------------------------------------------
 # Stage 2 — Rank and deduplicate (pure Python, no LLM)
 # ---------------------------------------------------------------------------
 
-def _stage2_rank_and_deduplicate(concepts: list[dict]) -> list[dict]:
-    """Sort by importance descending, then remove near-duplicate concepts."""
-    ranked = sorted(concepts, key=lambda c: int(c.get("importance", 0)), reverse=True)
+def _stage2_rank_and_deduplicate(concepts: list[dict], source_text: str) -> list[dict]:
+    """Validate, deduplicate, and rank concepts using pure Python.
+
+    Validation rules:
+    - 1–4 words
+    - not a verb phrase or sentence fragment
+    - not generic or meaningless
+    - not duplicate
+    - must have support in the source text (matching tokens)
+
+    Returns a list of validated concepts (dicts with 'concept' and 'importance').
+    """
+    source_tokens = _word_set(source_text)
+    logger.info("[Stage2][INPUT] Candidate concepts: %s", [c.get("concept") for c in concepts])
+
+    def is_valid_text(text: str) -> bool:
+        if not text or not text.strip():
+            return False
+        words = text.strip().split()
+        if len(words) > 4:
+            return False
+        # Reject if it looks like a verb phrase or ends with banned verbs
+        banned_endings = ("is", "means", "because", "allows", "uses", "produces", "explains", "shows", "enables")
+        lower = text.strip().lower()
+        for be in banned_endings:
+            if lower.endswith(" " + be) or lower.endswith(" " + be + "s"):
+                return False
+        # Reject generic short labels (single words that are too vague)
+        if len(words) == 1:
+            # Allow if word appears in source tokens and is not in generic signals
+            if words[0].lower() in ("overview", "definition", "process", "topic", "concept"):
+                return False
+        # Basic check: must share at least one token with source
+        token_set = _word_set(text)
+        if token_set and not (token_set & source_tokens):
+            return False
+        return True
+
+    # Rank by importance (float) then lexical length
+    ranked = sorted(
+        concepts,
+        key=lambda c: (
+            float(c.get("importance", 0.0)),
+            -len(_word_set(str(c.get("concept", ""))))
+        ),
+        reverse=True,
+    )
+
     kept: list[dict] = []
     for candidate in ranked:
-        name = candidate["concept"].lower()
-        name_words = set(name.split())
+        cand_text = str(candidate.get("concept", "")).strip()
+        if not is_valid_text(cand_text):
+            logger.info("[Stage2] Rejected invalid or generic concept '%s'", cand_text)
+            continue
+
         is_duplicate = False
         for accepted in kept:
-            accepted_words = set(accepted["concept"].lower().split())
-            # Overlap ratio: shared words / shorter name length
-            overlap = len(name_words & accepted_words) / max(len(name_words), len(accepted_words), 1)
-            if overlap >= 0.6:
+            if _concept_is_duplicate(candidate, accepted):
                 is_duplicate = True
-                logger.info("[Stage2] Dropped duplicate '%s' (overlaps with '%s')", candidate["concept"], accepted["concept"])
+                logger.info("[Stage2] Dropped duplicate '%s' (matches '%s')", cand_text, accepted.get("concept"))
                 break
-        if not is_duplicate:
-            kept.append(candidate)
-    logger.info("[Stage2] %d concepts after deduplication", len(kept))
+        if is_duplicate:
+            continue
+
+        # Keep candidate
+        kept.append({"concept": cand_text, "importance": float(candidate.get("importance", 0.0))})
+
+    logger.info("[Stage2] %d concepts after validation and deduplication", len(kept))
+    logger.info("[Stage2][INPUT] %d candidate concepts", len(concepts))
+    logger.info("[Stage2][OUTPUT] %d validated concepts", len(kept))
     return kept
+
+
+# ---------------------------------------------------------------------------
+# Stage 2.5 — Concept Refinement Engine
+# ---------------------------------------------------------------------------
+
+_CONCEPT_CATEGORY_KEYWORDS = {
+    "requirements": {"requirement", "requirements", "need", "needs", "required", "input", "source", "water", "sunlight", "light", "carbon", "nutrient"},
+    "products": {"product", "products", "output", "result", "formation", "production", "release", "glucose", "oxygen"},
+    "process": {"process", "overview", "mechanism", "stage", "phase", "sequence", "steps"},
+    "role": {"role", "function", "functions", "purpose", "importance", "effect", "relationship", "relationships"},
+    "types": {"type", "types", "category", "categories", "kind", "kinds", "variation"},
+}
+
+_CATEGORY_INDICATORS = {
+    "requirements": {"absorption", "entry", "requirement", "required", "need", "needs", "water", "carbon", "sunlight", "light", "nutrient", "nutrients", "gas"},
+    "products": {"formation", "production", "produced", "result", "release", "output", "glucose", "oxygen", "product"},
+    "process": {"process", "mechanism", "stage", "phase", "sequence", "step", "steps"},
+    "role": {"role", "function", "purpose", "importance", "effect", "relationship"},
+    "types": {"mitosis", "meiosis", "type", "category", "kind", "variation"},
+}
+
+_CHILD_LABEL_FILTERS = {
+    "mechanism", "entry", "formation", "production", "process", "function", "role", "requirement",
+    "required", "need", "needs", "purpose", "stage", "phases", "phase", "step", "steps", "type", "types",
+    "category", "categories", "product", "output", "result", "release", "absorption", "generated", "produced",
+    "stored", "stored", "cells", "cell", "processes", "mechanisms"
+}
+
+_WEAK_CONCEPT_INDICATORS = {
+    "overview", "definition", "basic", "simple", "general", "summary", "introduction", "key", "main"
+}
+
+
+def _concept_category(concept: str) -> str | None:
+    lower = concept.lower()
+    for category, keywords in _CONCEPT_CATEGORY_KEYWORDS.items():
+        if any(keyword in lower for keyword in keywords):
+            return category
+    return None
+
+
+def _concept_similarity(a: str, b: str) -> float:
+    a_words = _word_set(a)
+    b_words = _word_set(b)
+    if not a_words or not b_words:
+        return 0.0
+    return len(a_words & b_words) / min(len(a_words), len(b_words))
+
+
+def _extract_child_label(text: str, parent_category: str | None = None) -> str:
+    tokens = [t for t in _tokenize_text(text) if t not in _CONCEPT_CATEGORY_KEYWORDS.get(parent_category, set())]
+    filtered = [t for t in tokens if t not in _CHILD_LABEL_FILTERS]
+    if not filtered:
+        filtered = tokens
+    if not filtered:
+        return text
+    return " ".join(filtered[:3]).title()
+
+
+def _is_weak_refined_concept(candidate: dict, parents: list[dict]) -> bool:
+    text = str(candidate.get("concept", "")).strip().lower()
+    if not text:
+        return True
+    if any(signal in text for signal in _WEAK_CONCEPT_INDICATORS):
+        return True
+    candidate_tokens = _word_set(text)
+    for parent in parents:
+        if _concept_similarity(text, parent.get("concept", "")) >= 0.8:
+            return True
+    return False
+
+
+def _refine_concepts(concepts: list[dict], source_text: str) -> list[dict]:
+    logger.info("[Stage2.5][RAW] Stage2 concepts: %s", [c.get("concept") for c in concepts])
+    if not concepts:
+        return []
+
+    # Deduplicate again in case similar variants remain
+    deduped: list[dict] = []
+    for candidate in sorted(concepts, key=lambda c: float(c.get("importance", 0.0)), reverse=True):
+        if any(_concept_is_duplicate(candidate, kept) for kept in deduped):
+            logger.info("[Stage2.5] Removed near-duplicate '%s'", candidate.get("concept"))
+            continue
+        deduped.append(candidate)
+    logger.info("[Stage2.5][DEDUP] Concepts: %s", [c.get("concept") for c in deduped])
+
+    parents: list[dict] = []
+    orphans: list[dict] = []
+    for concept in deduped:
+        if _concept_category(concept.get("concept", "")) is not None:
+            parents.append(concept)
+        else:
+            orphans.append(concept)
+
+    parent_children: dict[int, list[dict]] = {id(parent): [] for parent in parents}
+    assigned: set[int] = set()
+
+    for candidate in orphans:
+        candidate_tokens = _word_set(candidate.get("concept", ""))
+        best_parent = None
+        best_score = 0.0
+        for parent in parents:
+            parent_category = _concept_category(parent.get("concept", ""))
+            if not parent_category:
+                continue
+            score = _concept_similarity(parent.get("concept", ""), candidate.get("concept", ""))
+            if _CATEGORY_INDICATORS.get(parent_category, set()) & candidate_tokens:
+                score += 0.35
+            if score <= 0.0:
+                continue
+            if parent.get("importance", 0.0) < candidate.get("importance", 0.0):
+                score *= 0.85
+            if score > best_score:
+                best_score = score
+                best_parent = parent
+
+        if best_parent and best_score >= 0.25:
+            parent_children[id(best_parent)].append(candidate)
+            assigned.add(id(candidate))
+            logger.info("[Stage2.5] Merged '%s' under '%s' (score=%.2f)", candidate.get("concept"), best_parent.get("concept"), best_score)
+
+    refined: list[dict] = []
+    for parent in parents:
+        children = parent_children.get(id(parent), [])
+        child_labels: list[str] = []
+        for child in children:
+            child_text = str(child.get("concept", "")).strip()
+            if not child_text:
+                continue
+            child_labels.append(_compress_node_label(child_text, max_words=4))
+        if child_labels:
+            logger.info("[Stage2.5] Parent '%s' children: %s", parent.get("concept"), child_labels)
+        refined.append({
+            "concept": parent.get("concept", ""),
+            "importance": float(parent.get("importance", 0.0)),
+            "children": child_labels,
+        })
+
+    for candidate in deduped:
+        if id(candidate) in assigned:
+            continue
+        if _is_weak_refined_concept(candidate, refined):
+            logger.info("[Stage2.5] Removed weak concept '%s'", candidate.get("concept"))
+            continue
+        refined.append({
+            "concept": candidate.get("concept", ""),
+            "importance": float(candidate.get("importance", 0.0)),
+            "children": [],
+        })
+
+    refined.sort(key=lambda c: (float(c.get("importance", 0.0)), len(c.get("children", []))), reverse=True)
+    logger.info("[Stage2.5][OUTPUT] Refined concepts: %s", [c.get("concept") for c in refined])
+    return refined
 
 
 # ---------------------------------------------------------------------------
@@ -358,34 +618,80 @@ Concepts:
 """
 
 
-def _stage3_build_mindmap_json(title: str, concepts: list[dict]) -> dict:
-    """LLM call 2: convert curated concept list into renderer branch JSON."""
+def _stage3_build_mindmap_json(title: str, concepts: list[dict], source_text: str) -> dict:
+    """Build renderer-friendly mind map JSON from validated concepts.
+
+    Each concept becomes a branch; the first child is the best supporting
+    sentence extracted from the source text. Emojis are assigned heuristically.
+    """
     logger.info("[Stage3] Building mind map JSON from %d concepts", len(concepts))
-    description = next((c["description"] for c in concepts if c.get("description", "").strip()), "")
-    concept_lines = json.dumps(
-        [
-            {"title": c["concept"], "explanation": c["fact"]}
-            for c in concepts
-        ],
-        ensure_ascii=False, indent=2
-    )
-    topic_block = f"Topic: {title}\nDescription: {description}\n\nNodes:\n"
-    prompt = _STAGE3_PROMPT + topic_block + concept_lines
-    response = generate_content(prompt, max_tokens=1400)
-    cleaned = clean_ollama_response(response or "")
-    cleaned = re.sub(r'```(?:json)?\s*([\s\S]*?)```', r'\1', cleaned).strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        logger.warning("[Stage3] No JSON object found")
-        return {}
-    try:
-        result = json.loads(cleaned[start:end + 1])
-        logger.info("[Stage3] Mind map JSON built with %d branches", len(result.get("branches", [])))
-        return result
-    except json.JSONDecodeError:
-        logger.warning("[Stage3] JSON parse failed")
-        return {}
+    logger.info("[Stage3][INPUT] Concepts: %s", [c.get("concept") for c in concepts])
+    branches = []
+    used_emojis: set[str] = set()
+
+    def choose_emoji(text: str) -> str:
+        mapping = [
+            (("sun", "light", "solar"), "☀️"),
+            (("water", "hydro", "aqueous"), "💧"),
+            (("oxygen",), "💨"),
+            (("glucose", "sugar", "starch"), "🍬"),
+            (("voltage", "current", "resistance", "electric", "electron"), "⚡"),
+            (("cell", "division", "mitosis", "meiosis"), "🧬"),
+            (("atom", "molecule", "chemical"), "⚛️"),
+            (("cpu", "process", "scheduling"), "⏱️"),
+            (("plant", "leaf", "chlorophyll"), "🌿"),
+        ]
+        lower = text.lower()
+        for keys, emoji in mapping:
+            for k in keys:
+                if k in lower:
+                    if emoji not in used_emojis:
+                        used_emojis.add(emoji)
+                        return emoji
+        pool = ["📌", "📍", "🔣", "🔬", "🧠", "🔋", "🧭", "🗂️"]
+        for e in pool:
+            if e not in used_emojis:
+                used_emojis.add(e)
+                return e
+        return "📌"
+
+    def best_supporting_sentence(concept: str) -> str:
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", source_text) if s.strip()]
+        if not sentences:
+            return ""
+        c_tokens = _word_set(concept)
+        best = ""
+        best_score = 0
+        for s in sentences:
+            s_tokens = _word_set(s)
+            if not s_tokens:
+                continue
+            score = len(c_tokens & s_tokens)
+            if score > best_score:
+                best = s
+                best_score = score
+        return (best or sentences[0]).strip()
+
+    for c in concepts:
+        concept_text = str(c.get("concept", "")).strip()
+        if not concept_text:
+            continue
+        emoji = choose_emoji(concept_text)
+        support = best_supporting_sentence(concept_text)
+        branch_children = []
+        if support:
+            branch_children.append({"text": support, "emoji": emoji})
+        for child in c.get("children", []):
+            child_text = str(child).strip()
+            if child_text:
+                branch_children.append({"text": child_text, "emoji": emoji})
+        branch = {"label": {"text": concept_text, "emoji": emoji}, "children": branch_children}
+        branches.append(branch)
+
+    result = {"title": title, "description": "", "branches": branches}
+    logger.info("[Stage3][OUTPUT] Mind map JSON (trimmed): %s", json.dumps(result, ensure_ascii=False)[:1000])
+    logger.info("[Stage3] Mind map JSON built with %d branches", len(branches))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -393,17 +699,50 @@ def _stage3_build_mindmap_json(title: str, concepts: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 _FLOWCHART_PROMPT = """\
-Read the document below and extract the main sequential process as a flowchart.
+Read the document below and extract the main conceptual STAGES that explain this topic.
 Return ONLY valid JSON. No markdown, no explanation.
+
+IMPORTANT: This is for EDUCATIONAL EXPLANATION, not procedural instructions.
+Extract the key stages that help a student understand the topic,
+NOT a procedure for doing an experiment.
+
 Format:
 {
   "title": "Topic name (2-4 words)",
   "description": "One sentence, max 12 words",
-  "steps": ["Complete step sentence.", "Complete step sentence."],
+  "steps": ["Educational verb + object describing key stage", ...],
   "inputs": [{"text": "label", "emoji": "🔣"}],
   "outputs": [{"text": "label", "emoji": "🔣"}]
 }
-Steps: 4-8, complete sentences, plain English only.
+
+CRITICAL STAGE RULES (strictly enforced):
+- Each step MUST describe a CONCEPTUAL STAGE or KEY PHASE.
+- Maximum 5–8 words per step.
+- Start with an educational verb describing what HAPPENS, not what you DO:
+  Absorb, Release, Produce, Convert, Transfer, Create, Break, Split, Combine,
+  Capture, Store, Transport, Transform, Generate, Conduct, Form, Dissolve,
+  Enter, Exit, Flow, Move, Travel, Build, Decompose, React.
+- CORRECT EXAMPLES (concept explanation):
+  ✓ "Sunlight is Absorbed"
+  ✓ "Water Molecules Split"
+  ✓ "Glucose is Produced"
+  ✓ "Oxygen is Released"
+  ✓ "Electron Transport Occurs"
+  ✓ "ATP is Created"
+  ✓ "Carbon Dioxide Combines"
+  ✓ "Light Energy Converts"
+  ✓ "Hydrogen Ions Flow"
+- BANNED PATTERNS (procedural, not educational):
+  ✗ "Connect the battery..."         (lab procedure)
+  ✗ "Measure the voltage..."        (measurement instruction)
+  ✗ "Turn the switch on..."         (equipment manipulation)
+  ✗ "Record the data..."            (data collection)
+  ✗ "Observe the result..."         (observation instruction)
+  ✗ "Set up the apparatus..."       (lab setup)
+- Step count: 4–8 steps exactly. Never more, never fewer.
+- EMOJI RULES:
+  - Add one relevant emoji to each step
+  - Choose from: ☀️ 💧 🌿 🍬 💨 ⚡ 🔄 🌊 ♻️ 🧪 ⚛️ 🔬
 
 Document:
 """
@@ -435,6 +774,9 @@ def _extract_visual_structure(text: str) -> dict[str, Any]:
     logger.info("[MindMap] Step 0.1 - _extract_visual_structure started")
 
     try:
+        # Derive a simple topic title to use as fallback for the mind map center
+        topic = detect_topic(text)
+
         # ── Stage 1: extract concepts ────────────────────────────────────────
         raw_concepts = _stage1_extract_concepts(text)
         if not raw_concepts:
@@ -442,16 +784,15 @@ def _extract_visual_structure(text: str) -> dict[str, Any]:
             return _fallback_visual_structure(text)
 
         # ── Stage 2: rank and deduplicate ────────────────────────────────────
-        clean_concepts = _stage2_rank_and_deduplicate(raw_concepts)
+        clean_concepts = _stage2_rank_and_deduplicate(raw_concepts, text)
+
+        # ── Stage 2.5: refine concepts into a cleaner educational hierarchy ─────
+        refined_concepts = _refine_concepts(clean_concepts, text)
 
         # ── Stage 3: build mind map JSON ─────────────────────────────────────
-        # Use the topic field from Stage 1 as the center node title.
-        # Fall back to the first concept name only if topic is absent.
-        topic_title = next(
-            (c["topic"] for c in clean_concepts if c.get("topic", "").strip()),
-            clean_concepts[0]["concept"] if clean_concepts else "Learning Concept",
-        )
-        mindmap_structure = _stage3_build_mindmap_json(topic_title, clean_concepts)
+        # Determine topic title from detect_topic() or fall back to first concept
+        topic_title = topic or (refined_concepts[0]["concept"] if refined_concepts else "Learning Concept")
+        mindmap_structure = _stage3_build_mindmap_json(topic_title, refined_concepts, text)
 
         # ── Flowchart: separate single-prompt extraction ──────────────────────
         flowchart_structure = _extract_flowchart_structure(text)
@@ -542,7 +883,7 @@ def _generate_flowchart(title: str, steps: list[str], theme: str) -> str:
         Path to generated PNG
     """
     try:
-        return create_process_flowchart(title, steps[:10], theme)
+        return create_process_flowchart(title, steps, theme)
     except Exception as exc:
         logger.error("Flowchart generation failed: %s", exc)
         raise VisualError(f"Could not create flowchart: {exc}") from exc
@@ -570,10 +911,119 @@ def _generate_summary(
     raise VisualError("Concept Summary is removed in this build.")
 
 
+# ---------------------------------------------------------------------------
+# Phase 1 — Node label compression (preprocessing before rendering)
+# ---------------------------------------------------------------------------
+
+_COMPRESS_STOP_WORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "it", "its", "this", "that", "these", "those", "of", "in", "on", "at",
+    "to", "for", "with", "by", "from", "as", "into", "through", "during",
+    "and", "or", "but", "so", "yet", "both", "either", "neither",
+    "which", "who", "whom", "whose", "where", "when", "how",
+    "can", "could", "will", "would", "shall", "should", "may", "might",
+    "do", "does", "did", "have", "has", "had",
+    "also", "very", "just", "only", "even", "still", "already",
+    "used", "called", "known", "made", "found", "given", "taken",
+}
+
+
+def _compress_node_label(text: str, max_words: int = 5) -> str:
+    """Compress a long explanation into a short educational keyword phrase.
+
+    Strategy:
+    1. If already short enough, return as-is (title-cased).
+    2. Extract nouns and important verbs; drop stop words.
+    3. Preserve terminology (capitalized words, acronyms, domain terms).
+    4. Result: 3–5 keyword words suitable for diagram nodes.
+    
+    Examples:
+      "Chlorophyll is the green pigment that captures sunlight" → "Chlorophyll Captures Sunlight"
+      "Current is the flow of electrical charge" → "Current Flow"
+      "Resistance limits or slows electric current" → "Resistance Limits Current"
+    """
+    text = text.strip()
+    if not text:
+        return text
+
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+
+    # Phase 1: categorize words by importance
+    # Priority 1: Capitalized, acronyms (likely key domain terms)
+    # Priority 2: Content verbs (is, has, provides, creates, flows, etc. with semantic value)
+    # Priority 3: Remaining content words
+    priority1: list[str] = []  # Capitalized, acronyms
+    priority2: list[str] = []  # Semantically rich verbs/nouns
+    priority3: list[str] = []  # Other content
+
+    semantic_verbs = {
+        "is", "are", "provides", "creates", "produces", "flows", "moves", "drives",
+        "absorbs", "releases", "contains", "forms", "converts", "stores", "limits",
+        "opposes", "affects", "controls", "causes", "results", "generates", "transfers"
+    }
+
+    for w in words:
+        clean = w.strip(".,;:!?()[]\"'").strip()
+        if not clean:
+            continue
+        lower = clean.lower()
+        
+        # Skip stop words
+        if lower in _COMPRESS_STOP_WORDS:
+            continue
+        
+        # Priority 1: Capitalized (proper nouns, domain terms)
+        if clean[0].isupper() or clean.isupper():
+            priority1.append(clean)
+        # Priority 2: Semantic verbs + short nouns
+        elif lower in semantic_verbs or (len(clean) <= 8 and clean[0].isalpha()):
+            priority2.append(clean)
+        # Priority 3: Other content
+        else:
+            priority3.append(clean)
+
+    # Phase 2: Assemble the result
+    combined = priority1 + priority2 + priority3
+    if not combined:
+        return " ".join(words[:max_words])
+
+    result = " ".join(combined[:max_words])
+    
+    # Phase 3: Ensure at least one capital letter for readability
+    if result and result[0].islower():
+        result = result[0].upper() + result[1:]
+    
+    return result
+
+
+def _compress_nodes(nodes: list[dict]) -> list[dict]:
+    """Apply label compression only to level-1 branch labels (not explanation children)."""
+    result = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            result.append(node)
+            continue
+        compressed = dict(node)
+        # Level-2 nodes are full explanation sentences — never compress them.
+        # Level-1 nodes are short educational titles — compress only if > max_words.
+        if node.get("level", 1) == 1:
+            raw_text = node.get("text", "")
+            compressed["text"] = _compress_node_label(raw_text, max_words=5)
+        result.append(compressed)
+    return result
+
+
 def _generate_mindmap(title: str, nodes: list[dict], theme: str) -> str:
     """Generate a mind map using the educational visuals module."""
     try:
-        return create_mind_map(title, nodes[:10], theme)
+        compressed = _compress_nodes(nodes)
+        logger.info("======== CALLING RENDERER ========")
+        logger.info("[Renderer INPUT] title=%s, theme=%s, nodes=%s", title, theme, compressed)
+        path = create_mind_map(title, compressed, theme)
+        logger.info("======== PNG GENERATED ======== path=%s", path)
+        return path
     except Exception as exc:
         logger.error("Mind map generation failed: %s", exc)
         raise VisualError(f"Could not create mind map: {exc}") from exc

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 
 from flask import Blueprint, request, jsonify
+
+logger = logging.getLogger(__name__)
 
 from services.ocr_service import extract_text_from_image, OCRError
 from services.simplification_service import simplify_text, SimplificationError
@@ -218,6 +221,8 @@ def visualize():
 
     try:
         user_id = data.get("user_id")
+        logger.info("======== ROUTE HIT: /visualize ========")
+        logger.info("======== ROUTE INPUT: visual_type=%s, text_length=%d ========", visual_type, len(text))
         visual_content = generate_visual_content(text, visual_type=visual_type)
         if user_id is not None:
             track_visual_viewed(user_id=int(user_id), metadata={"visual_type": visual_type or "generic"})
