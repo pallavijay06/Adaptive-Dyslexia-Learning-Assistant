@@ -1,13 +1,5 @@
-import json
-from pathlib import Path
-import sys
+from services.educational_understanding_engine import understand_chapter
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from services.educational_understanding_engine import EducationalUnderstanding
-from services.knowledge_organization_engine import organize_knowledge
 
 SAMPLES = {
     "Photosynthesis": "Photosynthesis is the process by which green plants use sunlight, water, and carbon dioxide to produce glucose and oxygen. Chlorophyll in the chloroplasts captures light energy. Roots absorb water. Stomata allow carbon dioxide to enter leaves.",
@@ -20,20 +12,22 @@ SAMPLES = {
 }
 
 
-def run_sample(title, text):
-    understanding = EducationalUnderstanding(
-        chapter_title=title,
-        subject="General Studies",
-        domain="General Studies",
-        topic_complexity="Medium",
-        learning_objective="Understand the main ideas in this chapter.",
-        major_sections=["Introduction", "Core Concepts", "Applications", "Summary"],
-    )
-    structure = organize_knowledge(understanding, text)
+def test_understand_chapter_returns_educational_structure_for_core_topics():
+    for topic, text in SAMPLES.items():
+        understanding = understand_chapter(text)
+
+        assert understanding.chapter_title
+        assert understanding.learning_objective
+        assert understanding.major_sections
+        assert understanding.subject
+        assert understanding.domain
+
+        print("-------------------------------------")
+        print("Chapter Title")
+        print(understanding.chapter_title)
+        print("Learning Objective")
+        print(understanding.learning_objective)
+        print("Major Sections")
+        print("\n".join(understanding.major_sections))
+
     print("-------------------------------------")
-    print(json.dumps(structure.to_dict(), indent=2, ensure_ascii=False))
-
-
-if __name__ == '__main__':
-    for title, text in SAMPLES.items():
-        run_sample(title, text)

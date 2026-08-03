@@ -9,18 +9,24 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime
 from typing import Any
 
+from services.educational_understanding_engine import understand_chapter
+from services.educational_validation_engine import validate_educational_knowledge
 from services.educational_visuals import (
     create_process_flowchart,
     create_mind_map,
     detect_topic,
 )
+from services.knowledge_organization_engine import organize_knowledge
+from services.educational_concept_labeling_engine import label_educational_knowledge
 from services.llm_router import generate_content, LLMRouterError
 from services.ollama_service import clean_ollama_response
+from services.visualization_planning_engine import VisualizationPlanningEngine
 
 logger = logging.getLogger(__name__)
 
@@ -73,48 +79,56 @@ def generate_visual_content(text: str, theme: str = "light", visual_type: str | 
             )
 
         if normalized_visual_type in {None, "mind_map"}:
-            branches = structure.get("branches", [])
-            # Build hierarchy-aware node list: branch labels + their children
-            # Each node carries a "level" key: 1 = primary concept, 2 = child detail
-            mindmap_nodes: list[dict] = []
-            if branches and isinstance(branches[0], dict):
-                for branch in branches:
-                    label = branch.get("label", {})
-                    label_node = (
-                        label if isinstance(label, dict)
-                        else {"text": str(label), "emoji": "📌"}
-                    )
-                    label_node = dict(label_node)
-                    label_node["level"] = 1
-                    mindmap_nodes.append(label_node)
-                    children = branch.get("children", [])
-                    if isinstance(children, list):
-                        for child in children:
-                            child_node = (
-                                child if isinstance(child, dict)
-                                else {"text": str(child), "emoji": "📍"}
-                            )
-                            child_node = dict(child_node)
-                            child_node["level"] = 2
-                            mindmap_nodes.append(child_node)
+            if _use_mindmap_v2() and structure.get("mindmap_layout_model"):
+                mindmap_nodes = _layout_model_to_renderer_nodes(structure.get("mindmap_layout_model"))
+                mindmap_path = _generate_mindmap(
+                    structure.get("title", "Concept"),
+                    mindmap_nodes,
+                    theme,
+                )
             else:
-                for item in (
-                    structure.get("inputs", []) +
-                    structure.get("outputs", []) +
-                    structure.get("steps", [])
-                ):
-                    node = (
-                        item if isinstance(item, dict)
-                        else {"text": str(item), "emoji": "📍"}
-                    )
-                    node = dict(node)
-                    node.setdefault("level", 1)
-                    mindmap_nodes.append(node)
-            mindmap_path = _generate_mindmap(
-                structure.get("title", "Concept"),
-                mindmap_nodes,
-                theme,
-            )
+                branches = structure.get("branches", [])
+                # Build hierarchy-aware node list: branch labels + their children
+                # Each node carries a "level" key: 1 = primary concept, 2 = child detail
+                mindmap_nodes: list[dict] = []
+                if branches and isinstance(branches[0], dict):
+                    for branch in branches:
+                        label = branch.get("label", {})
+                        label_node = (
+                            label if isinstance(label, dict)
+                            else {"text": str(label), "emoji": "📌"}
+                        )
+                        label_node = dict(label_node)
+                        label_node["level"] = 1
+                        mindmap_nodes.append(label_node)
+                        children = branch.get("children", [])
+                        if isinstance(children, list):
+                            for child in children:
+                                child_node = (
+                                    child if isinstance(child, dict)
+                                    else {"text": str(child), "emoji": "📍"}
+                                )
+                                child_node = dict(child_node)
+                                child_node["level"] = 2
+                                mindmap_nodes.append(child_node)
+                else:
+                    for item in (
+                        structure.get("inputs", []) +
+                        structure.get("outputs", []) +
+                        structure.get("steps", [])
+                    ):
+                        node = (
+                            item if isinstance(item, dict)
+                            else {"text": str(item), "emoji": "📍"}
+                        )
+                        node = dict(node)
+                        node.setdefault("level", 1)
+                        mindmap_nodes.append(node)
+                mindmap_path = _generate_mindmap(
+                    structure.get("title", "Concept"),
+                    mindmap_nodes,
+                    theme,
+                )
 
         elapsed = time.perf_counter() - start_time
         logger.info("[MindMap] Step 0 complete - generate_visual_content finished in %.4fs", elapsed)
@@ -126,6 +140,7 @@ def generate_visual_content(text: str, theme: str = "light", visual_type: str | 
             "flowchart_path": flowchart_path,
             "mindmap_path": mindmap_path,
             "structure": structure,
+            "mindmap_layout_model": structure.get("mindmap_layout_model"),
         }
 
     except VisualError:
@@ -769,56 +784,60 @@ def _extract_flowchart_structure(text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _extract_visual_structure(text: str) -> dict[str, Any]:
-    """Three-stage mind map pipeline + single-stage flowchart extraction."""
+    """Build a visual structure from the new educational pipeline when enabled."""
     logger.info("ENTER: _extract_visual_structure at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
     logger.info("[MindMap] Step 0.1 - _extract_visual_structure started")
 
-    try:
-        # Derive a simple topic title to use as fallback for the mind map center
-        topic = detect_topic(text)
+    if _use_mindmap_v2():
+        try:
+            understanding = understand_chapter(text)
+            knowledge_structure = organize_knowledge(understanding, text)
+            labeled_structure = label_educational_knowledge(knowledge_structure)
+            validated_structure = validate_educational_knowledge(labeled_structure)
+            layout_model = VisualizationPlanningEngine().plan(validated_structure)
+            flowchart_structure = _extract_flowchart_structure(text)
+            structure: dict[str, Any] = {
+                "title": layout_model.center_node.label or understanding.chapter_title,
+                "description": validated_structure.learning_objective,
+                "branches": [],
+                "steps": flowchart_structure.get("steps") or _fallback_steps_from_text(text),
+                "inputs": flowchart_structure.get("inputs", [{"text": "Input", "emoji": "📥"}]),
+                "outputs": flowchart_structure.get("outputs", [{"text": "Output", "emoji": "📤"}]),
+                "educational_understanding": understanding.to_dict(),
+                "educational_structure": knowledge_structure.to_dict(),
+                "validated_structure": validated_structure.to_dict(),
+                "mindmap_layout_model": layout_model.to_dict(),
+            }
+            logger.info("[MindMap] Step 0.1 complete - new educational pipeline used")
+            logger.info("EXIT: _extract_visual_structure at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
+            return structure
+        except Exception as exc:
+            logger.warning("New pipeline failed, using fallback structure: %s", exc)
 
-        # ── Stage 1: extract concepts ────────────────────────────────────────
+    try:
+        topic = detect_topic(text)
+        educational_understanding = understand_chapter(text)
+
         raw_concepts = _stage1_extract_concepts(text)
         if not raw_concepts:
             logger.warning("[Stage1] No concepts extracted, using fallback")
             return _fallback_visual_structure(text)
 
-        # ── Stage 2: rank and deduplicate ────────────────────────────────────
         clean_concepts = _stage2_rank_and_deduplicate(raw_concepts, text)
-
-        # ── Stage 2.5: refine concepts into a cleaner educational hierarchy ─────
         refined_concepts = _refine_concepts(clean_concepts, text)
-
-        # ── Stage 3: build mind map JSON ─────────────────────────────────────
-        # Determine topic title from detect_topic() or fall back to first concept
         topic_title = topic or (refined_concepts[0]["concept"] if refined_concepts else "Learning Concept")
         mindmap_structure = _stage3_build_mindmap_json(topic_title, refined_concepts, text)
-
-        # ── Flowchart: separate single-prompt extraction ──────────────────────
         flowchart_structure = _extract_flowchart_structure(text)
 
-        # ── Merge into the shape generate_visual_content expects ─────────────
-        structure: dict[str, Any] = {
+        structure = {
             "title": mindmap_structure.get("title") or flowchart_structure.get("title") or "Learning Concept",
             "description": mindmap_structure.get("description") or flowchart_structure.get("description") or "",
             "branches": mindmap_structure.get("branches", []),
             "steps": flowchart_structure.get("steps") or _fallback_steps_from_text(text),
             "inputs": flowchart_structure.get("inputs", [{"text": "Input", "emoji": "📥"}]),
             "outputs": flowchart_structure.get("outputs", [{"text": "Output", "emoji": "📤"}]),
+            "educational_understanding": educational_understanding.to_dict(),
         }
-
-        # ── DIAGNOSTIC ───────────────────────────────────────────────────────
-        logger.info("[DIAG] RAW PARSED JSON: %s", json.dumps(structure, ensure_ascii=False))
-        branches_diag = structure.get("branches", [])
-        logger.info("[DIAG] NUMBER OF BRANCHES: %d", len(branches_diag))
-        for _bi, _br in enumerate(branches_diag):
-            _lbl = _br.get("label", {}) if isinstance(_br, dict) else _br
-            _lbl_text = _lbl.get("text", str(_lbl)) if isinstance(_lbl, dict) else str(_lbl)
-            logger.info("[DIAG] BRANCH %d LABEL: %s", _bi, _lbl_text)
-            for _ci, _ch in enumerate(_br.get("children", []) if isinstance(_br, dict) else []):
-                _ch_text = _ch.get("text", str(_ch)) if isinstance(_ch, dict) else str(_ch)
-                logger.info("[DIAG] BRANCH %d CHILD %d: %s", _bi, _ci, _ch_text)
-        # ── END DIAGNOSTIC ───────────────────────────────────────────────────
 
         logger.info("[MindMap] Step 0.1 complete - _extract_visual_structure succeeded")
         logger.info("EXIT: _extract_visual_structure at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
@@ -1015,18 +1034,119 @@ def _compress_nodes(nodes: list[dict]) -> list[dict]:
     return result
 
 
-def _generate_mindmap(title: str, nodes: list[dict], theme: str) -> str:
+def _generate_mindmap(title: str, nodes: list[dict] | dict[str, Any], theme: str) -> str:
     """Generate a mind map using the educational visuals module."""
     try:
-        compressed = _compress_nodes(nodes)
-        logger.info("======== CALLING RENDERER ========")
-        logger.info("[Renderer INPUT] title=%s, theme=%s, nodes=%s", title, theme, compressed)
-        path = create_mind_map(title, compressed, theme)
+        # The renderer contract now accepts the full hierarchical layout model
+        # (adapter output) or the legacy flattened node list. Pass the
+        # appropriate object to `create_mind_map` and let the renderer handle
+        # compatibility internally.
+        if isinstance(nodes, dict):
+            adapter_output = nodes
+            logger.info("======== CALLING RENDERER (hierarchical model) ========")
+            logger.info("[Renderer INPUT] title=%s, theme=%s, adapter_output=present", title, theme)
+            path = create_mind_map(title, adapter_output, theme)
+        else:
+            compressed = _compress_nodes(nodes)
+            logger.info("======== CALLING RENDERER (legacy nodes list) ========")
+            logger.info(
+                "[Renderer INPUT] title=%s, theme=%s, node_count=%d, adapter_output=none",
+                title,
+                theme,
+                len(compressed),
+            )
+            path = create_mind_map(title, compressed, theme)
         logger.info("======== PNG GENERATED ======== path=%s", path)
         return path
     except Exception as exc:
         logger.error("Mind map generation failed: %s", exc)
         raise VisualError(f"Could not create mind map: {exc}") from exc
+
+
+def _layout_model_to_renderer_nodes(layout_model: dict[str, Any] | None) -> dict[str, Any]:
+    """Adapt the layout model into the renderer's expected node contract.
+
+    The renderer currently consumes a list of nodes, but this adapter preserves
+    the full hierarchical graph model for future renderer improvements.
+    """
+    if not layout_model:
+        return {
+            "center_node": {},
+            "branch_nodes": [],
+            "child_nodes": [],
+            "edges": [],
+            "nodes": [],
+        }
+
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    center_node = layout_model.get("center_node", {}) or {}
+    if center_node:
+        nodes.append(
+            {
+                "text": center_node.get("label", "Concept"),
+                "emoji": "🧠",
+                "level": 0,
+                "priority": center_node.get("priority", "highest"),
+                "visual_style": center_node.get("visual_style", {}),
+                "node_type": center_node.get("node_type", "center"),
+                "display_label": center_node.get("display_label", center_node.get("label", "Concept")),
+                "branch_order": center_node.get("branch_order"),
+                "parent_id": center_node.get("parent_id"),
+            }
+        )
+
+    for branch in layout_model.get("branch_nodes", []) or []:
+        branch_id = branch.get("id")
+        if branch_id:
+            edges.append({"source": center_node.get("id", "center"), "target": branch_id, "edge_type": "branch"})
+
+        nodes.append(
+            {
+                "text": branch.get("label", "Branch"),
+                "emoji": "📌",
+                "level": 1,
+                "priority": branch.get("priority", "high"),
+                "visual_style": branch.get("visual_style", {}),
+                "node_type": branch.get("node_type", "branch"),
+                "display_label": branch.get("display_label", branch.get("label", "Branch")),
+                "branch_order": branch.get("branch_order"),
+                "parent_id": branch.get("parent_id"),
+            }
+        )
+
+    for child in layout_model.get("child_nodes", []) or []:
+        parent_id = child.get("parent_id")
+        child_id = child.get("id")
+        if parent_id and child_id:
+            edges.append({"source": parent_id, "target": child_id, "edge_type": "child"})
+
+        nodes.append(
+            {
+                "text": child.get("label", "Child"),
+                "emoji": "📍",
+                "level": 2,
+                "priority": child.get("priority", "medium"),
+                "visual_style": child.get("visual_style", {}),
+                "node_type": child.get("node_type", "child"),
+                "display_label": child.get("display_label", child.get("label", "Child")),
+                "branch_order": child.get("branch_order"),
+                "parent_id": parent_id,
+            }
+        )
+
+    return {
+        "center_node": center_node,
+        "branch_nodes": layout_model.get("branch_nodes", []) or [],
+        "child_nodes": layout_model.get("child_nodes", []) or [],
+        "edges": edges,
+        "nodes": nodes,
+    }
+
+
+def _use_mindmap_v2() -> bool:
+    return os.getenv("USE_MINDMAP_V2", "1").lower() in {"1", "true", "yes", "on"}
 
 
 def cleanup_old_visuals(keep_count: int = 50) -> None:

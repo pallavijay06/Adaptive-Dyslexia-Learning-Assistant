@@ -302,7 +302,7 @@ def _point_on_circle_edge(center_x: int, center_y: int, radius: int, angle: floa
     )
 
 
-def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
+def create_mind_map(title: str, nodes_or_model: list[dict] | dict[str, Any], theme: str = "light") -> str:
     """Create a polished emoji-first mind map with improved layout and hierarchy.
     
     Features:
@@ -315,6 +315,44 @@ def create_mind_map(title: str, nodes: list[dict], theme: str = "light") -> str:
     logger.info("ENTER: create_mind_map at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
     if theme not in COLOR_SCHEMES:
         theme = "light"
+
+    # Compatibility: accept either a legacy flattened `nodes` list or the new
+    # hierarchical layout model produced by the adapter. If a layout model dict
+    # is provided, construct an equivalent flattened node list for the existing
+    # rendering pipeline while preserving the original layout_model data for
+    # potential future use.
+    layout_model = None
+    if isinstance(nodes_or_model, dict):
+        layout_model = nodes_or_model
+        # Use adapter-provided flattened nodes if present, otherwise build one
+        if isinstance(layout_model.get("nodes"), list):
+            nodes = list(layout_model.get("nodes"))
+        else:
+            nodes = []
+            center = layout_model.get("center_node") or {}
+            if center:
+                nodes.append({
+                    "text": center.get("label", title),
+                    "emoji": "🧠",
+                    "level": 0,
+                    "visual_style": center.get("visual_style", {}),
+                })
+            for branch in layout_model.get("branch_nodes", []) or []:
+                nodes.append({
+                    "text": branch.get("label", ""),
+                    "emoji": "📌",
+                    "level": 1,
+                    "visual_style": branch.get("visual_style", {}),
+                })
+            for child in layout_model.get("child_nodes", []) or []:
+                nodes.append({
+                    "text": child.get("label", ""),
+                    "emoji": "📍",
+                    "level": 2,
+                    "visual_style": child.get("visual_style", {}),
+                })
+    else:
+        nodes = list(nodes_or_model or [])
 
     logger.info("[MindMap] Step 1 - create_mind_map started: title=%r nodes=%d theme=%r", title, len(nodes), theme)
 

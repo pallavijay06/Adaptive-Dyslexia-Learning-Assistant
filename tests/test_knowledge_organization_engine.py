@@ -1,13 +1,8 @@
 import json
-from pathlib import Path
-import sys
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.educational_understanding_engine import EducationalUnderstanding
 from services.knowledge_organization_engine import organize_knowledge
+
 
 SAMPLES = {
     "Photosynthesis": "Photosynthesis is the process by which green plants use sunlight, water, and carbon dioxide to produce glucose and oxygen. Chlorophyll in the chloroplasts captures light energy. Roots absorb water. Stomata allow carbon dioxide to enter leaves.",
@@ -20,20 +15,28 @@ SAMPLES = {
 }
 
 
-def run_sample(title, text):
-    understanding = EducationalUnderstanding(
-        chapter_title=title,
+def build_understanding(topic: str, text: str) -> EducationalUnderstanding:
+    return EducationalUnderstanding(
+        chapter_title=topic,
         subject="General Studies",
         domain="General Studies",
         topic_complexity="Medium",
         learning_objective="Understand the main ideas in this chapter.",
         major_sections=["Introduction", "Core Concepts", "Applications", "Summary"],
     )
-    structure = organize_knowledge(understanding, text)
+
+
+def test_organize_knowledge_returns_textbook_like_sections():
+    for topic, text in SAMPLES.items():
+        understanding = build_understanding(topic, text)
+        structure = organize_knowledge(understanding, text)
+
+        assert structure.chapter_title
+        assert structure.learning_objective
+        assert structure.sections
+        assert all(section.learning_points for section in structure.sections)
+
+        print("-------------------------------------")
+        print(json.dumps(structure.to_dict(), indent=2, ensure_ascii=False))
+
     print("-------------------------------------")
-    print(json.dumps(structure.to_dict(), indent=2, ensure_ascii=False))
-
-
-if __name__ == '__main__':
-    for title, text in SAMPLES.items():
-        run_sample(title, text)
