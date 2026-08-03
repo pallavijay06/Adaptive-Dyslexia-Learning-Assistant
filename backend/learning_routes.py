@@ -208,13 +208,16 @@ def visualize():
         
     Response:
         - title: Visual title
-        - type: Type of visualization (flowchart, concept_map, process, summary)
         - steps: List of steps or components
         - description: Brief description
     """
     data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
-    visual_type = (data.get("visual_type") or None)
+    visual_type = (data.get("visual_type") or "flowchart")
+    if isinstance(visual_type, str):
+        visual_type = visual_type.strip().lower().replace("-", "_")
+        if visual_type in {"mindmap", "mind_map"}:
+            visual_type = "flowchart"
 
     if not text:
         return jsonify({"error": "Text cannot be empty"}), 400
@@ -225,12 +228,10 @@ def visualize():
         logger.info("======== ROUTE INPUT: visual_type=%s, text_length=%d ========", visual_type, len(text))
         visual_content = generate_visual_content(text, visual_type=visual_type)
         if user_id is not None:
-            track_visual_viewed(user_id=int(user_id), metadata={"visual_type": visual_type or "generic"})
+            track_visual_viewed(user_id=int(user_id), metadata={"visual_type": visual_type or "flowchart"})
         # Convert filesystem paths to serving URLs
         if visual_content.get("flowchart_path"):
             visual_content["flowchart_url"] = f"/diagrams/{Path(visual_content['flowchart_path']).name}"
-        if visual_content.get("mindmap_path"):
-            visual_content["mindmap_url"] = f"/diagrams/{Path(visual_content['mindmap_path']).name}"
         return jsonify({
             "visual": visual_content,
             "success": True

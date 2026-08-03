@@ -1,6 +1,6 @@
-"""Visual learning generator focused on Flowcharts and Mind Maps.
+"""Visual learning generator focused on Flowchart generation.
 
-Produces emoji-first visuals designed for quick visual learning
+Produces emoji-first flowcharts designed for quick visual learning
 and dyslexia-friendly readability: short labels, large spacing,
 diagram structure, and extensive emoji use.
 """
@@ -16,17 +16,12 @@ from datetime import datetime
 from typing import Any
 
 from services.educational_understanding_engine import understand_chapter
-from services.educational_validation_engine import validate_educational_knowledge
 from services.educational_visuals import (
     create_process_flowchart,
-    create_mind_map,
     detect_topic,
 )
-from services.knowledge_organization_engine import organize_knowledge
-from services.educational_concept_labeling_engine import label_educational_knowledge
 from services.llm_router import generate_content, LLMRouterError
 from services.ollama_service import clean_ollama_response
-from services.visualization_planning_engine import VisualizationPlanningEngine
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +31,14 @@ class VisualError(RuntimeError):
 
 
 def generate_visual_content(text: str, theme: str = "light", visual_type: str | None = None) -> dict[str, Any]:
-    """Generate visual learning content for one or both supported visual types.
+    """Generate flowchart content for the active visual learning experience.
 
     Args:
         text: Source text to visualize.
         theme: Visual theme for color styling.
-        visual_type: One of "flowchart", "mind_map", "mindmap", or None for both.
+        visual_type: Accepted for compatibility, but only flowchart output is produced.
 
-    Returns a dict with `flowchart_path`, `mindmap_path`, `structure`,
-    `topic`, and short `description`.
+    Returns a dict with `flowchart_path`, `structure`, `topic`, and short `description`.
     """
     logger.info("======== ENTERED VISUAL SERVICE ========")
     logger.info("ENTER: generate_visual_content at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
@@ -54,93 +48,35 @@ def generate_visual_content(text: str, theme: str = "light", visual_type: str | 
 
     if isinstance(visual_type, str):
         normalized_visual_type = visual_type.strip().lower().replace("-", "_")
-        if normalized_visual_type == "mindmap":
-            normalized_visual_type = "mind_map"
+        if normalized_visual_type in {"mindmap", "mind_map"}:
+            normalized_visual_type = "flowchart"
     else:
         normalized_visual_type = None
 
-    if normalized_visual_type not in {None, "flowchart", "mind_map"}:
-        raise VisualError("Unsupported visual_type. Use 'flowchart' or 'mind_map'.")
+    if normalized_visual_type not in {None, "flowchart"}:
+        raise VisualError("Unsupported visual_type. Use 'flowchart'.")
 
     try:
-        logger.info("[MindMap] Step 0 - generate_visual_content started")
+        logger.info("[Flowchart] Step 0 - generate_visual_content started")
         start_time = time.perf_counter()
         topic = detect_topic(text)
         structure = _extract_visual_structure(text)
 
-        flowchart_path = None
-        mindmap_path = None
-
-        if normalized_visual_type in {None, "flowchart"}:
-            flowchart_path = _generate_flowchart(
-                structure.get("title", "Process"),
-                structure.get("steps", []),
-                theme,
-            )
-
-        if normalized_visual_type in {None, "mind_map"}:
-            if _use_mindmap_v2() and structure.get("mindmap_layout_model"):
-                mindmap_nodes = _layout_model_to_renderer_nodes(structure.get("mindmap_layout_model"))
-                mindmap_path = _generate_mindmap(
-                    structure.get("title", "Concept"),
-                    mindmap_nodes,
-                    theme,
-                )
-            else:
-                branches = structure.get("branches", [])
-                # Build hierarchy-aware node list: branch labels + their children
-                # Each node carries a "level" key: 1 = primary concept, 2 = child detail
-                mindmap_nodes: list[dict] = []
-                if branches and isinstance(branches[0], dict):
-                    for branch in branches:
-                        label = branch.get("label", {})
-                        label_node = (
-                            label if isinstance(label, dict)
-                            else {"text": str(label), "emoji": "📌"}
-                        )
-                        label_node = dict(label_node)
-                        label_node["level"] = 1
-                        mindmap_nodes.append(label_node)
-                        children = branch.get("children", [])
-                        if isinstance(children, list):
-                            for child in children:
-                                child_node = (
-                                    child if isinstance(child, dict)
-                                    else {"text": str(child), "emoji": "📍"}
-                                )
-                                child_node = dict(child_node)
-                                child_node["level"] = 2
-                                mindmap_nodes.append(child_node)
-                else:
-                    for item in (
-                        structure.get("inputs", []) +
-                        structure.get("outputs", []) +
-                        structure.get("steps", [])
-                    ):
-                        node = (
-                            item if isinstance(item, dict)
-                            else {"text": str(item), "emoji": "📍"}
-                        )
-                        node = dict(node)
-                        node.setdefault("level", 1)
-                        mindmap_nodes.append(node)
-                mindmap_path = _generate_mindmap(
-                    structure.get("title", "Concept"),
-                    mindmap_nodes,
-                    theme,
-                )
+        flowchart_path = _generate_flowchart(
+            structure.get("title", "Process"),
+            structure.get("steps", []),
+            theme,
+        )
 
         elapsed = time.perf_counter() - start_time
-        logger.info("[MindMap] Step 0 complete - generate_visual_content finished in %.4fs", elapsed)
+        logger.info("[Flowchart] Step 0 complete - generate_visual_content finished in %.4fs", elapsed)
         logger.info("EXIT: generate_visual_content at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
         return {
             "topic": topic,
             "title": structure.get("title", "Visual Learning"),
             "description": structure.get("description", ""),
             "flowchart_path": flowchart_path,
-            "mindmap_path": mindmap_path,
             "structure": structure,
-            "mindmap_layout_model": structure.get("mindmap_layout_model"),
         }
 
     except VisualError:
@@ -784,62 +720,22 @@ def _extract_flowchart_structure(text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _extract_visual_structure(text: str) -> dict[str, Any]:
-    """Build a visual structure from the new educational pipeline when enabled."""
+    """Build the flowchart-focused structure used by the active visual pipeline."""
     logger.info("ENTER: _extract_visual_structure at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
-    logger.info("[MindMap] Step 0.1 - _extract_visual_structure started")
-
-    if _use_mindmap_v2():
-        try:
-            understanding = understand_chapter(text)
-            knowledge_structure = organize_knowledge(understanding, text)
-            labeled_structure = label_educational_knowledge(knowledge_structure)
-            validated_structure = validate_educational_knowledge(labeled_structure)
-            layout_model = VisualizationPlanningEngine().plan(validated_structure)
-            flowchart_structure = _extract_flowchart_structure(text)
-            structure: dict[str, Any] = {
-                "title": layout_model.center_node.label or understanding.chapter_title,
-                "description": validated_structure.learning_objective,
-                "branches": [],
-                "steps": flowchart_structure.get("steps") or _fallback_steps_from_text(text),
-                "inputs": flowchart_structure.get("inputs", [{"text": "Input", "emoji": "📥"}]),
-                "outputs": flowchart_structure.get("outputs", [{"text": "Output", "emoji": "📤"}]),
-                "educational_understanding": understanding.to_dict(),
-                "educational_structure": knowledge_structure.to_dict(),
-                "validated_structure": validated_structure.to_dict(),
-                "mindmap_layout_model": layout_model.to_dict(),
-            }
-            logger.info("[MindMap] Step 0.1 complete - new educational pipeline used")
-            logger.info("EXIT: _extract_visual_structure at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
-            return structure
-        except Exception as exc:
-            logger.warning("New pipeline failed, using fallback structure: %s", exc)
+    logger.info("Step 0.1 - _extract_visual_structure started")
 
     try:
-        topic = detect_topic(text)
         educational_understanding = understand_chapter(text)
-
-        raw_concepts = _stage1_extract_concepts(text)
-        if not raw_concepts:
-            logger.warning("[Stage1] No concepts extracted, using fallback")
-            return _fallback_visual_structure(text)
-
-        clean_concepts = _stage2_rank_and_deduplicate(raw_concepts, text)
-        refined_concepts = _refine_concepts(clean_concepts, text)
-        topic_title = topic or (refined_concepts[0]["concept"] if refined_concepts else "Learning Concept")
-        mindmap_structure = _stage3_build_mindmap_json(topic_title, refined_concepts, text)
         flowchart_structure = _extract_flowchart_structure(text)
-
-        structure = {
-            "title": mindmap_structure.get("title") or flowchart_structure.get("title") or "Learning Concept",
-            "description": mindmap_structure.get("description") or flowchart_structure.get("description") or "",
-            "branches": mindmap_structure.get("branches", []),
+        structure: dict[str, Any] = {
+            "title": flowchart_structure.get("title") or educational_understanding.chapter_title or "Learning Concept",
+            "description": flowchart_structure.get("description") or educational_understanding.learning_objective or "",
             "steps": flowchart_structure.get("steps") or _fallback_steps_from_text(text),
             "inputs": flowchart_structure.get("inputs", [{"text": "Input", "emoji": "📥"}]),
             "outputs": flowchart_structure.get("outputs", [{"text": "Output", "emoji": "📤"}]),
             "educational_understanding": educational_understanding.to_dict(),
         }
-
-        logger.info("[MindMap] Step 0.1 complete - _extract_visual_structure succeeded")
+        logger.info("Step 0.1 complete - _extract_visual_structure succeeded")
         logger.info("EXIT: _extract_visual_structure at %s", datetime.utcnow().isoformat(timespec="milliseconds"))
         return structure
 
@@ -1032,121 +928,6 @@ def _compress_nodes(nodes: list[dict]) -> list[dict]:
             compressed["text"] = _compress_node_label(raw_text, max_words=5)
         result.append(compressed)
     return result
-
-
-def _generate_mindmap(title: str, nodes: list[dict] | dict[str, Any], theme: str) -> str:
-    """Generate a mind map using the educational visuals module."""
-    try:
-        # The renderer contract now accepts the full hierarchical layout model
-        # (adapter output) or the legacy flattened node list. Pass the
-        # appropriate object to `create_mind_map` and let the renderer handle
-        # compatibility internally.
-        if isinstance(nodes, dict):
-            adapter_output = nodes
-            logger.info("======== CALLING RENDERER (hierarchical model) ========")
-            logger.info("[Renderer INPUT] title=%s, theme=%s, adapter_output=present", title, theme)
-            path = create_mind_map(title, adapter_output, theme)
-        else:
-            compressed = _compress_nodes(nodes)
-            logger.info("======== CALLING RENDERER (legacy nodes list) ========")
-            logger.info(
-                "[Renderer INPUT] title=%s, theme=%s, node_count=%d, adapter_output=none",
-                title,
-                theme,
-                len(compressed),
-            )
-            path = create_mind_map(title, compressed, theme)
-        logger.info("======== PNG GENERATED ======== path=%s", path)
-        return path
-    except Exception as exc:
-        logger.error("Mind map generation failed: %s", exc)
-        raise VisualError(f"Could not create mind map: {exc}") from exc
-
-
-def _layout_model_to_renderer_nodes(layout_model: dict[str, Any] | None) -> dict[str, Any]:
-    """Adapt the layout model into the renderer's expected node contract.
-
-    The renderer currently consumes a list of nodes, but this adapter preserves
-    the full hierarchical graph model for future renderer improvements.
-    """
-    if not layout_model:
-        return {
-            "center_node": {},
-            "branch_nodes": [],
-            "child_nodes": [],
-            "edges": [],
-            "nodes": [],
-        }
-
-    nodes: list[dict] = []
-    edges: list[dict] = []
-
-    center_node = layout_model.get("center_node", {}) or {}
-    if center_node:
-        nodes.append(
-            {
-                "text": center_node.get("label", "Concept"),
-                "emoji": "🧠",
-                "level": 0,
-                "priority": center_node.get("priority", "highest"),
-                "visual_style": center_node.get("visual_style", {}),
-                "node_type": center_node.get("node_type", "center"),
-                "display_label": center_node.get("display_label", center_node.get("label", "Concept")),
-                "branch_order": center_node.get("branch_order"),
-                "parent_id": center_node.get("parent_id"),
-            }
-        )
-
-    for branch in layout_model.get("branch_nodes", []) or []:
-        branch_id = branch.get("id")
-        if branch_id:
-            edges.append({"source": center_node.get("id", "center"), "target": branch_id, "edge_type": "branch"})
-
-        nodes.append(
-            {
-                "text": branch.get("label", "Branch"),
-                "emoji": "📌",
-                "level": 1,
-                "priority": branch.get("priority", "high"),
-                "visual_style": branch.get("visual_style", {}),
-                "node_type": branch.get("node_type", "branch"),
-                "display_label": branch.get("display_label", branch.get("label", "Branch")),
-                "branch_order": branch.get("branch_order"),
-                "parent_id": branch.get("parent_id"),
-            }
-        )
-
-    for child in layout_model.get("child_nodes", []) or []:
-        parent_id = child.get("parent_id")
-        child_id = child.get("id")
-        if parent_id and child_id:
-            edges.append({"source": parent_id, "target": child_id, "edge_type": "child"})
-
-        nodes.append(
-            {
-                "text": child.get("label", "Child"),
-                "emoji": "📍",
-                "level": 2,
-                "priority": child.get("priority", "medium"),
-                "visual_style": child.get("visual_style", {}),
-                "node_type": child.get("node_type", "child"),
-                "display_label": child.get("display_label", child.get("label", "Child")),
-                "branch_order": child.get("branch_order"),
-                "parent_id": parent_id,
-            }
-        )
-
-    return {
-        "center_node": center_node,
-        "branch_nodes": layout_model.get("branch_nodes", []) or [],
-        "child_nodes": layout_model.get("child_nodes", []) or [],
-        "edges": edges,
-        "nodes": nodes,
-    }
-
-
-def _use_mindmap_v2() -> bool:
-    return os.getenv("USE_MINDMAP_V2", "1").lower() in {"1", "true", "yes", "on"}
 
 
 def cleanup_old_visuals(keep_count: int = 50) -> None:

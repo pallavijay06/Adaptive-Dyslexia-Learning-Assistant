@@ -257,27 +257,27 @@ def audio_document(document_id: int):
 
 @document_bp.post("/document/<int:document_id>/visualize")
 def visualize_document(document_id: int):
-    """Generate a flowchart or mind map from a stored document.
+    """Generate a flowchart from a stored document.
 
     Streamlit equivalent:
         generate_visual_content(
             st.session_state.document_text,
             theme=visual_theme,
-            visual_type=visual_type_map[selected_visual],
+            visual_type="flowchart",
         )
 
     Request JSON:
-        visual_type (str, required) — "flowchart" or "mind_map"
+        visual_type (str, optional) — accepted for compatibility; flowchart is always generated
         theme (str, optional)       — "light" | "dark" | "dyslexia_cream" | "dyslexia_yellow"
         user_id (int, optional)
 
     Response:
-        visual { topic, title, description, flowchart_url, mindmap_url, structure }
+        visual { topic, title, description, flowchart_url, structure }
     """
     data = request.get_json(silent=True) or {}
-    visual_type = (data.get("visual_type") or "").strip().lower()
-    if not visual_type:
-        return jsonify({"success": False, "error": "visual_type is required."}), 400
+    visual_type = (data.get("visual_type") or "flowchart").strip().lower()
+    if visual_type in {"mindmap", "mind_map"}:
+        visual_type = "flowchart"
 
     text = _get_document_text(document_id)
     if text is None:
@@ -293,8 +293,6 @@ def visualize_document(document_id: int):
 
         if visual_content.get("flowchart_path"):
             visual_content["flowchart_url"] = f"/diagrams/{Path(visual_content['flowchart_path']).name}"
-        if visual_content.get("mindmap_path"):
-            visual_content["mindmap_url"] = f"/diagrams/{Path(visual_content['mindmap_path']).name}"
 
         if uid is not None:
             try:

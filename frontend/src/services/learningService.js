@@ -26,13 +26,15 @@ export const learningService = {
 
   /**
    * POST /visualize
-   * Request:  { text: string, visual_type?: "flowchart"|"mind_map"|null, user_id?: number }
-   * Response: { visual: { flowchart_url?, mindmap_url?, title, description, topic }, success: true }
+   * Request:  { text: string, user_id?: number }
+   * Response: { visual: { flowchart_url?, title, description, topic }, success: true }
    */
-  generateVisual: async (text, visualType = null, userId = null) => {
+  generateVisual: async (text, visualTypeOrUserId = 'flowchart', userId = null) => {
     const payload = { text };
-    if (visualType) payload.visual_type = visualType;
-    if (userId != null) payload.user_id = userId;
+    const resolvedVisualType = typeof visualTypeOrUserId === 'string' ? visualTypeOrUserId : 'flowchart';
+    if (resolvedVisualType) payload.visual_type = resolvedVisualType;
+    const resolvedUserId = typeof visualTypeOrUserId === 'number' ? visualTypeOrUserId : userId;
+    if (resolvedUserId != null) payload.user_id = resolvedUserId;
     const res = await api.post('/visualize', payload, { timeout: 120000 });
     if (!res.data?.success) {
       throw new Error(res.data?.error || 'Visual generation failed.');
