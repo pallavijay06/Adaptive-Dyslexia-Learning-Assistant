@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useDocument } from '../contexts/DocumentContext';
@@ -59,9 +59,10 @@ function StepBadge({ action, mode }) {
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
-      padding: '0.2rem 0.6rem', borderRadius: '999px',
-      fontSize: '0.75rem', fontWeight: 600,
-      background: 'var(--color-primary, #6366f1)', color: '#fff',
+      padding: '0.3rem 0.7rem', borderRadius: '999px',
+      fontSize: '0.78rem', fontWeight: 700,
+      background: 'var(--color-primary)', color: 'var(--on-primary)',
+      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
     }}>
       {ACTION_ICONS[action] ?? '📌'} {label}
     </span>
@@ -85,35 +86,123 @@ function ConceptList({ label, concepts }) {
   );
 }
 
+function getPathLabel(step) {
+  if (step?.mode) return step.mode;
+  if (step?.action && ACTION_LABELS[step.action]) return ACTION_LABELS[step.action];
+  if (step?.action) return step.action.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+  return 'Learning Step';
+}
+
+function RecommendedLearningPath({ learningPath }) {
+  if (!learningPath || learningPath.length === 0) return null;
+
+  // Map actions to display labels and emojis
+  const ACTION_EMOJI_MAP = {
+    'learning_mode': '📖',
+    'revision': '🔄',
+    'quiz': '✏️',
+    'ai_tutor': '🤖',
+    'stem_support': '🔬',
+    'extra_examples': '📚',
+  };
+
+  const ACTION_LABEL_MAP = {
+    'learning_mode': 'Learning',
+    'revision': 'Revision',
+    'quiz': 'Quiz',
+    'ai_tutor': 'AI Tutor',
+    'stem_support': 'STEM Support',
+    'extra_examples': 'Examples',
+  };
+
+  // Extract unique learning modes from the flow
+  // Create path by extracting modes and combining sequential learning_mode steps
+  const pathCards = [];
+  let prevMode = null;
+
+  learningPath.forEach((step, idx) => {
+    if (step.action === 'learning_mode' && step.mode) {
+      if (step.mode !== prevMode) {
+        pathCards.push({
+          type: 'mode',
+          label: step.mode,
+          emoji: '📖',
+        });
+        prevMode = step.mode;
+      }
+    } else if (step.action === 'quiz') {
+      pathCards.push({
+        type: 'action',
+        label: ACTION_LABEL_MAP['quiz'] || 'Quiz',
+        emoji: ACTION_EMOJI_MAP['quiz'] || '✏️',
+      });
+    } else if (step.action === 'revision') {
+      pathCards.push({
+        type: 'action',
+        label: ACTION_LABEL_MAP['revision'] || 'Revision',
+        emoji: ACTION_EMOJI_MAP['revision'] || '🔄',
+      });
+    } else if (step.action === 'stem_support') {
+      pathCards.push({
+        type: 'action',
+        label: ACTION_LABEL_MAP['stem_support'] || 'STEM Support',
+        emoji: ACTION_EMOJI_MAP['stem_support'] || '🔬',
+      });
+    }
+  });
+
+  if (pathCards.length === 0) return null;
+
+  return (
+    <section className="card" aria-label="Recommended learning path" style={{ marginBottom: '1.5rem' }}>
+      <h3 style={{ marginTop: 0, color: 'var(--text-strong)' }}>Recommended Learning Path</h3>
+      <div className="recommended-path-container">
+        {pathCards.map((card, idx) => (
+          <Fragment key={idx}>
+            <div className="recommended-path-card">
+              <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>{card.emoji}</div>
+              <div style={{ fontSize: '0.85rem', fontWeight: 500, textAlign: 'center', color: 'var(--text-strong)' }}>
+                {card.label}
+              </div>
+            </div>
+            {idx < pathCards.length - 1 && (
+              <div className="recommended-path-arrow" aria-hidden="true">→</div>
+            )}
+          </Fragment>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function SummaryCard({ summary }) {
   if (!summary) return null;
   const fields = [
     { key: 'teaching_style',    label: 'TEACHING STYLE' },
     { key: 'learning_strategy', label: 'LEARNING STRATEGY' },
-    { key: 'session_duration',  label: 'SESSION DURATION' },
   ];
   return (
     <section className="card" aria-label="Learner profile summary" style={{ marginBottom: '1.5rem' }}>
-      <h3 style={{ marginTop: 0 }}>Your Learner Profile</h3>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.75rem' }}>
-        {fields.map(({ key, label }) => summary[key] && (
-          <div key={key}>
-            <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--color-muted, #6b7280)', fontWeight: 600 }}>{label}</p>
-            <p style={{ margin: 0 }}>{summary[key]}</p>
+          <h3 style={{ marginTop: 0, color: 'var(--text-strong)' }}>Your Learner Profile</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.75rem' }}>
+            {fields.map(({ key, label }) => summary[key] && (
+              <div key={key}>
+                <p className="summary-label">{label}</p>
+                <p style={{ margin: 0, color: 'var(--color-text)', lineHeight: 1.5 }}>{summary[key]}</p>
+              </div>
+            ))}
+            {summary.overall_confidence != null && (
+              <div>
+                <p className="summary-label">PLAN CONFIDENCE</p>
+                <p style={{ margin: 0, color: 'var(--color-text)', lineHeight: 1.5 }}>{Math.round(summary.overall_confidence * 100)}%</p>
+              </div>
+            )}
           </div>
-        ))}
-        {summary.overall_confidence != null && (
-          <div>
-            <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--color-muted, #6b7280)', fontWeight: 600 }}>PLAN CONFIDENCE</p>
-            <p style={{ margin: 0 }}>{Math.round(summary.overall_confidence * 100)}%</p>
-          </div>
-        )}
-      </div>
-      {summary.focus_concepts?.length > 0 && (
-        <div style={{ marginTop: '0.75rem' }}>
-          <ConceptList label="Focus concepts" concepts={summary.focus_concepts} />
-        </div>
-      )}
+          {summary.focus_concepts?.length > 0 && (
+            <div style={{ marginTop: '0.75rem' }}>
+              <ConceptList label="Focus concepts" concepts={summary.focus_concepts} />
+            </div>
+          )}
     </section>
   );
 }
@@ -154,13 +243,13 @@ function StepCard({ step, isCurrent, isCompleted, isLastStep, onNext, onComplete
         transition: 'opacity 0.2s',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-        <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--color-muted, #6b7280)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.65rem' }}>
+        <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--color-muted)' }}>
           Step {step.step}
         </span>
         <StepBadge action={step.action} mode={step.mode} />
         {isCompleted && (
-          <span style={{ marginLeft: 'auto', color: '#10b981', fontWeight: 700 }}>✓ Done</span>
+          <span style={{ marginLeft: 'auto', color: 'var(--color-success)', fontWeight: 700 }}>✓ Done</span>
         )}
       </div>
 
@@ -344,14 +433,14 @@ export default function JourneyRoute() {
   const docName = activeDocument?.file_name ?? '';
 
   return (
-    <div style={{ maxWidth: '760px', margin: '0 auto' }}>
+    <div style={{ maxWidth: '900px', margin: '0 auto' }}>
 
       {/* Header + progress bar */}
       <section className="card" style={{ marginBottom: '1.5rem' }}>
-        <h2 style={{ marginTop: 0 }}>Personalized Learning Journey</h2>
+        <h2 style={{ marginTop: 0, color: 'var(--text-strong)' }}>Personalized Learning Journey</h2>
         {totalSteps > 0 && (
           <>
-            <p style={{ margin: '0 0 0.5rem', color: 'var(--color-muted, #6b7280)', fontSize: '0.875rem' }}>
+            <p style={{ margin: '0 0 0.75rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
               Step {currentStepNum} of {totalSteps}
             </p>
             <div
@@ -360,12 +449,12 @@ export default function JourneyRoute() {
               aria-valuemin={0}
               aria-valuemax={totalSteps}
               aria-label="Journey progress"
-              style={{ height: '6px', borderRadius: '999px', background: 'var(--color-border, #e5e7eb)', overflow: 'hidden' }}
+              style={{ height: '8px', borderRadius: '999px', background: 'var(--surface-alt)', overflow: 'hidden' }}
             >
               <div style={{
                 height: '100%',
                 width: `${Math.round((completedSteps.length / totalSteps) * 100)}%`,
-                background: 'var(--color-primary, #6366f1)',
+                background: 'var(--primary)',
                 transition: 'width 0.4s ease',
               }} />
             </div>
@@ -376,31 +465,40 @@ export default function JourneyRoute() {
       {/* Learner profile */}
       <SummaryCard summary={summary ?? recommendation?.summary} />
 
+      {/* Recommended learning path */}
+      <RecommendedLearningPath learningPath={learningPathData?.learning_path ?? flow} />
+
       {/* Error */}
       {error && (
-        <p className="upload-error" role="alert" style={{ marginBottom: '1rem' }}>{error}</p>
+        <p className="upload-error" role="alert" style={{ marginBottom: '1rem', color: 'var(--danger)' }}>{error}</p>
       )}
 
       {/* Adaptive learning steps */}
       {flow.length > 0 && (
         <section aria-label="Adaptive learning steps">
-          <h3 style={{ marginBottom: '0.75rem' }}>Your Adaptive Learning Steps</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {flow.map((step) => (
-              <StepCard
-                key={step.step}
-                step={step}
-                isCurrent={step.step === currentStepNum}
-                isCompleted={completedSteps.includes(step.step)}
-                isLastStep={step.step === totalSteps}
-                onNext={handleNextStep}
-                onComplete={handleCompleteSession}
-                actionLoading={actionLoading}
-                docId={docId}
-                docName={docName}
-                simplifiedText={simplifiedText}
-                onNotesGenerated={setSimplifiedText}
-              />
+          <h3 style={{ marginBottom: '0.75rem', color: 'var(--text-strong)' }}>Your Adaptive Learning Steps</h3>
+          <div className="step-flow">
+            {flow.map((step, index) => (
+              <Fragment key={step?.step ?? index}>
+                <div className="step-card">
+                  <StepCard
+                    step={step}
+                    isCurrent={step.step === currentStepNum}
+                    isCompleted={completedSteps.includes(step.step)}
+                    isLastStep={step.step === totalSteps}
+                    onNext={handleNextStep}
+                    onComplete={handleCompleteSession}
+                    actionLoading={actionLoading}
+                    docId={docId}
+                    docName={docName}
+                    simplifiedText={simplifiedText}
+                    onNotesGenerated={setSimplifiedText}
+                  />
+                </div>
+                {index < flow.length - 1 && (
+                  <span className="step-flow-arrow" aria-hidden="true">→</span>
+                )}
+              </Fragment>
             ))}
           </div>
         </section>
