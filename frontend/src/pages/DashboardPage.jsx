@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dashboardService } from '../services/dashboardService';
@@ -65,23 +65,22 @@ export default function DashboardPage() {
     };
   }, [user?.id]);
 
-  const overview = useMemo(() => dashboard.overview ?? {}, [dashboard.overview]);
-  const progress = useMemo(() => dashboard.progress ?? {}, [dashboard.progress]);
-  const recommendations = useMemo(() => dashboard.recommendations ?? [], [dashboard.recommendations]);
-  const insights = useMemo(() => dashboard.insights ?? [], [dashboard.insights]);
-  const badges = useMemo(() => dashboard.badges ?? [], [dashboard.badges]);
-  const quizPerformance = useMemo(() => dashboard.quiz_performance ?? {}, [dashboard.quiz_performance]);
-  const conceptMastery = useMemo(() => dashboard.concept_mastery ?? [], [dashboard.concept_mastery]);
-  const learningModeUsage = useMemo(() => dashboard.learning_mode_usage ?? [], [dashboard.learning_mode_usage]);
-  const timeline = useMemo(() => dashboard.timeline ?? [], [dashboard.timeline]);
-  const welcomeName = overview.student_name || user?.name || 'learner';
-  const continueLearning = recommendations[0] ?? null;
+  const overview = dashboard.overview ?? {};
+  const progress = dashboard.progress ?? {};
+  const recommendations = dashboard.recommendations ?? [];
+  const insights = dashboard.insights ?? [];
+  const badges = dashboard.badges ?? [];
+  const quizPerformance = dashboard.quiz_performance ?? {};
+  const conceptMastery = dashboard.concept_mastery ?? [];
+  const learningModeUsage = dashboard.learning_mode_usage ?? [];
+  const timeline = dashboard.timeline ?? [];
+  const welcomeName = overview.student_name || '';
 
   return (
     <div className="dashboard-page">
       <section className="card hero-card" aria-labelledby="dashboard-welcome">
         <p className="eyebrow">Welcome Back</p>
-        <h2 id="dashboard-welcome">Hello, {welcomeName} 👋</h2>
+        <h2 id="dashboard-welcome">{welcomeName ? `Hello, ${welcomeName} 👋` : 'Hello 👋'}</h2>
         <p className="hero-copy">Ready for today's learning session?</p>
       </section>
 
@@ -99,14 +98,7 @@ export default function DashboardPage() {
 
             <article className="card dashboard-card">
               <h3>Continue Learning</h3>
-              {continueLearning ? (
-                <>
-                  <p className="recommendation-title">{continueLearning.title}</p>
-                  <p>{continueLearning.detail}</p>
-                </>
-              ) : (
-                <p>No recommendation data is available yet from the backend.</p>
-              )}
+              <p>No backend recommendation card is available for this view.</p>
             </article>
           </section>
 
