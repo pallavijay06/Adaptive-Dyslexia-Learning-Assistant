@@ -7,19 +7,54 @@ const defaultDashboard = {
   overview: {},
   progress: {},
   recommendations: [],
-  insights: [],
   badges: [],
-  quiz_performance: {},
-  concept_mastery: [],
   learning_mode_usage: [],
-  timeline: [],
+  learner_profile: {},
+  learning_performance: {},
+  learning_behaviour: {},
+  adaptive_intelligence: {},
 };
 
+function isMissingValue(value) {
+  return value === null || value === undefined || value === '';
+}
+
 function formatValue(value) {
-  if (value === null || value === undefined || value === '') {
-    return '—';
+  if (isMissingValue(value)) {
+    return 'Not Available';
   }
   return value;
+}
+
+function formatMetricValue(value) {
+  if (isMissingValue(value)) {
+    return 'Not Available';
+  }
+
+  if (typeof value === 'number') {
+    return `${value}%`;
+  }
+
+  return value;
+}
+
+function MetricBar({ value }) {
+  if (isMissingValue(value)) {
+    return <p className="metric-placeholder">TODO: expose this field from the backend</p>;
+  }
+
+  const numericValue = typeof value === 'number' ? value : Number.parseFloat(String(value));
+  if (!Number.isFinite(numericValue)) {
+    return <p className="metric-placeholder">TODO: expose this field from the backend</p>;
+  }
+
+  const safeWidth = Math.min(100, Math.max(0, numericValue));
+
+  return (
+    <div className="metric-bar" aria-hidden="true">
+      <div className="metric-bar-fill" style={{ width: `${safeWidth}%` }} />
+    </div>
+  );
 }
 
 export default function DashboardPage() {
@@ -68,13 +103,14 @@ export default function DashboardPage() {
   const overview = dashboard.overview ?? {};
   const progress = dashboard.progress ?? {};
   const recommendations = dashboard.recommendations ?? [];
-  const insights = dashboard.insights ?? [];
   const badges = dashboard.badges ?? [];
-  const quizPerformance = dashboard.quiz_performance ?? {};
-  const conceptMastery = dashboard.concept_mastery ?? [];
   const learningModeUsage = dashboard.learning_mode_usage ?? [];
-  const timeline = dashboard.timeline ?? [];
+  const learnerProfile = dashboard.learner_profile ?? {};
+  const learningPerformance = dashboard.learning_performance ?? {};
+  const learningBehaviour = dashboard.learning_behaviour ?? {};
+  const adaptiveIntelligence = dashboard.adaptive_intelligence ?? {};
   const welcomeName = overview.student_name || '';
+  const latestRecommendation = recommendations[0] ?? null;
 
   return (
     <div className="dashboard-page">
@@ -88,179 +124,168 @@ export default function DashboardPage() {
       {error && !loading && <div className="card error-card">{error}</div>}
 
       {!loading && !error && (
-        <>
-          <section className="dashboard-grid" aria-label="Dashboard overview cards">
-            <article className="card dashboard-card">
-              <h3>Upload</h3>
-              <p>Continue by uploading a new document for the next study session.</p>
-              <Link className="button button-primary" to="/upload">Go to Upload</Link>
-            </article>
+        <section className="dashboard-grid dashboard-grid--adaptive" aria-label="Adaptive learner profile dashboard">
+          <article className="card dashboard-card dashboard-card--adaptive">
+            <div className="card-heading">
+              <h3>Learner Profile</h3>
+              <p className="card-subtitle">Backend values only</p>
+            </div>
+            <div className="metric-table">
+              <div className="metric-row">
+                <span>Teaching Style</span>
+                <strong>{formatValue(learnerProfile.teaching_style)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Preferred Learning Mode</span>
+                <strong>{formatValue(learnerProfile.preferred_learning_mode)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Learning Strategy</span>
+                <strong>{formatValue(learnerProfile.learning_strategy)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Comprehension Level</span>
+                <strong>{formatValue(learnerProfile.comprehension_level)}</strong>
+              </div>
+            </div>
+          </article>
 
-            <article className="card dashboard-card">
-              <h3>Continue Learning</h3>
-              <p>No backend recommendation card is available for this view.</p>
-            </article>
-          </section>
+          <article className="card dashboard-card dashboard-card--adaptive">
+            <div className="card-heading">
+              <h3>Learning Performance</h3>
+              <p className="card-subtitle">Backend performance scores</p>
+            </div>
+            <div className="metric-stack">
+              <div className="metric-item">
+                <div className="metric-item-label">Comprehension Score</div>
+                <MetricBar value={learningPerformance.comprehension_score} />
+                <div className="metric-value">{formatMetricValue(learningPerformance.comprehension_score)}</div>
+              </div>
+              <div className="metric-item">
+                <div className="metric-item-label">Quiz Accuracy Score</div>
+                <MetricBar value={learningPerformance.quiz_accuracy_score} />
+                <div className="metric-value">{formatMetricValue(learningPerformance.quiz_accuracy_score)}</div>
+              </div>
+            </div>
+          </article>
 
-          <section className="dashboard-grid" aria-label="Progress summary">
-            <article className="card dashboard-card stat-card">
-              <h3>Documents studied</h3>
-              <p className="stat-value">{formatValue(progress.documents_studied)}</p>
-            </article>
-            <article className="card dashboard-card stat-card">
-              <h3>Topics covered</h3>
-              <p className="stat-value">{formatValue(progress.topics_covered)}</p>
-            </article>
-            <article className="card dashboard-card stat-card">
-              <h3>Concepts learned</h3>
-              <p className="stat-value">{formatValue(progress.concepts_learned)}</p>
-            </article>
-            <article className="card dashboard-card stat-card">
-              <h3>Questions asked</h3>
-              <p className="stat-value">{formatValue(progress.questions_asked)}</p>
-            </article>
-          </section>
-
-          <section className="dashboard-grid" aria-label="Dashboard overview data">
-            <article className="card dashboard-card">
-              <h3>Dashboard overview</h3>
-              <ul className="detail-list">
-                <li><span>Total study time</span><strong>{formatValue(overview.total_study_time)}</strong></li>
-                <li><span>Learning sessions</span><strong>{formatValue(overview.total_learning_sessions)}</strong></li>
-                <li><span>Days active</span><strong>{formatValue(overview.days_active)}</strong></li>
-                <li><span>Current streak</span><strong>{formatValue(overview.current_streak)}</strong></li>
-              </ul>
-            </article>
-
-            <article className="card dashboard-card">
-              <h3>Profile summary</h3>
-              <ul className="detail-list">
-                <li><span>Name</span><strong>{formatValue(user?.name || overview.student_name)}</strong></li>
-                <li><span>Email</span><strong>{formatValue(user?.email)}</strong></li>
-                <li><span>Grade</span><strong>{formatValue(overview.grade)}</strong></li>
-                <li><span>Institution</span><strong>{formatValue(overview.institution)}</strong></li>
-              </ul>
-            </article>
-          </section>
-
-          <section className="dashboard-grid" aria-label="Recommendations and insights">
-            <article className="card dashboard-card wide-card">
-              <h3>Recommendations</h3>
-              {recommendations.length > 0 ? (
-                <ul className="stack-list">
-                  {recommendations.map((item, index) => (
-                    <li key={`${item.title}-${index}`}>
-                      <strong>{item.title}</strong>
-                      <p>{item.detail}</p>
-                    </li>
+          <article className="card dashboard-card dashboard-card--adaptive">
+            <div className="card-heading">
+              <h3>Learning Behaviour</h3>
+              <p className="card-subtitle">Backend behaviour metrics</p>
+            </div>
+            <div className="metric-table">
+              <div className="metric-row">
+                <span>Behaviour Analytics Score</span>
+                <strong>{formatMetricValue(learningBehaviour.behaviour_analytics_score)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Mode Engagement Score</span>
+                <strong>{formatMetricValue(learningBehaviour.mode_engagement_score)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Mode Retention Score</span>
+                <strong>{formatMetricValue(learningBehaviour.mode_retention_score)}</strong>
+              </div>
+            </div>
+            <div className="metric-section">
+              <div className="metric-item-label">Learning Modes</div>
+              {learningModeUsage.length > 0 ? (
+                <div className="mode-list">
+                  {learningModeUsage.map((item, index) => (
+                    <div key={`${item.mode}-${index}`} className="mode-list-item">
+                      <span>{item.mode}</span>
+                      <strong>{item.percentage}%</strong>
+                    </div>
                   ))}
-                </ul>
+                </div>
               ) : (
-                <p>No recommendations were returned by the backend.</p>
+                <p className="metric-placeholder">No learning mode data available</p>
               )}
-            </article>
+            </div>
+          </article>
 
-            <article className="card dashboard-card wide-card">
-              <h3>Insights</h3>
-              {insights.length > 0 ? (
-                <ul className="stack-list">
-                  {insights.map((item, index) => (
-                    <li key={`${item}-${index}`}>{item}</li>
+          <article className="card dashboard-card dashboard-card--adaptive">
+            <div className="card-heading">
+              <h3>Learning Progress</h3>
+              <p className="card-subtitle">Backend progress counters</p>
+            </div>
+            <div className="metric-table">
+              <div className="metric-row">
+                <span>Documents Studied</span>
+                <strong>{formatValue(progress.documents_studied)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Topics Covered</span>
+                <strong>{formatValue(progress.topics_covered)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Concepts Learned</span>
+                <strong>{formatValue(progress.concepts_learned)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Quiz Attempts</span>
+                <strong>{formatValue(progress.quiz_attempts)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Current Streak</span>
+                <strong>{formatValue(overview.current_streak)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Total Study Time</span>
+                <strong>{formatValue(overview.total_study_time)}</strong>
+              </div>
+            </div>
+          </article>
+
+          <article className="card dashboard-card dashboard-card--adaptive">
+            <div className="card-heading">
+              <h3>Adaptive Intelligence</h3>
+              <p className="card-subtitle">Backend adaptive outputs</p>
+            </div>
+            <div className="metric-table">
+              <div className="metric-row">
+                <span>Recommended Learning Mode</span>
+                <strong>{formatValue(dashboard.favorite_mode || null)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Latest Recommendation</span>
+                <strong>{latestRecommendation ? latestRecommendation.detail || latestRecommendation.title : 'Not Available'}</strong>
+              </div>
+            </div>
+            {adaptiveIntelligence.recommended_learning_path && adaptiveIntelligence.recommended_learning_path.length > 0 && (
+              <div className="metric-section">
+                <div className="metric-item-label">Recommended Learning Path</div>
+                <ol className="learning-path-list">
+                  {adaptiveIntelligence.recommended_learning_path.map((step, index) => (
+                    <li key={`learning-step-${index}`}>{step}</li>
                   ))}
-                </ul>
-              ) : (
-                <p>No insights were returned by the backend.</p>
-              )}
-            </article>
-          </section>
-
-          <section className="dashboard-grid" aria-label="Progress details">
-            <article className="card dashboard-card">
-              <h3>Progress metrics</h3>
-              <ul className="detail-list">
-                <li><span>Quiz attempts</span><strong>{formatValue(progress.quiz_attempts)}</strong></li>
-                <li><span>Quiz accuracy</span><strong>{formatValue(progress.quiz_accuracy)}</strong></li>
-                <li><span>Comprehension score</span><strong>{formatValue(progress.comprehension_score)}</strong></li>
-                <li><span>Average session duration</span><strong>{formatValue(progress.avg_session_duration)}</strong></li>
-              </ul>
-            </article>
-
-            <article className="card dashboard-card">
-              <h3>Quiz performance</h3>
-              <ul className="detail-list">
-                <li><span>Total quizzes</span><strong>{formatValue(quizPerformance.total_quizzes)}</strong></li>
-                <li><span>Average score</span><strong>{formatValue(quizPerformance.average_score)}</strong></li>
-                <li><span>Highest score</span><strong>{formatValue(quizPerformance.highest_score)}</strong></li>
-                <li><span>Lowest score</span><strong>{formatValue(quizPerformance.lowest_score)}</strong></li>
-              </ul>
-            </article>
-          </section>
-
-          <section className="dashboard-grid" aria-label="Learning details">
-            <article className="card dashboard-card">
-              <h3>Badges</h3>
+                </ol>
+              </div>
+            )}
+            <div className="metric-section">
+              <div className="metric-item-label">Badges</div>
               {badges.length > 0 ? (
-                <ul className="chip-list">
+                <ul className="chip-list chip-list--compact">
                   {badges.map((badge, index) => (
                     <li key={`${badge}-${index}`}>{badge}</li>
                   ))}
                 </ul>
               ) : (
-                <p>No badges were returned by the backend.</p>
+                <p className="metric-placeholder">No badges earned yet</p>
               )}
-            </article>
+            </div>
+          </article>
 
-            <article className="card dashboard-card">
-              <h3>Learning modes</h3>
-              {learningModeUsage.length > 0 ? (
-                <ul className="stack-list">
-                  {learningModeUsage.map((item, index) => (
-                    <li key={`${item.mode}-${index}`}>
-                      <strong>{item.mode}</strong>
-                      <p>{item.count} sessions · {item.percentage}%</p>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p>No learning mode usage data was returned by the backend.</p>
-              )}
-            </article>
-          </section>
-
-          <section className="dashboard-grid" aria-label="Recent activity">
-            <article className="card dashboard-card wide-card">
-              <h3>Recent activity</h3>
-              {timeline.length > 0 ? (
-                <ul className="stack-list">
-                  {timeline.map((item, index) => (
-                    <li key={`${item.time}-${item.event}-${index}`}>
-                      <strong>{item.time}</strong>
-                      <p>{item.event}</p>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p>No activity timeline data was returned by the backend.</p>
-              )}
-            </article>
-
-            <article className="card dashboard-card wide-card">
-              <h3>Concept mastery</h3>
-              {conceptMastery.length > 0 ? (
-                <ul className="stack-list">
-                  {conceptMastery.map((item, index) => (
-                    <li key={`${item['Concept Name']}-${index}`}>
-                      <strong>{item['Concept Name']}</strong>
-                      <p>{item['Current Status']} · {item['Mastery Score']}% mastery</p>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p>No concept mastery data was returned by the backend.</p>
-              )}
-            </article>
-          </section>
-        </>
+          <article className="card dashboard-card dashboard-card--adaptive">
+            <div className="card-heading">
+              <h3>Upload Document</h3>
+              <p className="card-subtitle">Continue the current study flow</p>
+            </div>
+            <p>Continue by uploading a new document for the next study session.</p>
+            <Link className="button button-primary" to="/upload">Go to Upload</Link>
+          </article>
+        </section>
       )}
     </div>
   );

@@ -31,6 +31,8 @@ from services.study_activity_service import (
     normalize_datetime as _normalize_datetime,
 )
 from services.learning_progress_analytics_service import build_learning_progress_analytics
+from services.master_decision_engine import get_adaptive_learning_plan
+from services.learning_strategy_engine import get_learning_strategy_decision
 
 
 def _normalize_datetime(value: Any) -> datetime | None:
@@ -256,6 +258,110 @@ def _create_badges(
     if quiz_accuracy >= 85 and first_attempt_success_rate >= 75:
         badges.append("High Comprehension")
     return badges
+
+
+def _get_teaching_style_and_learning_strategy(user_id: int) -> tuple[str | None, str | None]:
+    """
+    Safely retrieve teaching_style and primary_learning_strategy from adaptive planning.
+    
+    These are computed from the Master Decision Engine and Learning Strategy Engine.
+    Returns (teaching_style, learning_strategy) or (None, None) if computation fails.
+    """
+    try:
+        # For teaching_style, we need to compute an adaptive learning plan
+        # We'll extract key concepts from the user's recent learning to provide context
+        learning_history = get_learning_history(user_id, limit=50)
+        
+        # Extract key topics from learning history
+        topics_from_history = set()
+        for event in learning_history:
+            if event.topic:
+                topics_from_history.add(event.topic)
+        
+        document_concepts = list(topics_from_history)[:8] if topics_from_history else []
+        
+        if not document_concepts:
+            # Fallback: try to get from topic progress
+            topics = get_topic_progress(user_id)
+            document_concepts = [t.topic for t in topics[:8]] if topics else []
+        
+        teaching_style = None
+        learning_strategy = None
+        
+        if document_concepts:
+            try:
+                plan = get_adaptive_learning_plan(user_id, document_concepts, is_stem_document=False)
+                if hasattr(plan, 'decision_summary') and plan.decision_summary:
+                    teaching_style = plan.decision_summary.teaching_style
+            except Exception:
+                # If Master Decision Engine fails, that's okay - teaching_style remains None
+                pass
+        
+        # Get learning strategy from Learning Strategy Engine
+        try:
+            strategy_decision = get_learning_strategy_decision(user_id)
+            if strategy_decision and strategy_decision.primary_learning_mode:
+                learning_strategy = strategy_decision.primary_learning_mode
+        except Exception:
+            # If Learning Strategy Engine fails, that's okay - learning_strategy remains None
+            pass
+        
+        return teaching_style, learning_strategy
+    except Exception:
+        # If anything fails, return None values
+        return None, None
+
+
+def _get_recommended_learning_path(user_id: int) -> list[dict[str, Any]] | None:
+    """
+    Safely retrieve the recommended learning path from adaptive planning.
+    
+    This is the adaptive_learning_flow from the Master Decision Engine.
+    Returns a simplified list of steps or None if computation fails.
+    """
+    try:
+        # Extract key topics from recent learning
+        learning_history = get_learning_history(user_id, limit=50)
+        topics_from_history = set()
+        for event in learning_history:
+            if event.topic:
+                topics_from_history.add(event.topic)
+        
+        document_concepts = list(topics_from_history)[:8] if topics_from_history else []
+        
+        if not document_concepts:
+            topics = get_topic_progress(user_id)
+            document_concepts = [t.topic for t in topics[:8]] if topics else []
+        
+        if not document_concepts:
+            return None
+        
+        plan = get_adaptive_learning_plan(user_id, document_concepts, is_stem_document=False)
+        
+        if not hasattr(plan, 'adaptive_learning_flow') or not plan.adaptive_learning_flow:
+            return None
+        
+        # Convert flow steps to simplified dict format for API response
+        flow_steps = []
+        for step in plan.adaptive_learning_flow:
+            step_dict = {
+                "step": step.step,
+                "action": step.action,
+            }
+            if step.mode:
+                step_dict["mode"] = step.mode
+            if step.concepts:
+                step_dict["concepts"] = step.concepts
+            if step.quiz_length:
+                step_dict["quiz_length"] = step.quiz_length
+            if step.focus_concepts:
+                step_dict["focus_concepts"] = step.focus_concepts
+            flow_steps.append(step_dict)
+        
+        return flow_steps if flow_steps else None
+    except Exception:
+        # If anything fails, return None
+        return None
 
 
 def get_dashboard_data(user_id: int) -> dict[str, Any]:
@@ -736,6 +842,10 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
         login_sessions=sessions,
     )
 
+    # Compute on-demand adaptive metrics (with graceful fallback)
+    teaching_style, learning_strategy = _get_teaching_style_and_learning_strategy(user_id)
+    recommended_learning_path = _get_recommended_learning_path(user_id)
+
     return {
         "user": user,
         "profile": profile,
@@ -749,6 +859,29 @@ def get_dashboard_data(user_id: int) -> dict[str, Any]:
             "total_learning_sessions": total_sessions,
             "days_active": days_active,
             "current_streak": streak,
+        },
+        "learner_profile": {
+            "teaching_style": teaching_style,
+            "preferred_learning_mode": profile.preferred_learning_mode if profile else "Not determined",
+            "learning_strategy": learning_strategy,
+            "confidence_level": profile.confidence_level if profile else 0.5,
+            "comprehension_level": profile.comprehension_level if profile else None,
+        },
+        "learning_performance": {
+            "conceptual_answer_score": float(profile.conceptual_answer_score) if (profile and profile.conceptual_answer_score is not None) else None,
+            "learning_support_score": float(profile.learning_support_score) if (profile and profile.learning_support_score is not None) else None,
+            "response_efficiency_score": float(profile.response_efficiency_score) if (profile and profile.response_efficiency_score is not None) else None,
+            "quiz_accuracy_score": quiz_accuracy,
+            "comprehension_score": comprehension_score,
+            "first_attempt_score": first_attempt_success_rate,
+        },
+        "learning_behaviour": {
+            "behaviour_analytics_score": float(profile.learning_behaviour_analytics_score) if (profile and profile.learning_behaviour_analytics_score is not None) else None,
+            "mode_engagement_score": float(profile.mode_engagement_score) if (profile and profile.mode_engagement_score is not None) else None,
+            "mode_retention_score": float(profile.mode_retention_score) if (profile and profile.mode_retention_score is not None) else None,
+        },
+        "adaptive_intelligence": {
+            "recommended_learning_path": recommended_learning_path,
         },
         "progress": {
             "documents_studied": documents_studied,
