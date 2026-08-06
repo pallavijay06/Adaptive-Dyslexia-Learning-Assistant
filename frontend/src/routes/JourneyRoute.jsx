@@ -312,7 +312,12 @@ export default function JourneyRoute() {
   const [error,            setError]            = useState('');
   const [journeyComplete,  setJourneyComplete]  = useState(false);
 
-  const summary = recommendation?.summary ?? adaptiveLearningPlan?.decision_summary ?? null;
+  const summary = (recommendation?.summary || adaptiveLearningPlan?.decision_summary)
+    ? {
+        ...(adaptiveLearningPlan?.decision_summary ?? {}),
+        ...(recommendation?.summary ?? {}),
+      }
+    : null;
 
   // ── Fetch live journey state from backend ─────────────────────────────────
   const fetchJourneyState = useCallback(async () => {
