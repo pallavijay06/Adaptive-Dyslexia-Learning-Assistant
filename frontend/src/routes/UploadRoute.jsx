@@ -60,7 +60,14 @@ export default function UploadRoute() {
     setError('');
     try {
       const data = await uploadService.uploadDocument(selectedFile);
-      setActiveDocument({ ...data.document, document_id: data.document_id });
+      // Preserve the integer DB id returned by the backend so downstream
+      // flows (AI Tutor / chat) send the expected integer document id.
+      // Prefer the saved DB id when available, fall back to the document object id,
+      // and only use the GUID-style document_id as last resort.
+      setActiveDocument({
+        ...data.document,
+        document_id: data.document?.id ?? data.saved_document_id ?? data.document_id,
+      });
       setUploadResult(data);
     } catch (err) {
       setError(err.message || 'Upload failed. Please try again.');

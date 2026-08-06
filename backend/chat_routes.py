@@ -16,6 +16,7 @@ from services.llm_router import (
     generate_quiz,
     simplify_document,
     summarize_document,
+    generate_content as llm_generate_content,
 )
 from backend.rag import ask_document
 from database.db import save_chat, save_user, get_user, get_user_by_id
@@ -93,13 +94,20 @@ def chat() -> tuple[object, int]:
         # Prepare adaptive context for the response
         adaptive_context = tutor.prepare_response_context(topic=topic)
         
-        # Track the question interaction
-        tutor.track_interaction(
-            interaction_type="question",
-            topic=topic,
-            duration_seconds=0,
-            session_id=None,
-        )
+        # Track the question interaction without failing the request if the
+        # learner-tracking layer is temporarily unavailable.
+        try:
+            tutor.track_interaction(
+                interaction_type="question",
+                topic=topic,
+                duration_seconds=0,
+                session_id=None,
+            )
+        except Exception as tracking_exc:
+            logger.warning(
+                "Adaptive interaction tracking failed; continuing without tracking: %s",
+                tracking_exc,
+            )
         
         # Resolve document text: prefer explicit payload text, then DB lookup
         # by integer ID, then fall back to the in-memory store via document_id.
@@ -108,57 +116,99 @@ def chat() -> tuple[object, int]:
             if db_doc is not None:
                 document_text = db_doc.document_text
 
-        # Generate response using existing RAG system
-        response = ask_document(
-            message,
-            document_id=document_id,
-            document_text=document_text,
-        )
+        # Generate response using existing RAG system. If RAG fails due to
+        # retrieval/indexing/embedding issues, fall back to a plain LLM
+        # generation so the user still gets an answer instead of a 500.
+        used_fallback = False
+        try:
+            response = ask_document(
+                message,
+                document_id=document_id,
+                document_text=document_text,
+            )
+        except Exception as rag_exc:
+            logger.exception("RAG document answering failed; falling back to LLM-only response: %s", rag_exc)
+            try:
+                # Build a simple fallback prompt that asks the LLM to answer
+                # the learner's question without relying on the uploaded doc.
+                fallback_prompt = f"Answer this learner question simply and helpfully:\n\nQUESTION:\n{message}\n\nKeep the answer short and easy to read."
+                response = llm_generate_content(fallback_prompt, max_tokens=600)
+                used_fallback = True
+            except Exception as gen_exc:
+                logger.exception("Fallback LLM generation also failed: %s", gen_exc)
+                # Re-raise so outer handler returns 500 — this is very rare but
+                # indicates the LLM providers are all unavailable.
+                raise
         
-        # Save chat to database
-        saved_chat = save_chat(
-            user_id=user_id,
-            document_id=document_id_for_db,
-            user_message=message,
-            ai_response=response,
-        )
+        # Save chat to database as a best-effort side effect. If persistence
+        # fails, the user still receives the generated answer.
+        saved_chat = None
+        try:
+            saved_chat = save_chat(
+                user_id=user_id,
+                document_id=document_id_for_db,
+                user_message=message,
+                ai_response=response,
+            )
+        except Exception as save_exc:
+            logger.exception(
+                "Chat persistence failed after generating response; returning answer without storing chat: %s",
+                save_exc,
+            )
+
+        if saved_chat is not None:
+            logger.info(
+                "Chat saved with adaptive tutor: id=%s, user_id=%s, document_id=%s, topic=%s",
+                saved_chat.id,
+                saved_chat.user_id,
+                saved_chat.document_id,
+                topic,
+            )
         
-        logger.info(
-            "Chat saved with adaptive tutor: id=%s, user_id=%s, document_id=%s, topic=%s",
-            saved_chat.id,
-            saved_chat.user_id,
-            saved_chat.document_id,
-            topic,
-        )
-        
-        # Get adaptive recommendations for this interaction
+        # Get adaptive recommendations for this interaction. These are
+        # best-effort: if the recommendation engine or profile lookups fail
+        # we log and continue returning the generated answer rather than
+        # aborting the whole request with a 500.
         recommendations = []
-        
-        # Check if we should recommend a learning mode
-        mode_suggestion = tutor.should_recommend_mode()
-        if mode_suggestion:
-            recommendations.append({
-                "type": "mode_suggestion",
-                "message": f"Would you like a {mode_suggestion} explanation?",
-                "mode": mode_suggestion,
-            })
-        
-        # Check if we should recommend practice
-        practice_suggestion = tutor.should_recommend_practice()
-        if practice_suggestion:
-            recommendations.append({
-                "type": "practice_suggestion",
-                "message": practice_suggestion.get("recommendation", ""),
-            })
-        
-        # Get adjustment suggestion if needed
-        adjustment = tutor.get_adjustment_suggestion()
-        if adjustment:
-            recommendations.append({
-                "type": "adjustment_suggestion",
-                "message": adjustment.get("reason", ""),
-                "suggested": adjustment.get("suggested", ""),
-            })
+        try:
+            # Check if we should recommend a learning mode
+            try:
+                mode_suggestion = tutor.should_recommend_mode()
+                if mode_suggestion:
+                    recommendations.append({
+                        "type": "mode_suggestion",
+                        "message": f"Would you like a {mode_suggestion} explanation?",
+                        "mode": mode_suggestion,
+                    })
+            except Exception as rec_exc:
+                logger.warning("Mode recommendation failed: %s", rec_exc)
+
+            # Check if we should recommend practice
+            try:
+                practice_suggestion = tutor.should_recommend_practice()
+                if practice_suggestion:
+                    recommendations.append({
+                        "type": "practice_suggestion",
+                        "message": practice_suggestion.get("recommendation", ""),
+                    })
+            except Exception as rec_exc:
+                logger.warning("Practice recommendation failed: %s", rec_exc)
+
+            # Get adjustment suggestion if needed
+            try:
+                adjustment = tutor.get_adjustment_suggestion()
+                if adjustment:
+                    recommendations.append({
+                        "type": "adjustment_suggestion",
+                        "message": adjustment.get("reason", ""),
+                        "suggested": adjustment.get("suggested", ""),
+                    })
+            except Exception as rec_exc:
+                logger.warning("Adjustment recommendation failed: %s", rec_exc)
+        except Exception as exc:
+            # Catch-all to protect the endpoint from unexpected recommendation
+            # failures originating from deeper calls (DB, trackers, etc.).
+            logger.exception("Unexpected recommendation generation failure: %s", exc)
         
         # Return response with adaptive data
         return jsonify({

@@ -6,7 +6,7 @@ import logging
 
 from flask import Blueprint, jsonify, request
 
-from services.document_context import DocumentError, process_uploaded_document
+from services.document_context import DocumentError, process_uploaded_document, associate_db_id
 from database.db import save_document, save_user, get_user
 from services.behavior_tracking_service import track_document_opened
 
@@ -48,6 +48,12 @@ def upload_document() -> tuple[object, int]:
             file_type=record.file_type,
             document_text=document_text,
         )
+        # Associate the persisted DB id with the in-memory DocumentRecord so
+        # other parts of the app can resolve by DB id or GUID.
+        try:
+            associate_db_id(record.document_id, saved_document.id)
+        except Exception:
+            logger.exception("Failed to associate DB id with in-memory document")
         track_document_opened(
             user_id=user_id,
             metadata={"document_id": saved_document.id, "file_name": saved_document.file_name},

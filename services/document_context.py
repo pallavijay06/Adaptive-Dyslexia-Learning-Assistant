@@ -18,6 +18,7 @@ from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
 from services import docx_parser, pdf_parser, ppt_parser
+from database.db import get_document as _get_db_document
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +33,7 @@ class DocumentError(RuntimeError):
     """Raised for expected document upload or extraction failures."""
 
 
-@dataclass(frozen=True)
+@dataclass
 class DocumentRecord:
     """Metadata for one uploaded document."""
 
@@ -43,10 +44,12 @@ class DocumentRecord:
     extracted_path: str
     file_type: str
     characters_extracted: int
+    db_id: int | None = None
 
 
-_documents: dict[str, DocumentRecord] = {}
-_active_document_id: str | None = None
+_documents_by_guid: dict[str, DocumentRecord] = {}
+_documents_by_dbid: dict[int, DocumentRecord] = {}
+_active_document_guid: str | None = None
 _lock = Lock()
 
 
@@ -203,24 +206,99 @@ def extract_text_from_file(path: str | Path) -> str:
 
 def register_document(record: DocumentRecord) -> None:
     """Add a document to the in-memory registry and make it active."""
-    global _active_document_id
+    global _active_document_guid
 
     with _lock:
-        _documents[record.document_id] = record
-        _active_document_id = record.document_id
+        _documents_by_guid[record.document_id] = record
+        if record.db_id is not None:
+            _documents_by_dbid[record.db_id] = record
+        _active_document_guid = record.document_id
 
 
-def get_document(document_id: str | None = None) -> DocumentRecord | None:
-    """Return the requested document, or the active document if no id is given."""
+def associate_db_id(guid: str, db_id: int) -> None:
+    """Associate a saved database id with an existing in-memory document record.
+
+    This is called after the document is persisted to SQLite so both identifiers
+    resolve to the same in-memory DocumentRecord.
+    """
     with _lock:
-        selected_id = document_id or _active_document_id
-        if not selected_id:
-            return None
-        return _documents.get(selected_id)
+        rec = _documents_by_guid.get(guid)
+        if rec is None:
+            return
+        # replace the record with an updated copy including db_id
+        updated = DocumentRecord(
+            document_id=rec.document_id,
+            original_filename=rec.original_filename,
+            saved_filename=rec.saved_filename,
+            uploaded_path=rec.uploaded_path,
+            extracted_path=rec.extracted_path,
+            file_type=rec.file_type,
+            characters_extracted=rec.characters_extracted,
+            db_id=int(db_id),
+        )
+        _documents_by_guid[guid] = updated
+        _documents_by_dbid[int(db_id)] = updated
 
 
-def get_document_text(document_id: str | None = None) -> str | None:
-    """Load extracted text for the requested or active document."""
+def get_document(document_id: str | int | None = None) -> DocumentRecord | None:
+    """Return the requested document by GUID or DB id, or the active document if no id is given.
+
+    document_id may be:
+    - None: return the active document
+    - str: treated as GUID
+    - int: treated as DB id
+    """
+    with _lock:
+        if document_id is None:
+            if _active_document_guid is None:
+                return None
+            return _documents_by_guid.get(_active_document_guid)
+
+        # Try integer DB id first
+        try:
+            if isinstance(document_id, int):
+                rec = _documents_by_dbid.get(document_id)
+                if rec is not None:
+                    return rec
+                # Not in memory: attempt to load from DB and materialize
+                db_rec = _get_db_document(document_id)
+                if db_rec is None:
+                    return None
+                # create an extracted text file for the DB document and register
+                EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
+                extracted_filename = f"db_{int(document_id)}.txt"
+                extracted_path = EXTRACTED_DIR / extracted_filename
+                # write DB-stored document_text to disk
+                extracted_path.write_text(db_rec.document_text or "", encoding="utf-8")
+                # create a DocumentRecord and register it
+                new_guid = uuid4().hex
+                record = DocumentRecord(
+                    document_id=new_guid,
+                    original_filename=db_rec.file_name or f"dbdoc_{document_id}",
+                    saved_filename=db_rec.file_name or f"dbdoc_{document_id}",
+                    uploaded_path=str(EXTRACTED_DIR / extracted_filename),
+                    extracted_path=str(extracted_path),
+                    file_type=(db_rec.file_type or "txt").lstrip("."),
+                    characters_extracted=len(db_rec.document_text or ""),
+                    db_id=int(document_id),
+                )
+                register_document(record)
+                return record
+            # numeric-strings should also be treated as DB ids when possible
+            if isinstance(document_id, str) and document_id.isdigit():
+                return _documents_by_dbid.get(int(document_id))
+        except Exception:
+            pass
+
+        # Fallback to GUID lookup
+        return _documents_by_guid.get(str(document_id))
+
+
+def get_document_text(document_id: str | int | None = None) -> str | None:
+    """Load extracted text for the requested or active document.
+
+    Accepts either GUID or DB id and resolves via the unified in-memory registry.
+    """
     record = get_document(document_id)
     if record is None:
         return None

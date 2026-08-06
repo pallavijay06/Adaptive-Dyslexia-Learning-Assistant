@@ -56,6 +56,36 @@ class BehaviorTracker:
         logger.debug("Tracked question for user %s on topic %s", user_id, topic)
 
     @staticmethod
+    def _update_topic_question_count(user_id: int, topic: str) -> None:
+        """Increment topic progress question count for a user."""
+        progress = get_topic_progress(user_id, topic)
+        if progress:
+            record = progress[0]
+            save_topic_progress(
+                user_id=user_id,
+                topic=topic,
+                questions_asked=record.questions_asked + 1,
+                quiz_attempts=record.quiz_attempts,
+                best_score=record.best_score,
+                times_studied=record.times_studied,
+                mastery_level=record.mastery_level,
+                is_weak_area=record.is_weak_area,
+                is_strong_area=record.is_strong_area,
+            )
+        else:
+            save_topic_progress(
+                user_id=user_id,
+                topic=topic,
+                questions_asked=1,
+                quiz_attempts=0,
+                best_score=0.0,
+                times_studied=0,
+                mastery_level=0.0,
+                is_weak_area=False,
+                is_strong_area=False,
+            )
+
+    @staticmethod
     def track_quiz_attempt(
         user_id: int,
         topic: str,
