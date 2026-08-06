@@ -178,31 +178,21 @@ function RecommendedLearningPath({ learningPath }) {
 function SummaryCard({ summary }) {
   if (!summary) return null;
   const fields = [
-    { key: 'teaching_style',    label: 'TEACHING STYLE' },
-    { key: 'learning_strategy', label: 'LEARNING STRATEGY' },
+    { key: 'comprehension_level',       label: 'COMPREHENSION LEVEL' },
+    { key: 'teaching_style',            label: 'TEACHING STYLE' },
+    { key: 'recommended_learning_mode', label: 'RECOMMENDED LEARNING MODE' },
   ];
   return (
     <section className="card" aria-label="Learner profile summary" style={{ marginBottom: '1.5rem' }}>
           <h3 style={{ marginTop: 0, color: 'var(--text-strong)' }}>Your Learner Profile</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.75rem' }}>
-            {fields.map(({ key, label }) => summary[key] && (
+            {fields.map(({ key, label }) => (
               <div key={key}>
                 <p className="summary-label">{label}</p>
                 <p style={{ margin: 0, color: 'var(--color-text)', lineHeight: 1.5 }}>{summary[key]}</p>
               </div>
             ))}
-            {summary.overall_confidence != null && (
-              <div>
-                <p className="summary-label">PLAN CONFIDENCE</p>
-                <p style={{ margin: 0, color: 'var(--color-text)', lineHeight: 1.5 }}>{Math.round(summary.overall_confidence * 100)}%</p>
-              </div>
-            )}
           </div>
-          {summary.focus_concepts?.length > 0 && (
-            <div style={{ marginTop: '0.75rem' }}>
-              <ConceptList label="Focus concepts" concepts={summary.focus_concepts} />
-            </div>
-          )}
     </section>
   );
 }
@@ -322,7 +312,7 @@ export default function JourneyRoute() {
   const [error,            setError]            = useState('');
   const [journeyComplete,  setJourneyComplete]  = useState(false);
 
-  const summary = adaptiveLearningPlan?.decision_summary ?? null;
+  const summary = recommendation?.summary ?? adaptiveLearningPlan?.decision_summary ?? null;
 
   // ── Fetch live journey state from backend ─────────────────────────────────
   const fetchJourneyState = useCallback(async () => {
@@ -463,7 +453,7 @@ export default function JourneyRoute() {
       </section>
 
       {/* Learner profile */}
-      <SummaryCard summary={summary ?? recommendation?.summary} />
+      <SummaryCard summary={summary} />
 
       {/* Recommended learning path */}
       <RecommendedLearningPath learningPath={learningPathData?.learning_path ?? flow} />

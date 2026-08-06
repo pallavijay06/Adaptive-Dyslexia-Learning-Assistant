@@ -41,6 +41,8 @@ from services.learning_strategy_engine import (
     LearningStrategyDecision,
     get_learning_strategy_decision,
 )
+from services.recommendation_engine import RecommendationEngine
+from database.db import get_learner_profile
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +110,8 @@ class DecisionSummary:
     revision_required: bool
     session_duration: str        # e.g. "20 minutes"
     overall_confidence: float
+    comprehension_level: str | None
+    recommended_learning_mode: str | None
 
 
 @dataclass(frozen=True)
@@ -178,7 +182,7 @@ def get_adaptive_learning_plan(
     understanding = get_understanding_decision(user_id, document_concepts=document_concepts)
     content       = get_content_personalization_decision(user_id, document_concepts)
     strategy      = get_learning_strategy_decision(user_id)
-    return _orchestrate(understanding, content, strategy, is_stem_document=is_stem_document)
+    return _orchestrate(user_id, understanding, content, strategy, is_stem_document=is_stem_document)
 
 
 def get_adaptive_learning_plan_from_decisions(
@@ -192,7 +196,13 @@ def get_adaptive_learning_plan_from_decisions(
     Use this when the caller has already loaded the three decisions
     (e.g. to avoid redundant DB reads in a batch pipeline).
     """
-    return _orchestrate(understanding, content, strategy, is_stem_document=is_stem_document)
+    return _orchestrate(
+        None,
+        understanding,
+        content,
+        strategy,
+        is_stem_document=is_stem_document,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +210,7 @@ def get_adaptive_learning_plan_from_decisions(
 # ---------------------------------------------------------------------------
 
 def _orchestrate(
+    user_id: int | None,
     understanding: UnderstandingDecision,
     content: ContentPersonalizationDecision,
     strategy: LearningStrategyDecision,
@@ -233,7 +244,13 @@ def _orchestrate(
     adaptive_flow = _build_adaptive_flow(understanding, content, strategy, conflict_ctx, is_stem_document)
 
     # 8. Build DecisionSummary
-    decision_summary = _build_decision_summary(understanding, content, strategy, overall_confidence)
+    decision_summary = _build_decision_summary(
+        user_id,
+        understanding,
+        content,
+        strategy,
+        overall_confidence,
+    )
 
     # 9. Build PromptInstructionSet
     prompt_instruction_set = _build_prompt_instruction_set(
@@ -568,6 +585,7 @@ def _build_adaptive_flow(
 # ---------------------------------------------------------------------------
 
 def _build_decision_summary(
+    user_id: int | None,
     understanding: UnderstandingDecision,
     content: ContentPersonalizationDecision,
     strategy: LearningStrategyDecision,
@@ -582,6 +600,13 @@ def _build_decision_summary(
     elif understanding.analogy_required:
         style_parts.append("Analogy-Based")
 
+    comprehension_level = None
+    recommended_learning_mode = None
+    if user_id is not None:
+        profile = get_learner_profile(user_id)
+        comprehension_level = profile.comprehension_level if profile else None
+        recommended_learning_mode = RecommendationEngine.recommend_learning_mode(user_id)
+
     return DecisionSummary(
         teaching_style=", ".join(style_parts),
         focus_concepts=list(content.high_priority_concepts),
@@ -589,6 +614,8 @@ def _build_decision_summary(
         revision_required=understanding.revision_required,
         session_duration=f"{strategy.recommended_session_duration} minutes",
         overall_confidence=overall_confidence,
+        comprehension_level=comprehension_level,
+        recommended_learning_mode=recommended_learning_mode,
     )
 
 

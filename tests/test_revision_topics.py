@@ -15,9 +15,10 @@ def test_generate_plan_uses_document_concepts_from_document_id(monkeypatch):
     def fake_get_user_by_id(user_id):
         return SimpleNamespace(id=user_id)
 
-    def fake_get_adaptive_learning_plan(user_id, document_concepts):
+    def fake_get_adaptive_learning_plan(user_id, document_concepts, is_stem_document=False):
         captured["user_id"] = user_id
         captured["document_concepts"] = document_concepts
+        captured["is_stem_document"] = is_stem_document
         return SimpleNamespace(
             adaptive_learning_flow=[],
             content_instruction=SimpleNamespace(),
@@ -52,3 +53,38 @@ def test_generate_plan_uses_document_concepts_from_document_id(monkeypatch):
     assert any(c.lower() == "voltage" for c in captured["document_concepts"])
     assert any(c.lower() == "current" for c in captured["document_concepts"])
     assert any(c.lower() == "resistance" for c in captured["document_concepts"])
+
+
+def test_current_recommendation_exposes_summary_fields(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(adaptive_bp)
+
+    from backend import adaptive_routes as adaptive_routes_module
+
+    adaptive_routes_module._journey_state[7] = {
+        "current_step": 1,
+        "plan": {
+            "adaptive_learning_flow": [{"step": 1, "action": "learning_mode"}],
+            "decision_summary": {
+                "teaching_style": "Simple, Step-by-Step",
+                "focus_concepts": ["Reading"],
+                "learning_strategy": "Visual",
+                "revision_required": False,
+                "session_duration": "20 minutes",
+                "overall_confidence": 0.95,
+                "comprehension_level": "Good",
+                "recommended_learning_mode": "Visual",
+            },
+        },
+        "completed_steps": [],
+        "total_steps": 1,
+    }
+
+    with app.test_client() as client:
+        response = client.get("/adaptive-plan/current/7")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["summary"]["comprehension_level"] == "Good"
+    assert body["summary"]["recommended_learning_mode"] == "Visual"
