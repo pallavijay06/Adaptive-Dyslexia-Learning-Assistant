@@ -38,6 +38,28 @@ function formatMetricValue(value) {
   return value;
 }
 
+function formatLearningPathStep(step) {
+  if (step == null) {
+    return 'Not Available';
+  }
+
+  if (typeof step === 'string') {
+    return step;
+  }
+
+  if (typeof step === 'object') {
+    if (step.action === 'learning_mode' && step.mode) {
+      return `Step ${step.step ?? '•'}: ${step.mode}`;
+    }
+    if (step.action === 'quiz') {
+      return `Step ${step.step ?? '•'}: Quiz (${step.quiz_length ?? 'unknown'} questions)`;
+    }
+    return JSON.stringify(step);
+  }
+
+  return String(step);
+}
+
 function MetricBar({ value }) {
   if (isMissingValue(value)) {
     return <p className="metric-placeholder">TODO: expose this field from the backend</p>;
@@ -258,7 +280,7 @@ export default function DashboardPage() {
                 <div className="metric-item-label">Recommended Learning Path</div>
                 <ol className="learning-path-list">
                   {adaptiveIntelligence.recommended_learning_path.map((step, index) => (
-                    <li key={`learning-step-${index}`}>{step}</li>
+                    <li key={`learning-step-${index}`}>{formatLearningPathStep(step)}</li>
                   ))}
                 </ol>
               </div>
