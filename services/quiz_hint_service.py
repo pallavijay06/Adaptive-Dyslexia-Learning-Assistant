@@ -9,6 +9,8 @@ from services.llm_router import LLMRouterError, generate_content
 
 logger = logging.getLogger(__name__)
 
+QUIZ_HINT_MAX_TOKENS = 128
+
 
 def generate_quiz_hint(
     question: str,
@@ -61,15 +63,14 @@ Examples of BAD hints (DO NOT USE):
 Generate ONLY the hint text. No preamble or explanation."""
 
     try:
-        hint = generate_content(prompt)
+        hint = generate_content(prompt, max_tokens=QUIZ_HINT_MAX_TOKENS)
         hint = str(hint or "").strip()
         if hint:
             return hint
-        else:
-            return f"Think carefully about the concept of {concept or 'this topic'}."
+        raise LLMRouterError("Hint generation returned no content.")
     except LLMRouterError:
-        logger.exception("Failed to generate hint via LLM, returning generic hint")
-        return f"Think carefully about the concept of {concept or 'this topic'} and reconsider your understanding."
+        logger.exception("Failed to generate hint via LLM")
+        raise
 
 
 def generate_short_answer_hint(
